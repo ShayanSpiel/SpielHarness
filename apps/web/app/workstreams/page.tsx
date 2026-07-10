@@ -8,7 +8,9 @@ import {
   EmptyState,
   Field,
   Input,
+  NativeSelect,
   Pill,
+  SearchInput,
   Textarea,
   Tooltip,
   cn
@@ -311,7 +313,7 @@ export default function WorkstreamsPage() {
             <h1 className="truncate text-sm font-semibold text-foreground">Workstreams</h1>
           </div>
           <div className="ml-auto hidden w-80 md:block">
-            <SearchInput query={query} setQuery={setQuery} />
+            <SearchInput placeholder="Search workflows" value={query} onChange={setQuery} />
           </div>
           <InspectorToggle label="Open settings panel" />
         </header>
@@ -319,7 +321,7 @@ export default function WorkstreamsPage() {
         <div className="flex min-h-0 flex-1">
           <aside className="flex w-80 shrink-0 flex-col border-r border-border bg-background">
             <div className="border-b border-border p-3 md:hidden">
-              <SearchInput query={query} setQuery={setQuery} />
+              <SearchInput placeholder="Search workflows" value={query} onChange={setQuery} />
             </div>
             <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -1019,45 +1021,6 @@ function PickList({
           );
         })}
       </div>
-    </div>
-  );
-}
-
-function SearchInput({ query, setQuery }: { query: string; setQuery: (value: string) => void; }) {
-  return (
-    <div className="relative">
-      <Icon name="search" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" size={14} />
-      <Input className="h-8 pl-7 text-xs" onChange={(event) => setQuery(event.target.value)} placeholder="Search workflows" value={query} />
-    </div>
-  );
-}
-
-function NativeSelect({
-  ariaLabel,
-  className,
-  onChange,
-  options,
-  value
-}: {
-  ariaLabel: string;
-  className?: string;
-  onChange: (value: string) => void;
-  options: Array<{ label: string; value: string }>;
-  value: string;
-}) {
-  return (
-    <div className={cn("relative", className)}>
-      <select
-        aria-label={ariaLabel}
-        className="h-8 w-full appearance-none rounded-md border border-border bg-input px-2.5 pr-8 text-sm text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/30"
-        onChange={(event) => onChange(event.target.value)}
-        value={value}
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>{option.label}</option>
-        ))}
-      </select>
-       <Icon name="chevron-right" className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rotate-90 text-muted-foreground" size={14} />
     </div>
   );
 }
