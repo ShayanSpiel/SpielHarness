@@ -24,10 +24,21 @@ export type HarnessFileResponse = {
 function parseEvalFromHarnessFile(file: HarnessFileResponse): EvalFile | null {
   const meta = file.metadata;
   if (!meta.eval) return null;
+  let bodyJson: Partial<EvalFile> | null = null;
+  try {
+    bodyJson = JSON.parse(file.body) as Partial<EvalFile>;
+  } catch {
+    bodyJson = null;
+  }
+  const description =
+    (meta.description as string | undefined) ??
+    bodyJson?.description ??
+    (bodyJson ? "" : file.body);
+
   return {
     id: file.id,
     name: file.title,
-    description: file.body,
+    description,
     targetType: (meta.targetType as EvalFile["targetType"]) ?? "draft",
     targetId: (meta.targetId as string) ?? "",
     rubrics: (meta.rubrics as EvalFile["rubrics"]) ?? [],

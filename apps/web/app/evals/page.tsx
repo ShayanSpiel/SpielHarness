@@ -456,14 +456,16 @@ export default function EvalsPage() {
 
             <section className="flex min-h-0 flex-1">
               <div className="min-h-0 flex-1 overflow-y-auto">
-                <div className="grid gap-3 border-b border-border bg-panel-raised px-4 py-3 xl:grid-cols-[minmax(0,1fr)_160px_160px]">
-                  <Field label="Eval name">
+                <div className="grid items-end gap-3 border-b border-border bg-panel-raised px-4 py-3 xl:grid-cols-[minmax(0,1fr)_160px_132px]">
+                  <div className="grid gap-1.5">
+                    <InfoLabel label="Eval name" info="Name this QA check so it is easy to select from workflow steps." />
                     <Input
                       onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
                       value={draft.name}
                     />
-                  </Field>
-                  <Field label="Pass score" hint="Overall score needed to pass.">
+                  </div>
+                  <div className="grid gap-1.5">
+                    <InfoLabel label="Pass score" info="Overall score needed for this eval to pass." />
                     <Input
                       onChange={(e) => setDraft((d) => ({ ...d, overallThreshold: Number(e.target.value) }))}
                       type="number"
@@ -471,10 +473,10 @@ export default function EvalsPage() {
                       max={100}
                       value={draft.overallThreshold}
                     />
-                  </Field>
+                  </div>
                   <div className="grid gap-1.5">
-                    <span className="text-xs font-medium text-muted-foreground">Enabled</span>
-                    <label className="flex h-9 items-center gap-2 text-xs text-foreground">
+                    <InfoLabel label="Enabled" info="Enabled evals can run here and appear in workflow QA step pickers." />
+                    <label className="flex h-8 items-center gap-2 text-xs text-foreground">
                       <Switch
                         checked={draft.status === "active"}
                         onCheckedChange={(checked) =>
@@ -484,7 +486,7 @@ export default function EvalsPage() {
                           }))
                         }
                       />
-                      <span>{draft.status === "active" ? "Can run in tests and workflows" : "Hidden from runtime pickers"}</span>
+                      <span>{draft.status === "active" ? "On" : "Off"}</span>
                     </label>
                   </div>
                 </div>
@@ -497,13 +499,14 @@ export default function EvalsPage() {
                     />
                   </Field>
 
-                  <Field label="Test sample" hint="Paste an output here to test the criteria before using the eval in a workflow.">
+                  <div className="grid gap-1.5">
+                    <InfoLabel label="Test sample" info="Paste an output here to test the criteria before using the eval in a workflow." />
                     <Textarea
                       className="min-h-28 font-mono text-xs"
                       onChange={(e) => setSample(e.target.value)}
                       value={sample}
                     />
-                  </Field>
+                  </div>
                 </div>
 
                 <div className="border-t border-border">
@@ -516,16 +519,19 @@ export default function EvalsPage() {
                       Criterion
                     </Button>
                   </div>
-                  <div className="p-4">
+                  <div>
                     {draft.rubrics.length === 0 ? (
-                      <div className="rounded-md border border-dashed border-border py-8 text-center text-xs text-muted-foreground">
+                      <div className="m-4 rounded-md border border-dashed border-border py-8 text-center text-xs text-muted-foreground">
                         No criteria yet. Add one to start scoring.
                       </div>
                     ) : (
-                      <div className="overflow-hidden rounded-md border border-border">
-                        <div className="hidden border-b border-border bg-panel-raised px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:grid xl:grid-cols-[minmax(220px,1.1fr)_190px_minmax(260px,1.4fr)_84px_84px_76px] xl:gap-3">
+                      <div>
+                        <div className="hidden border-b border-border bg-panel-raised px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:grid xl:grid-cols-[minmax(160px,1fr)_150px_minmax(180px,1.2fr)_70px_70px_72px] xl:items-center xl:gap-3">
                           <span>Criterion</span>
-                          <span>Check</span>
+                          <span className="flex items-center gap-1">
+                            Check
+                            <InfoTip content="Choose how this criterion is scored. Phrase checks use editable chips; word count and pattern checks use direct inputs." />
+                          </span>
                           <span>Condition</span>
                           <span>Weight</span>
                           <span>Pass</span>
@@ -555,17 +561,15 @@ export default function EvalsPage() {
                   <div className="flex h-9 items-center gap-2 border-b border-border px-4">
                     <Icon className="text-muted-foreground" name="repeat" size={14} />
                     <span className="text-xs font-medium text-foreground">Workflow Retry Policy</span>
+                    <InfoTip content="When this eval is used as a workflow QA step, retry can send failed work back through the previous step before the workflow continues. Direct test runs on this page never retry." />
                     <Pill tone={draft.loopConfig.enabled ? "success" : "default"} className="ml-auto">
                       {draft.loopConfig.enabled ? "retry enabled" : "no retry"}
                     </Pill>
                   </div>
                   <div className="grid gap-3 px-4 py-3">
-                    <div className="max-w-3xl text-xs leading-relaxed text-muted-foreground">
-                      When this eval is used as a QA step in a workflow, retry can send failed work back through the previous step before the workflow continues. Direct test runs on this page never retry.
-                    </div>
-                    <div className="grid gap-3 xl:grid-cols-[minmax(220px,1fr)_140px_180px_150px]">
+                    <div className="grid items-end gap-3 xl:grid-cols-[minmax(220px,1fr)_140px_180px_150px]">
                       <div className="grid gap-1.5">
-                        <span className="text-xs font-medium text-muted-foreground">Retry failed workflow output</span>
+                        <InfoLabel label="Retry failed output" info="Use this when a workflow should automatically try the previous step again after failing this eval." />
                         <label className="flex h-8 items-center gap-2 text-xs text-foreground">
                           <Switch
                             checked={draft.loopConfig.enabled}
@@ -579,7 +583,8 @@ export default function EvalsPage() {
                           <span>{draft.loopConfig.enabled ? "Retry before continuing" : "Fail without retrying"}</span>
                         </label>
                       </div>
-                      <Field label="Attempts" hint="Total tries.">
+                      <div className="grid gap-1.5">
+                        <InfoLabel label="Attempts" info="Total tries before the workflow stops retrying." />
                         <Input
                           className="h-8 text-xs"
                           onChange={(event) =>
@@ -593,8 +598,9 @@ export default function EvalsPage() {
                           max={10}
                           value={draft.loopConfig.maxAttempts}
                         />
-                      </Field>
-                      <Field label="Stop retrying" hint="Usually stop when the eval passes.">
+                      </div>
+                      <div className="grid gap-1.5">
+                        <InfoLabel label="Stop retrying" info="Usually stop when this eval passes." />
                         <NativeSelect
                           ariaLabel="Stop retrying"
                           onChange={(value) =>
@@ -609,8 +615,9 @@ export default function EvalsPage() {
                           ]}
                           value={draft.loopConfig.breakCondition}
                         />
-                      </Field>
-                      <Field label="Delay" hint="Milliseconds between tries.">
+                      </div>
+                      <div className="grid gap-1.5">
+                        <InfoLabel label="Delay" info="Milliseconds to wait between retry attempts." />
                         <Input
                           className="h-8 text-xs"
                           onChange={(event) =>
@@ -623,34 +630,10 @@ export default function EvalsPage() {
                           min={0}
                           value={draft.loopConfig.retryDelayMs}
                         />
-                      </Field>
-                    </div>
-                  </div>
-                </div>
-
-                {selectedId && selected && selected.results.length > 0 && (
-                  <div className="border-t border-border">
-                    <div className="flex h-9 items-center gap-2 border-b border-border px-4">
-                      <Icon className="text-muted-foreground" name="history" size={14} />
-                      <span className="text-xs font-medium text-foreground">Results History</span>
-                      <Pill className="ml-auto">{selected.results.length}</Pill>
-                    </div>
-                    <div className="p-4">
-                      <div className="overflow-hidden rounded-md border border-border">
-                        <div className="hidden border-b border-border bg-panel-raised px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:grid xl:grid-cols-[160px_90px_minmax(0,1fr)] xl:gap-3">
-                          <span>Run</span>
-                          <span>Score</span>
-                          <span>Criteria</span>
-                        </div>
-                        <div className="divide-y divide-border">
-                          {[...selected.results].reverse().map((result) => (
-                            <ResultRow key={result.id} result={result} />
-                          ))}
-                        </div>
                       </div>
                     </div>
                   </div>
-                )}
+                </div>
               </div>
             </section>
           </main>
@@ -669,6 +652,29 @@ function splitRuleValues(value: string): string[] {
 
 function joinRuleValues(values: string[]): string {
   return values.join(", ");
+}
+
+function InfoTip({ content }: { content: string }) {
+  return (
+    <Tooltip content={content} side="bottom">
+      <button
+        aria-label={content}
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-hover hover:text-foreground"
+        type="button"
+      >
+        <Icon name="info" size={12} />
+      </button>
+    </Tooltip>
+  );
+}
+
+function InfoLabel({ info, label }: { info: string; label: string }) {
+  return (
+    <div className="flex h-4 items-center gap-1 text-xs font-medium text-muted-foreground">
+      <span>{label}</span>
+      <InfoTip content={info} />
+    </div>
+  );
 }
 
 function CriteriaRow({
@@ -693,7 +699,7 @@ function CriteriaRow({
   const config = CHECK_TYPES[rubric.type];
 
   return (
-    <div className="grid gap-3 bg-background px-3 py-3 xl:grid-cols-[minmax(220px,1.1fr)_190px_minmax(260px,1.4fr)_84px_84px_76px] xl:items-start">
+    <div className="grid gap-3 bg-background px-4 py-2.5 xl:grid-cols-[minmax(160px,1fr)_150px_minmax(180px,1.2fr)_70px_70px_72px] xl:items-center">
       <div className="grid gap-1.5">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
           Criterion
@@ -709,17 +715,12 @@ function CriteriaRow({
             value={rubric.label}
           />
         </div>
-        <Input
-          className="ml-7 h-7 text-xs"
-          onChange={(event) => onUpdate({ description: event.target.value })}
-          placeholder="Optional note for teammates"
-          value={rubric.description}
-        />
       </div>
 
       <div className="grid gap-1.5">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+        <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
           Check
+          <InfoTip content={config.helper} />
         </span>
         <NativeSelect
           ariaLabel="Criterion check"
@@ -732,7 +733,6 @@ function CriteriaRow({
           options={RUBRIC_TYPES.map((type) => ({ label: CHECK_TYPES[type].label, value: type }))}
           value={rubric.type}
         />
-        <p className="text-[11px] leading-relaxed text-muted-foreground">{config.helper}</p>
       </div>
 
       <div className="grid gap-1.5">
@@ -746,7 +746,10 @@ function CriteriaRow({
         />
       </div>
 
-      <Field label="Weight">
+      <div className="grid gap-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+          Weight
+        </span>
         <Input
           className="h-8 text-xs"
           onChange={(event) => onUpdate({ weight: Number(event.target.value) })}
@@ -754,9 +757,12 @@ function CriteriaRow({
           type="number"
           value={rubric.weight}
         />
-      </Field>
+      </div>
 
-      <Field label="Pass">
+      <div className="grid gap-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+          Pass
+        </span>
         <Input
           className="h-8 text-xs"
           onChange={(event) => onUpdate({ passThreshold: Number(event.target.value) })}
@@ -765,7 +771,7 @@ function CriteriaRow({
           type="number"
           value={rubric.passThreshold}
         />
-      </Field>
+      </div>
 
       <div className="grid gap-1.5">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
@@ -822,8 +828,8 @@ function CriterionValueEditor({
   if (config.valueKind === "chips") {
     return (
       <EditableChips
-        label={config.valueLabel}
         onChange={(values) => onChange(joinRuleValues(values))}
+        placeholder={`Add ${config.valueLabel.toLowerCase()}`}
         values={splitRuleValues(value)}
       />
     );
@@ -831,49 +837,46 @@ function CriterionValueEditor({
 
   if (config.valueKind === "number") {
     return (
-      <Field label={config.valueLabel}>
-        <Input
-          className="h-8 text-xs"
-          min={0}
-          onChange={(event) => onChange(event.target.value)}
-          type="number"
-          value={value}
-        />
-      </Field>
+      <Input
+        aria-label={config.valueLabel}
+        className="h-8 text-xs"
+        min={0}
+        onChange={(event) => onChange(event.target.value)}
+        type="number"
+        value={value}
+      />
     );
   }
 
   if (config.valueKind === "textarea") {
     return (
-      <Field label={config.valueLabel}>
-        <Textarea
-          className="min-h-20 font-mono text-xs"
-          onChange={(event) => onChange(event.target.value)}
-          value={value}
-        />
-      </Field>
+      <Textarea
+        aria-label={config.valueLabel}
+        className="min-h-20 font-mono text-xs"
+        onChange={(event) => onChange(event.target.value)}
+        value={value}
+      />
     );
   }
 
   return (
-    <Field label={config.valueLabel}>
-      <Input
-        className="h-8 font-mono text-xs"
-        onChange={(event) => onChange(event.target.value)}
-        placeholder="Example: \\bproof\\b"
-        value={value}
-      />
-    </Field>
+    <Input
+      aria-label={config.valueLabel}
+      className="h-8 font-mono text-xs"
+      onChange={(event) => onChange(event.target.value)}
+      placeholder="Example: \\bproof\\b"
+      value={value}
+    />
   );
 }
 
 function EditableChips({
-  label,
   onChange,
+  placeholder,
   values
 }: {
-  label: string;
   onChange: (values: string[]) => void;
+  placeholder: string;
   values: string[];
 }) {
   const [draftValue, setDraftValue] = useState("");
@@ -901,76 +904,31 @@ function EditableChips({
   }
 
   return (
-    <div className="grid gap-1.5">
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-      <div className="flex min-h-8 flex-wrap items-center gap-1 rounded-md border border-border bg-input px-1.5 py-1">
-        {values.map((value) => (
-          <span
-            className="inline-flex h-5 max-w-full items-center gap-1 rounded-sm bg-panel-raised px-1.5 text-[11px] text-foreground"
-            key={value}
+    <div className="flex h-8 items-center gap-1 overflow-x-auto rounded-md border border-border bg-input px-1.5 py-1">
+      {values.map((value) => (
+        <span
+          className="inline-flex h-5 max-w-40 shrink-0 items-center gap-1 rounded-sm bg-panel-raised px-1.5 text-[11px] text-foreground"
+          key={value}
+        >
+          <span className="truncate">{value}</span>
+          <button
+            aria-label={`Remove ${value}`}
+            className="text-muted-foreground hover:text-foreground"
+            onClick={() => removeValue(value)}
+            type="button"
           >
-            <span className="truncate">{value}</span>
-            <button
-              aria-label={`Remove ${value}`}
-              className="text-muted-foreground hover:text-foreground"
-              onClick={() => removeValue(value)}
-              type="button"
-            >
-              <Icon name="x" size={10} />
-            </button>
-          </span>
-        ))}
-        <input
-          className="h-5 min-w-32 flex-1 bg-transparent px-1 text-xs text-foreground outline-none placeholder:text-muted-foreground"
-          onBlur={addValue}
-          onChange={(event) => setDraftValue(event.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder={values.length ? "Add another" : "Type a phrase and press Enter"}
-          value={draftValue}
-        />
-      </div>
-    </div>
-  );
-}
-
-function ResultRow({
-  result
-}: {
-  result: import("../../lib/workspace-data").EvalFileResult;
-}) {
-  const tone = result.passed ? "success" : "destructive";
-  const time = new Date(result.runAt).toLocaleTimeString();
-
-  return (
-    <div className="grid gap-3 bg-background px-3 py-3 text-xs xl:grid-cols-[160px_90px_minmax(0,1fr)] xl:items-start">
-      <div className="flex items-center gap-2 xl:grid xl:gap-1">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">Run</span>
-        <div className="flex items-center gap-2">
-          <Pill tone={tone}>{result.passed ? "passed" : "failed"}</Pill>
-          <span className="text-[11px] text-muted-foreground">{time}</span>
-        </div>
-      </div>
-      <div className="flex items-center justify-between gap-2 xl:block">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">Score</span>
-        <span className="text-sm font-semibold text-foreground">{result.overallScore}/100</span>
-      </div>
-      <div className="grid gap-1.5">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
-          Criteria
+            <Icon name="x" size={10} />
+          </button>
         </span>
-        {Object.entries(result.rubricScores).map(([label, score]) => (
-          <div className="flex items-center gap-2" key={label}>
-            <span className="w-28 shrink-0 truncate text-[11px] text-foreground">{label}</span>
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-border">
-              <div
-                className={cn("h-full rounded-full transition-all", score.passed ? "bg-success" : "bg-destructive")}
-                style={{ width: `${Math.min(100, score.score)}%` }}
-              />
-            </div>
-            <span className="w-12 text-right text-[10px] text-muted-foreground">{score.score}</span>
-          </div>
-        ))}
-      </div>
+      ))}
+      <input
+        className="h-5 min-w-24 flex-1 bg-transparent px-1 text-xs text-foreground outline-none placeholder:text-muted-foreground"
+        onBlur={addValue}
+        onChange={(event) => setDraftValue(event.target.value)}
+        onKeyDown={onKeyDown}
+        placeholder={values.length ? "Add another" : placeholder}
+        value={draftValue}
+      />
     </div>
   );
 }
