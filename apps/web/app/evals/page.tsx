@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, SearchInput, Switch, Textarea, Tooltip, cn } from "@spielos/design-system";
+import { useMemo, useState, useEffect } from "react";
+import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, SearchInput, Switch, Textarea, Tooltip, cn, toast } from "@spielos/design-system";
+import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { Icon } from "../../components/icons";
 import { InspectorToggle } from "../../components/inspector-toggle";
 import { AppShell } from "../../components/app-shell";
@@ -61,13 +62,20 @@ export default function EvalsPage() {
   const store = useWorkspaceStore();
   const [selectedId, setSelectedId] = useState<string | null>(store.evalFiles[0]?.id ?? null);
   const selected = store.evalFiles.find((ef) => ef.id === selectedId) ?? null;
-  const [draft, setDraft] = useState<Omit<import("../../lib/workspace-data").EvalFile, "id" | "updatedAt" | "results"> | import("../../lib/workspace-data").EvalFile>(
+  const { draft, setDraft, dirty, reset, markSaved } = useDirty<Omit<import("../../lib/workspace-data").EvalFile, "id" | "updatedAt" | "results"> | import("../../lib/workspace-data").EvalFile>(
     selected ?? blankEvalFile()
   );
   const [query, setQuery] = useState("");
   const [sample, setSample] = useState("Paste content here to test your rubrics against.");
   const [running, setRunning] = useState(false);
+  const [saving, setSaving] = useState(false);
   const isNew = selectedId === null;
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const found = store.evalFiles.find((ef) => ef.id === selectedId);
+    if (found) reset(found);
+  }, [selectedId, store.evalFiles, reset]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -86,21 +94,31 @@ export default function EvalsPage() {
 
   function selectFile(ef: import("../../lib/workspace-data").EvalFile) {
     setSelectedId(ef.id);
-    setDraft(ef);
+    reset(ef);
   }
 
   function createFile() {
     setSelectedId(null);
-    setDraft(blankEvalFile());
+    reset(blankEvalFile());
   }
 
-  function save() {
-    if (isNew) {
-      const created = store.addEvalFile(draft as Omit<import("../../lib/workspace-data").EvalFile, "id" | "updatedAt" | "results">);
-      setSelectedId(created.id);
-      setDraft(created);
-    } else {
-      store.updateEvalFile((draft as import("../../lib/workspace-data").EvalFile).id, draft as Partial<import("../../lib/workspace-data").EvalFile>);
+  async function save() {
+    setSaving(true);
+    try {
+      if (isNew) {
+        const created = store.addEvalFile(draft as Omit<import("../../lib/workspace-data").EvalFile, "id" | "updatedAt" | "results">);
+        setSelectedId(created.id);
+        reset(created);
+        toast.success("Eval created");
+      } else {
+        store.updateEvalFile((draft as import("../../lib/workspace-data").EvalFile).id, draft as Partial<import("../../lib/workspace-data").EvalFile>);
+        markSaved();
+        toast.success("Eval saved");
+      }
+    } catch {
+      toast.error("Failed to save eval");
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -368,11 +386,6 @@ export default function EvalsPage() {
                 <Pill tone={draft.status === "active" ? "success" : "default"}>{draft.status}</Pill>
               </div>
               <div className="ml-auto flex items-center gap-1.5">
-                <Tooltip content="Save eval as a skill (kind=eval)" side="bottom">
-                  <Button onClick={saveAsSkill} size="sm" variant="outline">
-                    <Icon name="sparkles" size={14} /> Save as skill
-                  </Button>
-                </Tooltip>
                 <Tooltip content="Export as JSON" side="bottom">
                   <Button
                     aria-label="Export"
@@ -414,10 +427,15 @@ export default function EvalsPage() {
                     </Button>
                   </Tooltip>
                 ) : null}
-                <Button onClick={save} size="md">
-                  <Icon name="save" size={14} />
-                  Save
-                </Button>
+                <Tooltip content="Save eval as a skill (kind=eval)" side="bottom">
+                  <Button onClick={saveAsSkill} size="md" variant="outline">
+                    <Icon name="sparkles" size={14} /> Save as skill
+                  </Button>
+                </Tooltip>
+                <Button disabled={!dirty || saving} onClick={save} size="md" variant={dirty ? "primary" : "outline"}>
+                   {saving ? <Icon name="loader" size={14} className="animate-spin" /> : <Icon name="save" size={14} />}
+                   Save
+                 </Button>
               </div>
             </div>
 

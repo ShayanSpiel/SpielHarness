@@ -23,6 +23,7 @@ import {
   GlobeAlt, Compass, HomeAlt, Inbox, ArchiveAlt, History, TrendingUp,
   Layers, Move, Brain, FolderOpen, Flask, BarChart, Robot,
   DockRight, DockRightAlt,
+  ChessKnight, WorkflowAlt, Cognition,
   type BoxIconProps,
 } from "@boxicons/react";
 
@@ -56,6 +57,7 @@ const ICON_COMPONENTS: Record<string, React.ComponentType<BoxIconProps>> = {
   GlobeAlt, Compass, HomeAlt, Inbox, ArchiveAlt, History, TrendingUp,
   Layers, Move, Brain, FolderOpen, Flask, BarChart, Robot,
   DockRight, DockRightAlt,
+  ChessKnight, WorkflowAlt, Cognition,
 };
 
 function toBoxiconSize(size?: number | string): "xs" | "sm" | "base" | "md" | "lg" | "xl" {

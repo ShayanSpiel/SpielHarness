@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, SearchInput, Textarea, Tooltip, cn } from "@spielos/design-system";
+import { useMemo, useState, useEffect, type Dispatch, type SetStateAction } from "react";
+import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, SearchInput, Textarea, Tooltip, cn, toast } from "@spielos/design-system";
+import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { Icon } from "../../components/icons";
 import { InspectorToggle } from "../../components/inspector-toggle";
 import { AppShell } from "../../components/app-shell";
@@ -27,11 +28,18 @@ export default function ToolsPage() {
   const store = useWorkspaceStore();
   const [selectedId, setSelectedId] = useState<string | null>(store.skills[0]?.id ?? null);
   const selected = store.skills.find((skill) => skill.id === selectedId) ?? null;
-  const [draft, setDraft] = useState<SkillDefinition | Omit<SkillDefinition, "id" | "updatedAt">>(
+  const { draft, setDraft, dirty, reset, markSaved } = useDirty<SkillDefinition | Omit<SkillDefinition, "id" | "updatedAt">>(
     selected ?? blankSkill()
   );
   const [query, setQuery] = useState("");
+  const [saving, setSaving] = useState(false);
   const isNew = selectedId === null;
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const found = store.skills.find((skill) => skill.id === selectedId);
+    if (found) reset(found);
+  }, [selectedId, store.skills, reset]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -45,21 +53,31 @@ export default function ToolsPage() {
 
   function selectSkill(skill: SkillDefinition) {
     setSelectedId(skill.id);
-    setDraft(skill);
+    reset(skill);
   }
 
   function createSkill() {
     setSelectedId(null);
-    setDraft(blankSkill());
+    reset(blankSkill());
   }
 
-  function save() {
-    if (isNew) {
-      const created = store.addSkill(draft as Omit<SkillDefinition, "id" | "updatedAt">);
-      setSelectedId(created.id);
-      setDraft(created);
-    } else {
-      store.updateSkill((draft as SkillDefinition).id, draft as Partial<SkillDefinition>);
+  async function save() {
+    setSaving(true);
+    try {
+      if (isNew) {
+        const created = store.addSkill(draft as Omit<SkillDefinition, "id" | "updatedAt">);
+        setSelectedId(created.id);
+        reset(created);
+        toast.success("Skill created");
+      } else {
+        store.updateSkill((draft as SkillDefinition).id, draft as Partial<SkillDefinition>);
+        markSaved();
+        toast.success("Skill saved");
+      }
+    } catch {
+      toast.error("Failed to save skill");
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -162,10 +180,10 @@ export default function ToolsPage() {
                     </Button>
                   </Tooltip>
                 ) : null}
-                <Button onClick={save} size="md">
-                   <Icon name="save" size={14} />
+                <Button disabled={!dirty || saving} onClick={save} size="md" variant={dirty ? "primary" : "outline"}>
+                   {saving ? <Icon name="loader" size={14} className="animate-spin" /> : <Icon name="save" size={14} />}
                    Save
-                </Button>
+                 </Button>
               </div>
             </div>
 

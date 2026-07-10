@@ -1,25 +1,25 @@
 [data-theme="blue-light"] {
   --blue-light-bg0_h: #ffffff;
-  --blue-light-bg0: #f6f8fa;
-  --blue-light-bg0_s: #eaeef2;
-  --blue-light-bg1: #d0d7de;
-  --blue-light-bg2: #afb8c1;
-  --blue-light-bg3: #8c959f;
-  --blue-light-bg4: #6e7781;
+  --blue-light-bg0: #f8fafc;
+  --blue-light-bg0_s: #f1f5f9;
+  --blue-light-bg1: #e2e8f0;
+  --blue-light-bg2: #cbd5e1;
+  --blue-light-bg3: #94a3b8;
+  --blue-light-bg4: #64748b;
 
-  --blue-light-fg0: #1f2328;
-  --blue-light-fg1: #24292f;
-  --blue-light-fg2: #31373d;
-  --blue-light-fg3: #424a53;
-  --blue-light-fg4: #57606a;
+  --blue-light-fg0: #0f172a;
+  --blue-light-fg1: #1e293b;
+  --blue-light-fg2: #334155;
+  --blue-light-fg3: #475569;
+  --blue-light-fg4: #64748b;
 
-  --blue-light-gray: #6e7781;
+  --blue-light-gray: #64748b;
 
-  --blue-light-red: #cf222e;
-  --blue-light-green: #1a7f37;
-  --blue-light-yellow: #9a6700;
-  --blue-light-blue: #0969da;
-  --blue-light-purple: #8250df;
-  --blue-light-aqua: #1a7f37;
-  --blue-light-orange: #bc4c00;
+  --blue-light-red: #dc2626;
+  --blue-light-green: #16a34a;
+  --blue-light-yellow: #ca8a04;
+  --blue-light-blue: #2563eb;
+  --blue-light-purple: #9333ea;
+  --blue-light-aqua: #0891b2;
+  --blue-light-orange: #ea580c;
 }

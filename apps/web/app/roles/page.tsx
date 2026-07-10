@@ -15,8 +15,10 @@ import {
   SearchInput,
   Textarea,
   Tooltip,
-  cn
+  cn,
+  toast
 } from "@spielos/design-system";
+import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { AppShell } from "../../components/app-shell";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
 
@@ -51,17 +53,18 @@ function roleId(role: Role | Omit<Role, "id" | "orgId">) {
 export default function RolesPage() {
   const store = useWorkspaceStore();
   const [selectedId, setSelectedId] = useState<string | null>(store.roles[0]?.id ?? null);
-  const [draft, setDraft] = useState<Role | Omit<Role, "id" | "orgId">>(
+  const { draft, setDraft, dirty, reset, markSaved } = useDirty<Role | Omit<Role, "id" | "orgId">>(
     store.roles[0] ?? newRole()
   );
   const [query, setQuery] = useState("");
+  const [saving, setSaving] = useState(false);
   const isNew = selectedId === null;
 
   useEffect(() => {
     if (!selectedId) return;
     const found = store.roles.find((role) => role.id === selectedId);
-    if (found) setDraft(found);
-  }, [selectedId, store.roles]);
+    if (found) reset(found);
+  }, [selectedId, store.roles, reset]);
 
   const filteredRoles = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -80,20 +83,31 @@ export default function RolesPage() {
 
   function createRole() {
     setSelectedId(null);
-    setDraft(newRole());
+    reset(newRole());
   }
 
   function selectRole(role: Role) {
     setSelectedId(role.id);
-    setDraft(role);
+    reset(role);
   }
 
-  function save() {
-    if (isNew) {
-      const created = store.addRole(draft as Omit<Role, "id" | "orgId">);
-      setSelectedId(created?.id ?? null);
-    } else {
-      store.updateRole((draft as Role).id, draft as Partial<Role>);
+  async function save() {
+    setSaving(true);
+    try {
+      if (isNew) {
+        const created = store.addRole(draft as Omit<Role, "id" | "orgId">);
+        setSelectedId(created?.id ?? null);
+        markSaved();
+        toast.success("Role created");
+      } else {
+        store.updateRole((draft as Role).id, draft as Partial<Role>);
+        markSaved();
+        toast.success("Role saved");
+      }
+    } catch {
+      toast.error("Failed to save role");
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -230,10 +244,10 @@ export default function RolesPage() {
                     </Button>
                   </Tooltip>
                 ) : null}
-                <Button onClick={save} size="md">
-                   <Icon name="save" size={14} />
+                <Button disabled={!dirty || saving} onClick={save} size="md" variant={dirty ? "primary" : "outline"}>
+                   {saving ? <Icon name="loader" size={14} className="animate-spin" /> : <Icon name="save" size={14} />}
                    Save
-                </Button>
+                 </Button>
               </div>
             </div>
 

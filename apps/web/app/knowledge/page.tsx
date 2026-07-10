@@ -39,7 +39,7 @@ export default function KnowledgePage() {
     <AppShell>
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
         <PageHeader
-          icon={<Icon name="brain" size={14} />}
+          icon={<Icon name="knowledge" size={14} />}
           title="Knowledge"
         />
 

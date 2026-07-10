@@ -59,7 +59,7 @@ const DEFAULT_ICON_MAP: Record<string, string> = {
   "layout-list": "ListUl",
   code: "CodeAlt",
   terminal: "Terminal",
-  "git-branch": "GitBranch",
+  "git-branch": "WorkflowAlt",
   "git-commit": "GitCommit",
   "git-merge": "GitMerge",
   package: "Package",
@@ -97,7 +97,7 @@ const DEFAULT_ICON_MAP: Record<string, string> = {
   wrench: "Slider",
   tool: "SliderAlt",
   magic: "MagicWand",
-  sparkles: "Star",
+  sparkles: "SearchAlt",
   zap: "Bolt",
   sun: "Sun",
   moon: "Moon",
@@ -131,6 +131,8 @@ const DEFAULT_ICON_MAP: Record<string, string> = {
   bot: "Robot",
   "refresh-ccw": "RefreshCcw",
   "loader-2": "LoaderDots",
+  knowledge: "Cognition",
+  strategy: "ChessKnight",
 };
 
 interface IconRegistryContextType {

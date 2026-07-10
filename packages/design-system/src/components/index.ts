@@ -57,3 +57,5 @@ export { Switch } from "./switch";
 export { Tabs, TabsContent, TabsList, TabsTrigger } from "./tabs";
 export { ThemeToggle } from "./theme-toggle";
 export { Tooltip, TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from "./tooltip";
+
+export { toast } from "sonner";

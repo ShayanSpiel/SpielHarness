@@ -103,7 +103,7 @@ function parseSkillFromHarnessFile(file: HarnessFileResponse): SkillDefinition |
 function parseItemFromHarnessFile(file: HarnessFileResponse): WorkspaceItem | null {
   const typeToKind: Record<string, string> = {
     strategy: "strategy",
-    prompt: "strategy",
+    prompt: "prompts",
     artifact: "library",
     draft: "library",
     evidence: "library",
@@ -234,6 +234,13 @@ export async function saveItemToDb(item: Partial<WorkspaceItem> & { id: string }
   });
   if (!res.ok) throw new Error("Failed to save item");
   return res.json();
+}
+
+export function workspaceKindToFileType(kind: WorkspaceItem["kind"]): string {
+  if (kind === "prompts") return "prompt";
+  if (kind === "strategy") return "strategy";
+  if (kind === "knowledge") return "knowledge";
+  return "draft";
 }
 
 export async function deleteItemFromDb(id: string) {

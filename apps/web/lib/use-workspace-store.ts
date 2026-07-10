@@ -19,7 +19,12 @@ import type {
   WorkstreamDefinition
 } from "./workspace-data";
 import { initialWorkspaceState } from "./workspace-data";
-import { loadWorkspaceFromDb, deleteItemFromDb, saveHarnessFile } from "./supabase-store";
+import {
+  loadWorkspaceFromDb,
+  deleteItemFromDb,
+  saveHarnessFile,
+  workspaceKindToFileType
+} from "./supabase-store";
 
 function createId(prefix: string) {
   return `${prefix}_${crypto.randomUUID()}`;
@@ -63,7 +68,7 @@ type Store = WorkspaceState & {
   updateEvalFile: (id: string, patch: Partial<EvalFile>) => void;
   deleteEvalFile: (id: string) => void;
   appendEvalResult: (evalId: string, result: EvalFileResult) => void;
-  addModel: (model: Omit<ProviderModel, "id">) => void;
+  addModel: (model: Omit<ProviderModel, "id">) => string;
   updateModel: (id: string, patch: Partial<ProviderModel>) => void;
   deleteModel: (id: string) => void;
   addLibraryFolder: (name: string) => void;
@@ -247,11 +252,22 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
       },
 
       addItem(item: Omit<WorkspaceItem, "id" | "updatedAt">) {
-        const created = { ...item, id: createId(item.kind), updatedAt: nowIso() };
+        const created = { ...item, id: crypto.randomUUID(), updatedAt: nowIso() };
         setState((current) => ({
           ...current,
           items: [...current.items, created]
         }));
+        saveHarnessFile({
+          id: created.id,
+          title: created.title,
+          body: created.body,
+          fileType: workspaceKindToFileType(created.kind),
+          status: created.status,
+          metadata: {
+            ...created.metadata,
+            seedFolder: created.folder
+          }
+        }).catch(() => {});
         return created;
       },
       updateItem(id: string, patch: Partial<WorkspaceItem>) {
@@ -564,10 +580,12 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
       },
 
       addModel(model: Omit<ProviderModel, "id">) {
+        const id = createId("model");
         setState((current) => ({
           ...current,
-          models: [...current.models, { ...model, id: createId("model") }]
+          models: [...current.models, { ...model, id }]
         }));
+        return id;
       },
       updateModel(id: string, patch: Partial<ProviderModel>) {
         setState((current) => ({

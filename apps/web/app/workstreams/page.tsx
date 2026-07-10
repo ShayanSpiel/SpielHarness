@@ -14,8 +14,10 @@ import {
   SearchInput,
   Textarea,
   Tooltip,
-  cn
+  cn,
+  toast
 } from "@spielos/design-system";
+import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { AppShell } from "../../components/app-shell";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
 import type { WorkstreamDefinition, WorkstreamNode } from "../../lib/workspace-data";
@@ -34,7 +36,7 @@ export default function WorkstreamsPage() {
   const store = useWorkspaceStore();
   const [selectedId, setSelectedId] = useState<string | null>(store.workstreams[0]?.id ?? null);
   const selected = store.workstreams.find((entry) => entry.id === selectedId) ?? null;
-  const [draft, setDraft] = useState<WorkstreamDefinition | Omit<WorkstreamDefinition, "id" | "updatedAt">>(
+  const { draft, setDraft, dirty, reset, markSaved } = useDirty<WorkstreamDefinition | Omit<WorkstreamDefinition, "id" | "updatedAt">>(
     selected ?? blankWorkstream()
   );
   const [query, setQuery] = useState("");
@@ -42,6 +44,7 @@ export default function WorkstreamsPage() {
   const [fromNodeId, setFromNodeId] = useState<string | null>(null);
   const [runLog, setRunLog] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
+  const [saving, setSaving] = useState(false);
   const isNew = selectedId === null;
 
   const selectedNode = draft.nodes.find((node) => node.id === selectedNodeId) ?? null;
@@ -57,7 +60,7 @@ export default function WorkstreamsPage() {
 
   function selectWorkstream(workstream: WorkstreamDefinition) {
     setSelectedId(workstream.id);
-    setDraft(workstream);
+    reset(workstream);
     setSelectedNodeId(null);
     setRunLog([]);
   }
@@ -65,18 +68,28 @@ export default function WorkstreamsPage() {
   function createWorkstream() {
     const next = blankWorkstream();
     setSelectedId(null);
-    setDraft(next);
+    reset(next);
     setSelectedNodeId(null);
     setRunLog([]);
   }
 
-  function save() {
-    if (isNew) {
-      const created = store.addWorkstream(draft as Omit<WorkstreamDefinition, "id" | "updatedAt">);
-      setSelectedId(created.id);
-      setDraft(created);
-    } else {
-      store.updateWorkstream((draft as WorkstreamDefinition).id, draft as Partial<WorkstreamDefinition>);
+  async function save() {
+    setSaving(true);
+    try {
+      if (isNew) {
+        const created = store.addWorkstream(draft as Omit<WorkstreamDefinition, "id" | "updatedAt">);
+        setSelectedId(created.id);
+        reset(created);
+        toast.success("Workflow created");
+      } else {
+        store.updateWorkstream((draft as WorkstreamDefinition).id, draft as Partial<WorkstreamDefinition>);
+        markSaved();
+        toast.success("Workflow saved");
+      }
+    } catch {
+      toast.error("Failed to save workflow");
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -390,10 +403,10 @@ export default function WorkstreamsPage() {
                     </Button>
                   </Tooltip>
                 ) : null}
-                <Button onClick={save} size="md">
-                   <Icon name="save" size={14} />
+                <Button disabled={!dirty || saving} onClick={save} size="md" variant={dirty ? "primary" : "outline"}>
+                   {saving ? <Icon name="loader" size={14} className="animate-spin" /> : <Icon name="save" size={14} />}
                    Save
-                </Button>
+                 </Button>
               </div>
             </div>
 
