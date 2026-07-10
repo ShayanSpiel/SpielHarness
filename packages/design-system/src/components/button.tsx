@@ -6,21 +6,21 @@ import { forwardRef, type ButtonHTMLAttributes } from "react";
 import { cn } from "../index";
 
 const buttonStyles = cva(
-  "inline-flex h-8 items-center justify-center gap-2 rounded-md text-sm font-medium transition-colors duration-[var(--duration)] disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]",
+  "inline-flex h-8 items-center justify-center gap-2 rounded-md border border-transparent text-sm font-medium transition-colors duration-[var(--duration)] disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]",
   {
     variants: {
       variant: {
         primary:
-          "border border-transparent bg-[var(--primary)] text-[var(--primary-foreground)] hover:brightness-110 active:brightness-95",
+          "bg-[var(--primary)] text-[var(--primary-foreground)] hover:brightness-110 active:brightness-95",
         outline:
-          "border border-[var(--border)] bg-[var(--panel)] text-[var(--foreground)] hover:bg-[var(--hover)] hover:border-[var(--border-strong)]",
+          "border-[var(--border)] bg-[var(--panel)] text-[var(--foreground)] hover:bg-[var(--hover)] hover:border-[var(--border-strong)]",
         ghost:
           "text-[var(--foreground-muted)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]",
         subtle:
           "bg-[var(--panel-raised)] text-[var(--foreground)] hover:bg-[var(--selected)]",
         danger:
           "bg-[var(--destructive)] text-[var(--background)] hover:brightness-110",
-        link: "text-[var(--primary)] underline-offset-4 hover:underline"
+        link: "border-transparent text-[var(--primary)] underline-offset-4 hover:underline"
       },
       size: {
         sm: "h-7 px-2 text-xs",
