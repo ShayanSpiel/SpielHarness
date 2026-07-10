@@ -25,16 +25,22 @@ export function useTheme() {
     window.localStorage.setItem(STORAGE_KEY, theme);
   }, [ready, theme]);
 
+  const currentDescriptor = THEME_REGISTRY.find((t) => t.id === theme);
+  const isDark = currentDescriptor?.mode === "dark";
+
+  function toggle() {
+    setThemeState((current) => {
+      const idx = THEME_REGISTRY.findIndex((t) => t.id === current);
+      const next = (idx + 1) % THEME_REGISTRY.length;
+      return THEME_REGISTRY[next].id;
+    });
+  }
+
   return {
     theme,
     setTheme: setThemeState,
-    toggle: () =>
-      setThemeState((current) => {
-        if (current === "monochrome-dark") return "monochrome-light";
-        if (current === "monochrome-light") return "gruvbox-dark";
-        if (current === "gruvbox-dark") return "gruvbox-light";
-        return "monochrome-dark";
-      }),
+    toggle,
+    isDark,
     ready
   };
 }

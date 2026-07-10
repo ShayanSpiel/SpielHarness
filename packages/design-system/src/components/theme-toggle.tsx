@@ -6,8 +6,7 @@ import { Button } from "./button";
 import { Tooltip } from "./tooltip";
 
 export function ThemeToggle() {
-  const { theme, toggle } = useTheme();
-  const isDark = theme === "monochrome-dark";
+  const { isDark, toggle } = useTheme();
   return (
     <Tooltip content={isDark ? "Switch to light" : "Switch to dark"} side="right">
       <Button aria-label="Toggle theme" onClick={toggle} size="icon" variant="ghost">

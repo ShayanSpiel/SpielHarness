@@ -25,13 +25,25 @@ export const metadata: Metadata = {
   description: "AI marketing team harness"
 };
 
+const THEME_IDS = [
+  "monochrome-dark",
+  "monochrome-light",
+  "gruvbox-dark",
+  "gruvbox-light",
+  "blue-dark",
+  "blue-light",
+  "discord-dark",
+  "discord-light"
+];
+const DEFAULT = "gruvbox-dark";
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html data-theme="gruvbox-dark" lang="en" suppressHydrationWarning className={`${outfit.variable} ${jetbrainsMono.variable}`}>
+    <html data-theme={DEFAULT} lang="en" suppressHydrationWarning className={`${outfit.variable} ${jetbrainsMono.variable}`}>
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem('spielos.theme');var v=['monochrome-dark','monochrome-light','gruvbox-dark','gruvbox-light'];if(v.includes(t)){document.documentElement.dataset.theme=t;}else{document.documentElement.dataset.theme='gruvbox-dark';}}catch(e){document.documentElement.dataset.theme='gruvbox-dark';}})();`
+            __html: `(function(){try{var t=localStorage.getItem('spielos.theme');if(${JSON.stringify(THEME_IDS)}.includes(t)){document.documentElement.dataset.theme=t;}else{document.documentElement.dataset.theme='${DEFAULT}';}}catch(e){document.documentElement.dataset.theme='${DEFAULT}';}})();`
           }}
         />
       </head>
@@ -46,7 +58,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </WorkspaceStoreProvider>
           <Toaster
             position="bottom-right"
-            theme="dark"
             toastOptions={{
               style: {
                 background: "var(--panel-strong)",
