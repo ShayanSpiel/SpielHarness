@@ -2,6 +2,15 @@
 
 export { Button, type ButtonProps } from "./button";
 export {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator
+} from "./command";
+export {
   Dialog,
   DialogClose,
   DialogContent,
@@ -31,7 +40,9 @@ export {
 export { EmptyState } from "./empty-state";
 export { Divider, Field, Kbd, VisuallyHidden } from "./field";
 export { Input, Textarea, type TextareaProps } from "./input";
+export { NativeSelect, type NativeSelectProps, type NativeSelectOption } from "./native-select";
 export { Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle } from "./panel";
+export { PageHeader, type PageHeaderProps } from "./page-header";
 export { Pill, type PillProps } from "./pill";
 export {
   Select,
@@ -41,15 +52,8 @@ export {
   SelectTrigger,
   SelectValue
 } from "./select";
+export { SearchInput, type SearchInputProps } from "./search-input";
+export { Switch } from "./switch";
 export { Tabs, TabsContent, TabsList, TabsTrigger } from "./tabs";
-export { Tooltip, TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from "./tooltip";
-export {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-  CommandSeparator
-} from "./command";
 export { ThemeToggle } from "./theme-toggle";
+export { Tooltip, TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from "./tooltip";
