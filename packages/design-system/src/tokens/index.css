@@ -1,8 +1,8 @@
 /*
  * SpielOS design tokens.
  *
- * This file is the entrypoint. It imports raw palettes (gruvbox dark/light)
- * and the semantic mappings that translate them to app-level tokens.
+ * This file is the entrypoint. It imports raw palettes and the semantic
+ * mappings that translate them to app-level tokens.
  *
  * The active theme is selected via `data-theme="<id>"` on <html>.
  * Add new themes by:
@@ -14,10 +14,18 @@
 @import "./gruvbox-light.css";
 @import "./monochrome-dark.css";
 @import "./monochrome-light.css";
+@import "./blue-dark.css";
+@import "./blue-light.css";
+@import "./discord-dark.css";
+@import "./discord-light.css";
 @import "./semantic-dark.css";
 @import "./semantic-light.css";
 @import "./semantic-gruvbox-dark.css";
 @import "./semantic-gruvbox-light.css";
+@import "./semantic-blue-dark.css";
+@import "./semantic-blue-light.css";
+@import "./semantic-discord-dark.css";
+@import "./semantic-discord-light.css";
 
 /*
  * Base scale. These are theme-agnostic structural tokens.

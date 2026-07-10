@@ -15,11 +15,11 @@
 
   --mono-dark-gray: #525252;
 
-  --mono-dark-red: #ffffff;
-  --mono-dark-green: #ffffff;
-  --mono-dark-yellow: #ffffff;
-  --mono-dark-blue: #ffffff;
-  --mono-dark-purple: #ffffff;
-  --mono-dark-aqua: #ffffff;
-  --mono-dark-orange: #ffffff;
+  --mono-dark-red: #e5e5e5;
+  --mono-dark-green: #d4d4d4;
+  --mono-dark-yellow: #e5e5e5;
+  --mono-dark-blue: #d4d4d4;
+  --mono-dark-purple: #e5e5e5;
+  --mono-dark-aqua: #d4d4d4;
+  --mono-dark-orange: #e5e5e5;
 }

@@ -1,0 +1,40 @@
+[data-theme="discord-light"] {
+  --background: var(--discord-light-bg0);
+  --background-deep: var(--discord-light-bg0_h);
+  --panel: var(--discord-light-bg0);
+  --panel-raised: var(--discord-light-bg0_s);
+  --panel-strong: var(--discord-light-bg1);
+  --input: var(--discord-light-bg0);
+  --hover: var(--discord-light-bg1);
+  --selected: var(--discord-light-bg2);
+  --border: var(--discord-light-bg2);
+  --border-strong: var(--discord-light-bg3);
+  --ring: var(--discord-light-blue);
+
+  --foreground: var(--discord-light-fg1);
+  --foreground-strong: var(--discord-light-fg0);
+  --foreground-muted: var(--discord-light-fg3);
+  --muted-foreground: var(--discord-light-gray);
+
+  --primary: var(--discord-light-blue);
+  --primary-foreground: #ffffff;
+  --primary-soft: color-mix(in oklab, var(--discord-light-blue) 12%, transparent);
+
+  --success: var(--discord-light-green);
+  --success-soft: color-mix(in oklab, var(--discord-light-green) 12%, transparent);
+  --warning: var(--discord-light-yellow);
+  --warning-soft: color-mix(in oklab, var(--discord-light-yellow) 12%, transparent);
+  --destructive: var(--discord-light-red);
+  --destructive-soft: color-mix(in oklab, var(--discord-light-red) 12%, transparent);
+  --info: var(--discord-light-blue);
+  --info-soft: color-mix(in oklab, var(--discord-light-blue) 12%, transparent);
+  --accent: var(--discord-light-purple);
+  --accent-soft: color-mix(in oklab, var(--discord-light-purple) 12%, transparent);
+  --purple: var(--discord-light-purple);
+  --purple-soft: color-mix(in oklab, var(--discord-light-purple) 12%, transparent);
+
+  --code-block: var(--discord-light-bg1);
+
+  --shadow-panel: 0 1px 0 color-mix(in oklab, var(--discord-light-fg0) 8%, transparent);
+  --shadow-popover: 0 8px 24px color-mix(in oklab, var(--discord-light-bg3) 20%, transparent);
+}

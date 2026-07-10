@@ -1,0 +1,25 @@
+[data-theme="blue-light"] {
+  --blue-light-bg0_h: #ffffff;
+  --blue-light-bg0: #f6f8fa;
+  --blue-light-bg0_s: #eaeef2;
+  --blue-light-bg1: #d0d7de;
+  --blue-light-bg2: #afb8c1;
+  --blue-light-bg3: #8c959f;
+  --blue-light-bg4: #6e7781;
+
+  --blue-light-fg0: #1f2328;
+  --blue-light-fg1: #24292f;
+  --blue-light-fg2: #31373d;
+  --blue-light-fg3: #424a53;
+  --blue-light-fg4: #57606a;
+
+  --blue-light-gray: #6e7781;
+
+  --blue-light-red: #cf222e;
+  --blue-light-green: #1a7f37;
+  --blue-light-yellow: #9a6700;
+  --blue-light-blue: #0969da;
+  --blue-light-purple: #8250df;
+  --blue-light-aqua: #1a7f37;
+  --blue-light-orange: #bc4c00;
+}

@@ -1,0 +1,40 @@
+[data-theme="blue-light"] {
+  --background: var(--blue-light-bg0);
+  --background-deep: var(--blue-light-bg0_h);
+  --panel: var(--blue-light-bg0);
+  --panel-raised: var(--blue-light-bg0_s);
+  --panel-strong: var(--blue-light-bg1);
+  --input: var(--blue-light-bg0);
+  --hover: var(--blue-light-bg1);
+  --selected: var(--blue-light-bg2);
+  --border: var(--blue-light-bg2);
+  --border-strong: var(--blue-light-bg3);
+  --ring: var(--blue-light-blue);
+
+  --foreground: var(--blue-light-fg1);
+  --foreground-strong: var(--blue-light-fg0);
+  --foreground-muted: var(--blue-light-fg3);
+  --muted-foreground: var(--blue-light-gray);
+
+  --primary: var(--blue-light-blue);
+  --primary-foreground: #ffffff;
+  --primary-soft: color-mix(in oklab, var(--blue-light-blue) 12%, transparent);
+
+  --success: var(--blue-light-green);
+  --success-soft: color-mix(in oklab, var(--blue-light-green) 12%, transparent);
+  --warning: var(--blue-light-yellow);
+  --warning-soft: color-mix(in oklab, var(--blue-light-yellow) 12%, transparent);
+  --destructive: var(--blue-light-red);
+  --destructive-soft: color-mix(in oklab, var(--blue-light-red) 12%, transparent);
+  --info: var(--blue-light-blue);
+  --info-soft: color-mix(in oklab, var(--blue-light-blue) 12%, transparent);
+  --accent: var(--blue-light-purple);
+  --accent-soft: color-mix(in oklab, var(--blue-light-purple) 12%, transparent);
+  --purple: var(--blue-light-purple);
+  --purple-soft: color-mix(in oklab, var(--blue-light-purple) 12%, transparent);
+
+  --code-block: var(--blue-light-bg1);
+
+  --shadow-panel: 0 1px 0 color-mix(in oklab, var(--blue-light-fg0) 8%, transparent);
+  --shadow-popover: 0 8px 24px color-mix(in oklab, var(--blue-light-bg3) 20%, transparent);
+}

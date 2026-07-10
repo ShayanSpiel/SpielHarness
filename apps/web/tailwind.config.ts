@@ -1,7 +1,10 @@
 import type { Config } from "tailwindcss";
 
 const config: Config = {
-  darkMode: ["selector", '[data-theme="monochrome-dark"], [data-theme="gruvbox-dark"]'],
+  darkMode: [
+    "selector",
+    '[data-theme="monochrome-dark"], [data-theme="gruvbox-dark"], [data-theme="blue-dark"], [data-theme="discord-dark"]'
+  ],
   content: [
     "./app/**/*.{ts,tsx}",
     "./components/**/*.{ts,tsx}",

@@ -1,0 +1,25 @@
+[data-theme="blue-dark"] {
+  --blue-dark-bg0_h: #0d1117;
+  --blue-dark-bg0: #161b22;
+  --blue-dark-bg0_s: #1c2128;
+  --blue-dark-bg1: #21262d;
+  --blue-dark-bg2: #30363d;
+  --blue-dark-bg3: #484f58;
+  --blue-dark-bg4: #6e7681;
+
+  --blue-dark-fg0: #f0f6fc;
+  --blue-dark-fg1: #c9d1d9;
+  --blue-dark-fg2: #b1bac4;
+  --blue-dark-fg3: #8b949e;
+  --blue-dark-fg4: #6e7681;
+
+  --blue-dark-gray: #484f58;
+
+  --blue-dark-red: #f85149;
+  --blue-dark-green: #3fb950;
+  --blue-dark-yellow: #d29922;
+  --blue-dark-blue: #58a6ff;
+  --blue-dark-purple: #bc8cff;
+  --blue-dark-aqua: #39d353;
+  --blue-dark-orange: #d18616;
+}
