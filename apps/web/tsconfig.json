@@ -1,0 +1,61 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "incremental": true,
+    "module": "esnext",
+    "esModuleInterop": true,
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "paths": {
+      "@/*": [
+        "./*"
+      ],
+      "@spielos/core": [
+        "./packages/core/src/index.ts"
+      ],
+      "@spielos/db": [
+        "./packages/db/src/index.ts"
+      ],
+      "@spielos/design-system": [
+        "./packages/design-system/src/index.ts"
+      ],
+      "@spielos/design-system/tokens.css": [
+        "./packages/design-system/src/tokens.css"
+      ],
+      "@spielos/evals": [
+        "./packages/evals/src/index.ts"
+      ],
+      "@spielos/graph": [
+        "./packages/graph/src/index.ts"
+      ],
+      "@spielos/providers": [
+        "./packages/providers/src/index.ts"
+      ]
+    },
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ]
+  },
+  "include": [
+    "next-env.d.ts",
+    ".next/types/**/*.ts",
+    "**/*.ts",
+    "**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}

@@ -1,0 +1,32 @@
+.prose-chat {
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.prose-chat > :first-child {
+  margin-top: 0;
+}
+
+.prose-chat > :last-child {
+  margin-bottom: 0;
+}
+
+.prose-chat p,
+.prose-chat li,
+.prose-chat blockquote,
+.prose-chat td,
+.prose-chat th {
+  min-width: 0;
+  white-space: normal;
+  word-break: normal;
+}
+
+.prose-chat pre,
+.prose-chat code {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.prose-chat pre code {
+  white-space: pre;
+}

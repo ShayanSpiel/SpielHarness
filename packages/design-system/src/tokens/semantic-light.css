@@ -1,0 +1,43 @@
+/*
+ * Semantic token mapping for Monochrome Light.
+ */
+[data-theme="monochrome-light"] {
+  --background: var(--mono-light-bg0);
+  --background-deep: var(--mono-light-bg0_h);
+  --panel: var(--mono-light-bg0_h);
+  --panel-raised: var(--mono-light-bg0);
+  --panel-strong: var(--mono-light-bg1);
+  --input: var(--mono-light-bg0);
+  --hover: var(--mono-light-bg1);
+  --selected: var(--mono-light-bg2);
+  --border: var(--mono-light-bg2);
+  --border-strong: var(--mono-light-bg3);
+  --ring: var(--mono-light-fg0);
+
+  --foreground: var(--mono-light-fg1);
+  --foreground-strong: var(--mono-light-fg0);
+  --foreground-muted: var(--mono-light-fg3);
+  --muted-foreground: var(--mono-light-gray);
+
+  --primary: var(--mono-light-fg0);
+  --primary-foreground: var(--mono-light-bg0);
+  --primary-soft: color-mix(in oklab, var(--mono-light-fg0) 8%, transparent);
+
+  --success: var(--mono-light-fg0);
+  --success-soft: color-mix(in oklab, var(--mono-light-fg0) 8%, transparent);
+  --warning: var(--mono-light-fg0);
+  --warning-soft: color-mix(in oklab, var(--mono-light-fg0) 8%, transparent);
+  --destructive: var(--mono-light-fg0);
+  --destructive-soft: color-mix(in oklab, var(--mono-light-fg0) 8%, transparent);
+  --info: var(--mono-light-fg0);
+  --info-soft: color-mix(in oklab, var(--mono-light-fg0) 8%, transparent);
+  --accent: var(--mono-light-fg0);
+  --accent-soft: color-mix(in oklab, var(--mono-light-fg0) 8%, transparent);
+  --purple: var(--mono-light-fg0);
+  --purple-soft: color-mix(in oklab, var(--mono-light-fg0) 8%, transparent);
+
+  --code-block: var(--mono-light-bg1);
+
+  --shadow-panel: 0 1px 0 color-mix(in oklab, var(--mono-light-fg0) 8%, transparent);
+  --shadow-popover: 0 8px 24px color-mix(in oklab, var(--mono-light-bg3) 30%, transparent);
+}

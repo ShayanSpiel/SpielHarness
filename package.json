@@ -1,0 +1,24 @@
+{
+  "name": "spielos",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@11.12.1",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @spielos/web",
+    "build": "npm run build --workspace @spielos/web",
+    "lint": "npm run lint --workspace @spielos/web",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.0"
+  },
+  "dependencies": {
+    "@boxicons/react": "^1.0.3",
+    "geist": "^1.7.2"
+  }
+}

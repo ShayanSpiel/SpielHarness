@@ -1,0 +1,91 @@
+{
+  "title": "Content Pipeline",
+  "description": "Research, strategy, writing, editing, and publishing approval for one content request.",
+  "nodes": [
+    {
+      "id": "research",
+      "title": "Research",
+      "roleSlug": "researcher",
+      "skillSlugs": ["knowledge.search"],
+      "prompt": "Gather only the evidence needed to write a grounded strategy brief.",
+      "input": "user_request",
+      "output": "research_brief",
+      "x": 80,
+      "y": 160
+    },
+    {
+      "id": "strategy",
+      "title": "Strategy Brief",
+      "roleSlug": "strategist",
+      "skillSlugs": ["llm.generate", "icp-world-simulator"],
+      "prompt": "Translate the research and request into the six-field strategy brief.",
+      "input": "research_brief",
+      "output": "strategy_brief",
+      "x": 340,
+      "y": 160
+    },
+    {
+      "id": "draft",
+      "title": "Draft",
+      "roleSlug": "writer",
+      "skillSlugs": ["llm.generate", "template.apply"],
+      "prompt": "Write X, LinkedIn, and blog drafts from the strategy brief.",
+      "input": "strategy_brief",
+      "output": "drafts",
+      "x": 600,
+      "y": 160
+    },
+    {
+      "id": "edit",
+      "title": "Edit Drafts",
+      "roleSlug": "editor",
+      "skillSlugs": ["llm.generate"],
+      "prompt": "Edit the drafts for clarity and readiness. Return the revised drafts.",
+      "input": "drafts",
+      "output": "revised_drafts",
+      "x": 860,
+      "y": 160
+    },
+    {
+      "id": "gate-eval",
+      "title": "Pipeline Gate Eval",
+      "roleSlug": "editor",
+      "skillSlugs": ["pipeline-gate-evaluator"],
+      "prompt": "Run the mechanical pipeline gates.",
+      "input": "revised_drafts",
+      "output": "eval_report",
+      "x": 1120,
+      "y": 160
+    },
+    {
+      "id": "grounding-eval",
+      "title": "Grounding Eval",
+      "roleSlug": "editor",
+      "skillSlugs": ["grounding-evaluator"],
+      "prompt": "Run the grounding evaluation against the strategy brief and evidence.",
+      "input": "eval_report",
+      "output": "grounding_report",
+      "x": 1380,
+      "y": 160
+    },
+    {
+      "id": "approval",
+      "title": "Approval",
+      "roleSlug": "publisher",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Ask for publish, hold, or reject, then build a manual publish package for approved drafts.",
+      "input": "grounding_report",
+      "output": "publish_package",
+      "x": 1640,
+      "y": 160
+    }
+  ],
+  "edges": [
+    { "id": "research-strategy", "source": "research", "target": "strategy" },
+    { "id": "strategy-draft", "source": "strategy", "target": "draft" },
+    { "id": "draft-edit", "source": "draft", "target": "edit" },
+    { "id": "edit-gate", "source": "edit", "target": "gate-eval" },
+    { "id": "gate-grounding", "source": "gate-eval", "target": "grounding-eval" },
+    { "id": "grounding-approval", "source": "grounding-eval", "target": "approval" }
+  ]
+}

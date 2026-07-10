@@ -1,0 +1,47 @@
+/*
+ * SpielOS design tokens.
+ *
+ * This file is the entrypoint. It imports raw palettes (gruvbox dark/light)
+ * and the semantic mappings that translate them to app-level tokens.
+ *
+ * The active theme is selected via `data-theme="<id>"` on <html>.
+ * Add new themes by:
+ *   1. Creating `tokens/<name>.css` with raw `--<name>-bg*`, `--<name>-fg*`, accents.
+ *   2. Creating `tokens/semantic-<name>.css` that maps semantic tokens to them.
+ *   3. Importing both below and adding the theme id to the THEME_REGISTRY.
+ */
+@import "./gruvbox-dark.css";
+@import "./gruvbox-light.css";
+@import "./monochrome-dark.css";
+@import "./monochrome-light.css";
+@import "./semantic-dark.css";
+@import "./semantic-light.css";
+@import "./semantic-gruvbox-dark.css";
+@import "./semantic-gruvbox-light.css";
+
+/*
+ * Base scale. These are theme-agnostic structural tokens.
+ * Values intentionally small — Gruvbox aesthetic = tight spacing, sharp type.
+ */
+:root {
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --duration-fast: 120ms;
+  --duration: 160ms;
+  --duration-slow: 240ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  --font-sans: var(--font-outfit), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+}

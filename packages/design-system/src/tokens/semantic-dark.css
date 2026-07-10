@@ -1,0 +1,44 @@
+/*
+ * Semantic token mapping for Monochrome Dark.
+ * App code must only reference the `--background`, `--panel`, `--primary` style names.
+ */
+[data-theme="monochrome-dark"] {
+  --background: var(--mono-dark-bg0_h);
+  --background-deep: var(--mono-dark-bg0);
+  --panel: var(--mono-dark-bg0);
+  --panel-raised: var(--mono-dark-bg0_s);
+  --panel-strong: var(--mono-dark-bg1);
+  --input: var(--mono-dark-bg0_s);
+  --hover: var(--mono-dark-bg1);
+  --selected: var(--mono-dark-bg2);
+  --border: var(--mono-dark-bg2);
+  --border-strong: var(--mono-dark-bg3);
+  --ring: var(--mono-dark-fg0);
+
+  --foreground: var(--mono-dark-fg0);
+  --foreground-strong: var(--mono-dark-fg0);
+  --foreground-muted: var(--mono-dark-fg2);
+  --muted-foreground: var(--mono-dark-fg3);
+
+  --primary: var(--mono-dark-fg0);
+  --primary-foreground: var(--mono-dark-bg0_h);
+  --primary-soft: color-mix(in oklab, var(--mono-dark-fg0) 12%, transparent);
+
+  --success: var(--mono-dark-fg0);
+  --success-soft: color-mix(in oklab, var(--mono-dark-fg0) 12%, transparent);
+  --warning: var(--mono-dark-fg0);
+  --warning-soft: color-mix(in oklab, var(--mono-dark-fg0) 12%, transparent);
+  --destructive: var(--mono-dark-fg0);
+  --destructive-soft: color-mix(in oklab, var(--mono-dark-fg0) 12%, transparent);
+  --info: var(--mono-dark-fg0);
+  --info-soft: color-mix(in oklab, var(--mono-dark-fg0) 12%, transparent);
+  --accent: var(--mono-dark-fg0);
+  --accent-soft: color-mix(in oklab, var(--mono-dark-fg0) 12%, transparent);
+  --purple: var(--mono-dark-fg0);
+  --purple-soft: color-mix(in oklab, var(--mono-dark-fg0) 12%, transparent);
+
+  --code-block: var(--mono-dark-bg0_s);
+
+  --shadow-panel: 0 1px 0 color-mix(in oklab, var(--mono-dark-fg0) 6%, transparent);
+  --shadow-popover: 0 8px 24px color-mix(in oklab, var(--mono-dark-bg0_h) 80%, transparent);
+}

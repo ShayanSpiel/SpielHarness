@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "paths": {
+      "@spielos/core": ["./packages/core/src/index.ts"],
+      "@spielos/db": ["./packages/db/src/index.ts"],
+      "@spielos/design-system": ["./packages/design-system/src/index.ts"],
+      "@spielos/graph": ["./packages/graph/src/index.ts"],
+      "@spielos/evals": ["./packages/evals/src/index.ts"],
+      "@spielos/providers": ["./packages/providers/src/index.ts"]
+    }
+  },
+  "include": ["apps/**/*.ts", "apps/**/*.tsx", "packages/**/*.ts", "packages/**/*.tsx"]
+}
