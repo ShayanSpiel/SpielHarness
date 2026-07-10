@@ -63,7 +63,7 @@ function parseRoleFromHarnessFile(file: HarnessFileResponse): Role | null {
     inputArtifactTypes: (meta.inputTypes as Role["inputArtifactTypes"]) ?? [],
     outputArtifactTypes: (meta.outputTypes as Role["outputArtifactTypes"]) ?? [],
     modelId: (((meta.modelId as string | undefined) ?? (meta.model as string | undefined)) ?? "mistral-large-latest") as string | null,
-    status: file.status === "active" ? "active" : "draft",
+    status: file.status === "active" ? "active" : file.status === "archived" ? "archived" : "draft",
     metadata: {}
   };
 }
@@ -88,7 +88,7 @@ function parseSkillFromHarnessFile(file: HarnessFileResponse): SkillDefinition |
     slug: (meta.slug as string) ?? file.title.toLowerCase().replace(/\s+/g, "."),
     description: (meta.description as string) ?? firstTextLine ?? "",
     category: (meta.category as SkillDefinition["category"]) ?? category,
-    status: file.status === "active" ? "active" : "draft",
+    status: file.status === "active" ? "active" : file.status === "archived" ? "archived" : "draft",
     auth: (meta.auth as SkillDefinition["auth"]) ?? "none",
     sideEffect: (meta.sideEffect as SkillDefinition["sideEffect"]) ?? "none",
     inputSchema: JSON.stringify(meta.inputSchema ?? { input: "string" }, null, 2),

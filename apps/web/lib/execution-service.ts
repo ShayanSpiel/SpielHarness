@@ -12,6 +12,7 @@ export type ContextRefKind =
   | "workstream"
   | "knowledge"
   | "library"
+  | "prompt"
   | "strategy";
 
 export type ContextRef = {
@@ -182,6 +183,30 @@ function evalFileToSkill(row: FileRow): Skill {
   };
 }
 
+function assertActiveRow(row: FileRow | undefined, label: string): FileRow {
+  if (!row) throw new HttpError(400, `${label} was not found.`);
+  if (row.status !== "active") {
+    throw new HttpError(400, `${label} is disabled and cannot be used at runtime.`);
+  }
+  return row;
+}
+
+function assertActiveRole(role: Role | undefined, label = "Selected role"): Role {
+  if (!role) throw new HttpError(400, `${label} was not found.`);
+  if (role.status !== "active") {
+    throw new HttpError(400, `${label} is disabled and cannot be used at runtime.`);
+  }
+  return role;
+}
+
+function assertActiveSkill(skill: Skill | undefined, label = "Selected skill"): Skill {
+  if (!skill) throw new HttpError(400, `${label} was not found.`);
+  if (skill.status !== "active" || skill.enabled === false) {
+    throw new HttpError(400, `${label} is disabled and cannot be used at runtime.`);
+  }
+  return skill;
+}
+
 function validateCompatibility(target: ExecutionTarget, refs: ContextRef[]) {
   const roles = refs.filter((ref) => normalizeKind(ref.kind) === "role");
   const skills = refs.filter((ref) => normalizeKind(ref.kind) === "skill");
@@ -315,6 +340,13 @@ export async function resolveExecution(
     if (row.file_type === "harness_eval") skillsById.set(row.id, evalFileToSkill(row));
   }
 
+  if (target.type === "workflow") {
+    const workflow = assertActiveRow(filesById.get(target.id), "Selected workflow");
+    if (workflow.file_type !== "harness_workstream") {
+      throw new HttpError(400, "Selected workflow was not found.");
+    }
+  }
+
   const selectedContext = refs.map((ref) => {
     const row = filesById.get(ref.id);
     return {
@@ -348,10 +380,7 @@ export async function resolveExecution(
       fileIds: node.fileIds ?? []
     }));
   } else if (target.type === "workflow") {
-    const workflow = filesById.get(target.id);
-    if (!workflow || workflow.file_type !== "harness_workstream") {
-      throw new HttpError(400, "Selected workflow was not found.");
-    }
+    const workflow = filesById.get(target.id)!;
     workstreamId = workflow.id;
     const rawNodes = (workflow.metadata?.nodes as Array<Record<string, unknown>> | undefined) ?? [];
     nodes = rawNodes.map((node, index) => ({
@@ -364,10 +393,14 @@ export async function resolveExecution(
       fileIds: (node.fileIds as string[] | undefined) ?? []
     }));
   } else if (target.type === "role") {
-    const role = rolesById[target.id];
-    if (!role) throw new HttpError(400, "Selected role was not found.");
+    const role = assertActiveRole(rolesById[target.id]);
     const selectedSkill = refs.find((ref) => normalizeKind(ref.kind) === "skill");
-    const skillIds = selectedSkill ? [selectedSkill.id] : role.skillIds;
+    const skillIds = selectedSkill
+      ? [assertActiveSkill(skillsById.get(selectedSkill.id)).id]
+      : role.skillIds.filter((id) => {
+          const skill = skillsById.get(id);
+          return skill?.status === "active" && skill.enabled !== false;
+        });
     nodes = [{
       id: `node_${crypto.randomUUID()}`,
       roleId: role.id,
@@ -376,8 +409,7 @@ export async function resolveExecution(
       fileIds: knowledgeFiles.map((file) => file.id)
     }];
   } else if (target.type === "skill") {
-    const skill = skillsById.get(target.id);
-    if (!skill) throw new HttpError(400, "Selected skill was not found.");
+    const skill = assertActiveSkill(skillsById.get(target.id));
     const runtimeRole: Role = {
       id: "runtime.chat",
       orgId,
@@ -401,8 +433,7 @@ export async function resolveExecution(
       fileIds: knowledgeFiles.map((file) => file.id)
     }];
   } else if (target.type === "eval") {
-    const evalSkill = skillsById.get(target.id);
-    if (!evalSkill) throw new HttpError(400, "Selected evaluation was not found.");
+    const evalSkill = assertActiveSkill(skillsById.get(target.id), "Selected evaluation");
     const runtimeRole: Role = {
       id: "runtime.eval",
       orgId,
@@ -428,20 +459,24 @@ export async function resolveExecution(
   }
 
   for (const node of nodes) {
-    const role = rolesById[node.roleId];
-    if (!role) throw new HttpError(400, `Workflow node "${node.title}" references a missing role.`);
-    if (node.skillIds.length === 0) node.skillIds = role.skillIds;
+    const role = assertActiveRole(rolesById[node.roleId], `Workflow node "${node.title}" role`);
+    if (node.skillIds.length === 0) {
+      node.skillIds = role.skillIds.filter((id) => {
+        const skill = skillsById.get(id);
+        return skill?.status === "active" && skill.enabled !== false;
+      });
+    }
     if (node.skillIds.length === 0) {
       const fallback = fallbackLlmSkill(orgId);
       skillsById.set(fallback.id, fallback);
       node.skillIds = [fallback.id];
     }
     for (const skillId of node.skillIds) {
-      if (!skillsById.has(skillId)) {
-        const roleSkill = role.skillIds.find((id) => id === skillId);
-        if (roleSkill) continue;
+      const skill = skillsById.get(skillId);
+      if (!skill) {
         throw new HttpError(400, `Node "${node.title}" references a missing skill.`);
       }
+      assertActiveSkill(skill, `Node "${node.title}" skill`);
     }
   }
 

@@ -103,10 +103,20 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
       id,
       setTimeout(async () => {
         try {
+          const metadata =
+            patch.folder !== undefined || patch.metadata !== undefined
+              ? { ...(patch.metadata ?? {}), ...(patch.folder !== undefined ? { seedFolder: patch.folder } : {}) }
+              : undefined;
           await fetch("/api/harness/files", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id, ...patch })
+            body: JSON.stringify({
+              id,
+              title: patch.title,
+              body: patch.body,
+              status: patch.status,
+              metadata
+            })
           });
         } catch (err) {
           console.warn("Failed to save item to DB:", err);

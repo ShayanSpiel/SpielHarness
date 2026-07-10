@@ -11,7 +11,7 @@ import {
 } from "react";
 import type { Artifact, RunEvent } from "@spielos/core";
 
-export type ContextItemKind = "role" | "tool" | "library" | "workstream" | "strategy" | "knowledge" | "eval";
+export type ContextItemKind = "role" | "tool" | "library" | "workstream" | "strategy" | "knowledge" | "prompt" | "eval";
 
 export type ContextItem = {
   id: string;

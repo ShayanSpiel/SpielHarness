@@ -20,7 +20,7 @@ import {
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { AppShell } from "../../components/app-shell";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
-import type { WorkstreamDefinition, WorkstreamNode } from "../../lib/workspace-data";
+import type { SkillDefinition, WorkstreamDefinition, WorkstreamNode } from "../../lib/workspace-data";
 
 function blankWorkstream(): Omit<WorkstreamDefinition, "id" | "updatedAt"> {
   return {
@@ -48,7 +48,9 @@ export default function WorkstreamsPage() {
   const isNew = selectedId === null;
 
   const selectedNode = draft.nodes.find((node) => node.id === selectedNodeId) ?? null;
-  const files = store.items.filter((item) => ["knowledge", "strategy", "library", "prompts"].includes(item.kind));
+  const files = store.items.filter((item) =>
+    ["knowledge", "strategy", "library", "prompts"].includes(item.kind) && item.status !== "archived"
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -101,7 +103,7 @@ export default function WorkstreamsPage() {
 
   function addNode(roleId: string, x?: number, y?: number) {
     const role = store.roles.find((entry) => entry.id === roleId);
-    if (!role) return;
+    if (!role || role.status !== "active") return;
     const node: WorkstreamNode = {
       id: `node_${crypto.randomUUID()}`,
       roleId,
@@ -235,7 +237,7 @@ export default function WorkstreamsPage() {
           roleId: node.roleId,
           title: node.title,
           promptOverride: node.prompt || undefined,
-          skillIds: [],
+          skillIds: node.skillIds,
           fileIds: node.fileIds
         };
       });
@@ -312,6 +314,7 @@ export default function WorkstreamsPage() {
             files={files}
             node={selectedNode}
             roles={store.roles}
+            skills={store.skills}
             toggleNodeList={toggleNodeList}
             updateNode={updateNode}
           />
@@ -388,7 +391,12 @@ export default function WorkstreamsPage() {
                 <Pill tone={draft.status === "active" ? "success" : "default"}>{draft.status}</Pill>
               </div>
               <div className="ml-auto flex items-center gap-1.5">
-                <Button onClick={runWorkflow} size="md" variant="outline" disabled={running || draft.nodes.length === 0}>
+                <Button
+                  onClick={runWorkflow}
+                  size="md"
+                  variant="outline"
+                  disabled={running || draft.nodes.length === 0 || draft.status !== "active"}
+                >
                   {running ? (
                     <Icon name="loader" size={14} className="animate-spin" />
                   ) : (
@@ -433,23 +441,28 @@ export default function WorkstreamsPage() {
                   <span className="mr-2 shrink-0 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                     Roles
                   </span>
-                  {store.roles.map((role) => (
-                    <Button
-                      className="h-7 shrink-0"
-                      key={role.id}
-                      draggable
-                      onClick={() => addNode(role.id)}
-                      onDragStart={(e) => {
-                        e.dataTransfer.setData("text/plain", role.id);
-                        e.dataTransfer.effectAllowed = "copy";
-                      }}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      <Icon name="plus" size={14} />
-                      {role.name}
-                    </Button>
-                  ))}
+                  {store.roles.map((role) => {
+                    const disabled = role.status !== "active";
+                    return (
+                      <Button
+                        className={cn("h-7 shrink-0", disabled && "opacity-45")}
+                        disabled={disabled}
+                        draggable={!disabled}
+                        key={role.id}
+                        onClick={() => addNode(role.id)}
+                        onDragStart={(e) => {
+                          if (disabled) return;
+                          e.dataTransfer.setData("text/plain", role.id);
+                          e.dataTransfer.effectAllowed = "copy";
+                        }}
+                        size="sm"
+                        variant="ghost"
+                      >
+                        <Icon name="plus" size={14} />
+                        {role.name}
+                      </Button>
+                    );
+                  })}
                 </div>
                 <GraphCanvas
                   addNode={addNode}
@@ -934,12 +947,14 @@ function NodeInspector({
   files,
   node,
   roles,
+  skills,
   toggleNodeList,
   updateNode
 }: {
   files: Array<{ id: string; title: string; folder?: string; kind: string }>;
   node: WorkstreamNode | null;
-  roles: Array<{ id: string; name: string }>;
+  roles: Array<{ id: string; name: string; status?: string }>;
+  skills: SkillDefinition[];
   toggleNodeList: (nodeId: string, key: "skillIds" | "fileIds", value: string) => void;
   updateNode: (nodeId: string, patch: Partial<WorkstreamNode>) => void;
 }) {
@@ -952,6 +967,13 @@ function NodeInspector({
       </div>
     );
   }
+
+  const roleOptions = roles
+    .filter((role) => role.status === "active" || role.id === node.roleId)
+    .map((role) => ({
+      label: role.status === "active" ? role.name : `${role.name} (disabled)`,
+      value: role.id
+    }));
 
   return (
     <div>
@@ -969,15 +991,15 @@ function NodeInspector({
           <NativeSelect
             ariaLabel="Step role"
             onChange={(value) => updateNode(node.id, { roleId: value })}
-            options={roles.map((role) => ({ label: role.name, value: role.id }))}
+            options={roleOptions}
             value={node.roleId}
           />
         </Field>
         <div className="grid grid-cols-2 gap-2">
-          <Field label="Input">
+          <Field label="Input contract">
             <Input onChange={(event) => updateNode(node.id, { input: event.target.value })} value={node.input} />
           </Field>
-          <Field label="Output">
+          <Field label="Output contract">
             <Input onChange={(event) => updateNode(node.id, { output: event.target.value })} value={node.output} />
           </Field>
         </div>
@@ -992,8 +1014,24 @@ function NodeInspector({
         <PickList
           activeIds={node.fileIds}
           items={files.map((file) => ({ id: file.id, title: file.title, subtitle: file.folder ?? file.kind }))}
+          iconName="file-text"
           label="Files"
+          searchPlaceholder="Search files"
           onToggle={(id) => toggleNodeList(node.id, "fileIds", id)}
+        />
+        <PickList
+          activeIds={node.skillIds}
+          items={skills
+            .filter((skill) => skill.status === "active" || node.skillIds.includes(skill.id))
+            .map((skill) => ({
+              id: skill.id,
+              title: skill.name,
+              subtitle: skill.status === "active" ? skill.category : `${skill.category} - disabled`
+            }))}
+          iconName="sparkles"
+          label="Skills"
+          searchPlaceholder="Search skills"
+          onToggle={(id) => toggleNodeList(node.id, "skillIds", id)}
         />
       </div>
     </div>
@@ -1002,20 +1040,56 @@ function NodeInspector({
 
 function PickList({
   activeIds,
+  iconName,
   items,
   label,
+  searchPlaceholder,
   onToggle
 }: {
   activeIds: string[];
+  iconName: string;
   items: Array<{ id: string; title: string; subtitle: string }>;
   label: string;
+  searchPlaceholder: string;
   onToggle: (id: string) => void;
 }) {
+  const [query, setQuery] = useState("");
+  const filteredItems = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = q
+      ? items.filter((item) =>
+          [item.title, item.subtitle].some((value) => value.toLowerCase().includes(q))
+        )
+      : items;
+    return [...filtered].sort((a, b) => {
+      const aSelected = activeIds.includes(a.id);
+      const bSelected = activeIds.includes(b.id);
+      if (aSelected !== bSelected) return aSelected ? -1 : 1;
+      return a.title.localeCompare(b.title);
+    });
+  }, [activeIds, items, query]);
+
   return (
     <div>
-      <div className="mb-1 text-[11px] font-medium text-muted-foreground">{label}</div>
+      <div className="mb-1 flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
+        <span>{label}</span>
+        {activeIds.length > 0 ? <Pill className="ml-auto">{activeIds.length} selected</Pill> : null}
+      </div>
+      <div className="relative mb-1">
+        <Icon name="search" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" size={12} />
+        <Input
+          className="h-7 pl-7 text-xs"
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={searchPlaceholder}
+          value={query}
+        />
+      </div>
       <div className="grid max-h-48 gap-1 overflow-y-auto rounded-md border border-border p-1">
-        {items.map((item) => {
+        {filteredItems.length === 0 ? (
+          <div className="px-2 py-6 text-center text-[11px] text-muted-foreground">
+            No {label.toLowerCase()} match this search.
+          </div>
+        ) : filteredItems.map((item) => {
           const active = activeIds.includes(item.id);
           return (
             <button
@@ -1027,6 +1101,7 @@ function PickList({
               <span className={cn("mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border", active ? "border-foreground-strong bg-foreground-strong text-background" : "border-border")}>
                  {active ? <Icon name="check" size={12} /> : null}
               </span>
+              <Icon name={iconName} className="mt-0.5 shrink-0 text-muted-foreground" size={12} />
               <span className="min-w-0">
                 <span className="block truncate text-[12px] text-foreground">{item.title}</span>
                 <span className="line-clamp-1 text-[10px] text-muted-foreground">{item.subtitle}</span>

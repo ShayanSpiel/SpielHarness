@@ -21,6 +21,7 @@ const ICONS: Record<ContextItemKind, ReactNode> = {
   workstream: <Icon name="folder-kanban" size={12} />,
   strategy: <Icon name="file-text" size={12} />,
   knowledge: <Icon name="brain" size={12} />,
+  prompt: <Icon name="prompt" size={12} />,
   eval: <Icon name="bar-chart" size={12} />
 };
 

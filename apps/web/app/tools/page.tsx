@@ -140,7 +140,8 @@ export default function ToolsPage() {
                             "flex w-full items-start gap-2 rounded-md border px-2 py-2 text-left transition-colors",
                             active
                               ? "border-border bg-selected text-foreground-strong"
-                              : "border-transparent hover:bg-hover"
+                              : "border-transparent hover:bg-hover",
+                            skill.status !== "active" && "opacity-55"
                           )}
                           onClick={() => selectSkill(skill)}
                           type="button"
@@ -150,6 +151,7 @@ export default function ToolsPage() {
                             <span className="flex items-center gap-2">
                               <span className="truncate text-sm font-medium">{skill.name}</span>
                               {skill.slug === "web.search" ? <Pill tone="success">free</Pill> : null}
+                              {skill.status !== "active" ? <Pill className="ml-auto">disabled</Pill> : null}
                             </span>
                             <span className="line-clamp-2 text-[11px] text-muted-foreground">
                               {skill.description}

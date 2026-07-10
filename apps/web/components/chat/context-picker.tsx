@@ -25,6 +25,7 @@ const SECTIONS: Section[] = [
   { id: "tool", label: "Skills", icon: <Icon name="sparkles" size={14} />, blurb: "Callable capabilities the team can use" },
   { id: "workstream", label: "Workstreams", icon: <Icon name="folder-kanban" size={14} />, blurb: "Multi-step graphs" },
   { id: "eval", label: "Evals", icon: <Icon name="bar-chart" size={14} />, blurb: "Rubrics for scoring content, prompts, and workflows" },
+  { id: "prompt", label: "Prompts", icon: <Icon name="prompt" size={14} />, blurb: "Reusable system and strategy instructions" },
   { id: "knowledge", label: "Knowledge Base", icon: <Icon name="brain" size={14} />, blurb: "Strategy, files, and evidence" },
 ];
 
@@ -55,7 +56,7 @@ export function ContextPicker() {
   const candidates = useMemo<Candidate[]>(() => {
     switch (active) {
       case "role":
-        return store.roles.map((role) => ({
+        return store.roles.filter((role) => role.status === "active").map((role) => ({
           id: role.id,
           kind: "role",
           title: role.name,
@@ -63,7 +64,7 @@ export function ContextPicker() {
           body: role.prompt
         }));
       case "tool":
-        return store.skills.map((skill) => ({
+        return store.skills.filter((skill) => skill.status === "active").map((skill) => ({
           id: skill.id,
           kind: "tool" as const,
           title: skill.name,
@@ -72,7 +73,7 @@ export function ContextPicker() {
           meta: { slug: skill.slug, category: skill.category }
         }));
       case "eval":
-        return store.evalFiles.map((evalFile) => ({
+        return store.evalFiles.filter((evalFile) => evalFile.status === "active").map((evalFile) => ({
           id: evalFile.id,
           kind: "eval" as const,
           title: evalFile.name,
@@ -81,16 +82,27 @@ export function ContextPicker() {
           meta: { targetType: evalFile.targetType, targetId: evalFile.targetId }
         }));
       case "workstream":
-        return store.workstreams.map((workstream) => ({
+        return store.workstreams.filter((workstream) => workstream.status === "active").map((workstream) => ({
           id: workstream.id,
           kind: "workstream" as const,
           title: workstream.title,
           subtitle: `${workstream.nodes.length} steps · ${workstream.edges.length} edges`,
           body: workstream.description
         }));
+      case "prompt":
+        return store.items
+          .filter((item) => item.kind === "prompts" && item.status !== "archived")
+          .map((item) => ({
+            id: item.id,
+            kind: "prompt" as const,
+            title: item.title,
+            subtitle: item.folder ?? "Prompt",
+            body: item.body,
+            meta: { format: item.title.toLowerCase().endsWith(".json") ? "json" : "markdown" }
+          }));
       case "knowledge":
         return store.items
-          .filter((item) => ["strategy", "knowledge", "library"].includes(item.kind))
+          .filter((item) => ["strategy", "knowledge", "library"].includes(item.kind) && item.status !== "archived")
           .map((item) => ({
             id: item.id,
             kind: "knowledge" as const,

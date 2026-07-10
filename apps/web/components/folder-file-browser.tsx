@@ -29,6 +29,11 @@ type FolderFileBrowserProps = {
   itemKind: WorkspaceKind;
   defaultFolders: string[];
   fileExtension: string;
+  fileIconName?: string;
+  folderIconName?: string;
+  folderSectionLabel?: string;
+  newFileLabel?: string;
+  searchPlaceholder?: string;
   renderEditor: (props: {
     value: string;
     onChange: (value: string) => void;
@@ -48,6 +53,11 @@ export function FolderFileBrowser({
   itemKind,
   defaultFolders,
   fileExtension,
+  fileIconName = "file-text",
+  folderIconName = "folder",
+  folderSectionLabel = "Folders",
+  newFileLabel = "File",
+  searchPlaceholder = "Search files",
   renderEditor,
   showStatusSelect = true,
   showFolderSelect = true,
@@ -245,12 +255,12 @@ export function FolderFileBrowser({
     <div className="flex min-h-0 flex-1">
       <aside className="flex w-80 shrink-0 flex-col border-r border-border bg-background">
         <div className="border-b border-border p-3 md:hidden">
-          <SearchInput query={query} setQuery={setQuery} />
+          <SearchInput placeholder={searchPlaceholder} query={query} setQuery={setQuery} />
         </div>
 
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
           <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Folders
+            {folderSectionLabel}
           </span>
           <div className="ml-auto flex items-center gap-1">
             <Tooltip content="New folder" side="bottom">
@@ -274,10 +284,14 @@ export function FolderFileBrowser({
                 variant="ghost"
               >
                 <Icon name="plus" size={14} />
-                <span className="ml-1 text-xs">File</span>
+                <span className="ml-1 text-xs">{newFileLabel}</span>
               </Button>
             </Tooltip>
           </div>
+        </div>
+
+        <div className="hidden border-b border-border p-2 md:block">
+          <SearchInput placeholder={searchPlaceholder} query={query} setQuery={setQuery} />
         </div>
 
         {creatingFolder ? (
@@ -332,7 +346,7 @@ export function FolderFileBrowser({
                         type="button"
                       >
                         <Icon name="chevron-right" className={cn("shrink-0 transition-transform", expanded && "rotate-90")} size={14} />
-                        <Icon name="folder" className="shrink-0" size={14} />
+                        <Icon name={folderIconName} className="shrink-0" size={14} />
                         {editingFolder === folder ? (
                           <Input
                             autoFocus
@@ -372,6 +386,7 @@ export function FolderFileBrowser({
                               editing={editingFileId === item.id}
                               fileNameDraft={fileNameDraft}
                               item={item}
+                              iconName={fileIconName}
                               key={item.id}
                               onDelete={() => deleteFile(item)}
                               onRename={() => startRenameFile(item)}
@@ -493,9 +508,11 @@ export function FolderFileBrowser({
 }
 
 function SearchInput({
+  placeholder,
   query,
   setQuery
 }: {
+  placeholder: string;
   query: string;
   setQuery: (value: string) => void;
 }) {
@@ -505,7 +522,7 @@ function SearchInput({
       <Input
         className="h-8 pl-7 text-xs"
         onChange={(event) => setQuery(event.target.value)}
-        placeholder="Search files"
+        placeholder={placeholder}
         value={query}
       />
     </div>
@@ -515,6 +532,7 @@ function SearchInput({
 function FileTreeRow({
   editing,
   fileNameDraft,
+  iconName,
   item,
   onCommitRename,
   onCancelRename,
@@ -526,6 +544,7 @@ function FileTreeRow({
 }: {
   editing: boolean;
   fileNameDraft: string;
+  iconName: string;
   item: WorkspaceItem;
   onCommitRename: () => void;
   onCancelRename: () => void;
@@ -543,7 +562,7 @@ function FileTreeRow({
       )}
     >
       <button className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={onSelect} type="button">
-        <Icon name="file-text" className="shrink-0" size={14} />
+        <Icon name={iconName} className="shrink-0" size={14} />
         {editing ? (
           <Input
             autoFocus

@@ -156,7 +156,7 @@ export default function EvalsPage() {
   }
 
   async function runEval() {
-    if (isNew || draft.rubrics.length === 0) return;
+    if (isNew || draft.rubrics.length === 0 || draft.status !== "active") return;
 
     setRunning(true);
     try {
@@ -406,7 +406,7 @@ export default function EvalsPage() {
                   onClick={runEval}
                   size="md"
                   variant="outline"
-                  disabled={isNew || draft.rubrics.length === 0 || running}
+                  disabled={isNew || draft.rubrics.length === 0 || draft.status !== "active" || running}
                 >
                   {running ? (
                     <Icon name="loader" size={14} className="animate-spin" />
@@ -441,19 +441,11 @@ export default function EvalsPage() {
 
             <section className="flex min-h-0 flex-1">
               <div className="min-h-0 flex-1 overflow-y-auto">
-                <div className="grid gap-3 border-b border-border bg-panel-raised px-4 py-3 xl:grid-cols-[minmax(0,1fr)_160px]">
+                <div className="grid gap-3 border-b border-border bg-panel-raised px-4 py-3">
                   <Field label="Eval name">
                     <Input
                       onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
                       value={draft.name}
-                    />
-                  </Field>
-                  <Field label="Target type">
-                    <NativeSelect
-                      ariaLabel="Target type"
-                      onChange={(value) => setDraft((d) => ({ ...d, targetType: value as import("../../lib/workspace-data").EvalTargetType }))}
-                      options={TARGET_TYPES.map((t) => ({ label: t.label, value: t.value }))}
-                      value={draft.targetType}
                     />
                   </Field>
                 </div>
@@ -479,7 +471,7 @@ export default function EvalsPage() {
                       </Field>
                     </div>
                     <div className="w-32">
-                      <Field label="Status">
+                      <Field label="Status" hint="Only active evals can run or be used at runtime.">
                         <NativeSelect
                           ariaLabel="Status"
                           onChange={(value) => setDraft((d) => ({ ...d, status: value as import("../../lib/workspace-data").EvalFile["status"] }))}

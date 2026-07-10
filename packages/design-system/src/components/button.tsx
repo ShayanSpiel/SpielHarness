@@ -11,7 +11,7 @@ const buttonStyles = cva(
     variants: {
       variant: {
         primary:
-          "bg-[var(--primary)] text-[var(--primary-foreground)] hover:brightness-110 active:brightness-95",
+          "border border-transparent bg-[var(--primary)] text-[var(--primary-foreground)] hover:brightness-110 active:brightness-95",
         outline:
           "border border-[var(--border)] bg-[var(--panel)] text-[var(--foreground)] hover:bg-[var(--hover)] hover:border-[var(--border-strong)]",
         ghost:

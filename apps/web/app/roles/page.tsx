@@ -340,12 +340,15 @@ function RoleInspector({
       <div className="grid gap-1 p-2">
         {store.skills.map((skill) => {
           const selected = draft.skillIds.includes(skill.id);
+          const disabled = skill.status !== "active" && !selected;
           return (
             <button
               className={cn(
                 "flex items-start gap-2 rounded-md border px-2 py-2 text-left transition-colors",
-                selected ? "border-border bg-selected" : "border-transparent hover:bg-hover"
+                selected ? "border-border bg-selected" : "border-transparent hover:bg-hover",
+                skill.status !== "active" && "opacity-55"
               )}
+              disabled={disabled}
               key={skill.id}
               onClick={() => toggleSkill(skill.id)}
               type="button"
@@ -361,7 +364,10 @@ function RoleInspector({
                  {selected ? <Icon name="check" size={12} /> : null}
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] text-foreground">{skill.name}</span>
+                <span className="flex items-center gap-2">
+                  <span className="block min-w-0 flex-1 truncate text-[13px] text-foreground">{skill.name}</span>
+                  {skill.status !== "active" ? <Pill className="shrink-0">disabled</Pill> : null}
+                </span>
                 <span className="line-clamp-2 text-[11px] text-muted-foreground">
                   {skill.description}
                 </span>

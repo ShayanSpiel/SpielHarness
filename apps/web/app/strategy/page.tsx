@@ -11,8 +11,7 @@ const STRATEGY_DEFAULT_FOLDERS = [
   "Audience",
   "Offer",
   "Voice",
-  "Positioning",
-  "Prompts"
+  "Positioning"
 ];
 
 export default function StrategyPage() {

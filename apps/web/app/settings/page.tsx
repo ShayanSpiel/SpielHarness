@@ -9,10 +9,6 @@ import {
   PageHeader,
   Pill,
   Switch,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
   Tooltip,
   cn,
   toast
@@ -23,6 +19,22 @@ import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { AppShell } from "../../components/app-shell";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
 import type { ProviderModel } from "../../lib/workspace-data";
+
+type SettingsTab = "models" | "integrations" | "theme" | "workspace";
+
+const TAB_ICONS: Record<SettingsTab, string> = {
+  models: "server",
+  integrations: "tool",
+  theme: "sun",
+  workspace: "database"
+};
+
+const TAB_LABELS: Record<SettingsTab, string> = {
+  models: "Models",
+  integrations: "Integrations",
+  theme: "Theme",
+  workspace: "Workspace"
+};
 
 function emptyModel(): Omit<ProviderModel, "id"> {
   return {
@@ -37,6 +49,7 @@ function emptyModel(): Omit<ProviderModel, "id"> {
 export default function SettingsPage() {
   const store = useWorkspaceStore();
   const { theme: activeTheme, setTheme } = useTheme();
+  const [activeTab, setActiveTab] = useState<SettingsTab>("models");
   const [integrations, setIntegrations] = useState<Array<{
     id: string;
     name: string;
@@ -112,122 +125,137 @@ export default function SettingsPage() {
           }
         />
 
-        <Tabs defaultValue="models" className="flex h-full min-h-0 flex-col overflow-hidden">
-          <TabsList className="border-b border-border bg-panel-raised">
-            <TabsTrigger value="models">Models</TabsTrigger>
-            <TabsTrigger value="integrations">Integrations</TabsTrigger>
-            <TabsTrigger value="theme">Theme</TabsTrigger>
-            <TabsTrigger value="workspace">Workspace</TabsTrigger>
-          </TabsList>
+        <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-panel-raised px-3">
+          {(["models", "integrations", "theme", "workspace"] as const).map((tab) => {
+            const active = activeTab === tab;
+            return (
+              <button
+                key={tab}
+                className={cn(
+                  "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors",
+                  active
+                    ? "bg-selected text-foreground-strong"
+                    : "text-muted-foreground hover:bg-hover hover:text-foreground"
+                )}
+                onClick={() => setActiveTab(tab)}
+                type="button"
+              >
+                <Icon name={TAB_ICONS[tab]} size={14} />
+                {TAB_LABELS[tab]}
+              </button>
+            );
+          })}
+        </div>
 
-          <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="models">
-            <div className="grid h-full min-h-0 grid-cols-[280px_minmax(0,1fr)]">
-              <aside className="overflow-y-auto border-r border-border p-2">
-                <Button className="mb-2 w-full" onClick={createModel} size="md" variant="outline">
-                  <Icon name="plus" size={14} />
-                  New model
-                </Button>
-                <ul className="space-y-1">
-                  {store.models.map((model) => {
-                    const active = model.id === selectedId;
-                    return (
-                      <li key={model.id}>
-                        <button
-                          className={cn(
-                            "group flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors",
-                            active
-                              ? "bg-selected text-foreground-strong"
-                              : "text-foreground-muted hover:bg-hover hover:text-foreground"
-                          )}
-                          onClick={() => {
-                            setSelectedId(model.id);
-                            setDraft(model);
-                          }}
-                          type="button"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className="truncate text-sm font-medium">{model.label}</span>
-                              <Pill tone={model.enabled ? "success" : "default"} className="ml-auto text-[10px]">
-                                {model.enabled ? "on" : "off"}
-                              </Pill>
-                            </div>
-                            <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                              {model.provider} / {model.model}
-                            </p>
+        {activeTab === "models" && (
+          <div className="flex min-h-0 flex-1">
+            <aside className="flex w-72 shrink-0 flex-col border-r border-border bg-background p-2">
+              <Button className="mb-2 w-full" onClick={createModel} size="md" variant="outline">
+                <Icon name="plus" size={14} />
+                New model
+              </Button>
+              <ul className="space-y-1">
+                {store.models.map((model) => {
+                  const active = model.id === selectedId;
+                  return (
+                    <li key={model.id}>
+                      <button
+                        className={cn(
+                          "group flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors",
+                          active
+                            ? "bg-selected text-foreground-strong"
+                            : "text-foreground-muted hover:bg-hover hover:text-foreground"
+                        )}
+                        onClick={() => {
+                          setSelectedId(model.id);
+                          reset(model);
+                        }}
+                        type="button"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-medium">{model.label}</span>
+                            <Pill tone={model.enabled ? "success" : "default"} className="ml-auto text-[10px]">
+                              {model.enabled ? "on" : "off"}
+                            </Pill>
                           </div>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </aside>
-              <section className="overflow-y-auto bg-background">
-                <div className="mx-auto w-full max-w-2xl px-6 py-6">
-                  <div className="rounded-md border border-border bg-panel p-5">
-                    <div className="mb-4 flex items-center gap-2">
-                      <h2 className="text-sm font-semibold text-foreground">Model provider</h2>
-                      <Pill tone="default" className="text-[10px]">
-                        {isNew ? "new" : "edit"}
-                      </Pill>
-                      <div className="ml-auto flex items-center gap-1.5">
-                        {!isNew ? (
-                          <Tooltip content="Delete model" side="bottom">
-                            <Button aria-label="Delete" onClick={remove} size="icon" variant="ghost">
-                              <Icon name="trash" size={14} />
-                            </Button>
-                          </Tooltip>
-                        ) : null}
-                        <Button disabled={!dirty || saving} onClick={save} size="md" variant={dirty ? "primary" : "outline"}>
-                          {saving ? <Icon name="loader" size={14} className="animate-spin" /> : <Icon name="save" size={14} />}
-                          Save
-                        </Button>
-                      </div>
-                    </div>
-                    <div className="grid gap-3">
-                      <Field label="Provider">
-                        <Input
-                          onChange={(event) => setDraft({ ...draft, provider: event.target.value })}
-                          value={draft.provider}
-                        />
-                      </Field>
-                      <Field label="Label">
-                        <Input
-                          onChange={(event) => setDraft({ ...draft, label: event.target.value })}
-                          value={draft.label}
-                        />
-                      </Field>
-                      <Field label="Model id">
-                        <Input
-                          onChange={(event) => setDraft({ ...draft, model: event.target.value })}
-                          value={draft.model}
-                        />
-                      </Field>
-                      <Field label="Base URL">
-                        <Input
-                          onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })}
-                          value={draft.baseUrl ?? ""}
-                        />
-                      </Field>
-                      <Field label="Enabled">
-                        <div className="flex items-center gap-2">
-                          <Switch
-                            checked={draft.enabled}
-                            onCheckedChange={(checked) => setDraft({ ...draft, enabled: checked })}
-                          />
-                          <span className="text-xs text-muted-foreground">
-                            {draft.enabled ? "Enabled" : "Disabled"}
-                          </span>
+                          <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                            {model.provider} / {model.model}
+                          </p>
                         </div>
-                      </Field>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </aside>
+            <section className="min-w-0 flex-1 overflow-y-auto bg-background">
+              <div className="mx-auto w-full max-w-2xl px-6 py-6">
+                <div className="rounded-md border border-border bg-panel p-5">
+                  <div className="mb-4 flex items-center gap-2">
+                    <h2 className="text-sm font-semibold text-foreground">Model provider</h2>
+                    <Pill tone="default" className="text-[10px]">
+                      {isNew ? "new" : "edit"}
+                    </Pill>
+                    <div className="ml-auto flex items-center gap-1.5">
+                      {!isNew ? (
+                        <Tooltip content="Delete model" side="bottom">
+                          <Button aria-label="Delete" onClick={remove} size="icon" variant="ghost">
+                            <Icon name="trash" size={14} />
+                          </Button>
+                        </Tooltip>
+                      ) : null}
+                      <Button disabled={!dirty || saving} onClick={save} size="md" variant={dirty ? "primary" : "outline"}>
+                        {saving ? <Icon name="loader" size={14} className="animate-spin" /> : <Icon name="save" size={14} />}
+                        Save
+                      </Button>
                     </div>
                   </div>
+                  <div className="grid gap-3">
+                    <Field label="Provider">
+                      <Input
+                        onChange={(event) => setDraft({ ...draft, provider: event.target.value })}
+                        value={draft.provider}
+                      />
+                    </Field>
+                    <Field label="Label">
+                      <Input
+                        onChange={(event) => setDraft({ ...draft, label: event.target.value })}
+                        value={draft.label}
+                      />
+                    </Field>
+                    <Field label="Model id">
+                      <Input
+                        onChange={(event) => setDraft({ ...draft, model: event.target.value })}
+                        value={draft.model}
+                      />
+                    </Field>
+                    <Field label="Base URL">
+                      <Input
+                        onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })}
+                        value={draft.baseUrl ?? ""}
+                      />
+                    </Field>
+                    <Field label="Enabled">
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={draft.enabled}
+                          onCheckedChange={(checked) => setDraft({ ...draft, enabled: checked })}
+                        />
+                        <span className="text-xs text-muted-foreground">
+                          {draft.enabled ? "Enabled" : "Disabled"}
+                        </span>
+                      </div>
+                    </Field>
+                  </div>
                 </div>
-              </section>
-            </div>
-          </TabsContent>
+              </div>
+            </section>
+          </div>
+        )}
 
-          <TabsContent className="mt-0 min-h-0 flex-1 overflow-y-auto" value="integrations">
+        {activeTab === "integrations" && (
+          <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto w-full max-w-3xl px-6 py-6">
               <div className="rounded-md border border-border bg-panel p-5">
                 <div className="mb-4 flex items-center gap-2">
@@ -258,9 +286,11 @@ export default function SettingsPage() {
                 </div>
               </div>
             </div>
-          </TabsContent>
+          </div>
+        )}
 
-          <TabsContent className="mt-0 min-h-0 flex-1 overflow-y-auto" value="theme">
+        {activeTab === "theme" && (
+          <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto w-full max-w-2xl px-6 py-6">
               <div className="rounded-md border border-border bg-panel p-5">
                 <div className="mb-4 flex items-center gap-2">
@@ -294,9 +324,11 @@ export default function SettingsPage() {
                 </div>
               </div>
             </div>
-          </TabsContent>
+          </div>
+        )}
 
-          <TabsContent className="mt-0 min-h-0 flex-1 overflow-y-auto" value="workspace">
+        {activeTab === "workspace" && (
+          <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto w-full max-w-2xl px-6 py-6">
               <div className="rounded-md border border-border bg-panel p-5">
                 <div className="mb-4 flex items-center gap-2">
@@ -322,8 +354,8 @@ export default function SettingsPage() {
                 </div>
               </div>
             </div>
-          </TabsContent>
-        </Tabs>
+          </div>
+        )}
       </div>
     </AppShell>
   );

@@ -24,7 +24,7 @@ function RunHeader({ onOpenRuns }: { onOpenRuns: () => void }) {
   }, [chat, run]);
 
   const counts = useMemo(() => {
-    const map = { role: 0, tool: 0, library: 0, workstream: 0, strategy: 0, knowledge: 0, eval: 0 };
+    const map = { role: 0, tool: 0, library: 0, workstream: 0, strategy: 0, knowledge: 0, prompt: 0, eval: 0 };
     for (const item of run.contextItems) map[item.kind] += 1;
     return map;
   }, [run.contextItems]);
@@ -44,7 +44,7 @@ function RunHeader({ onOpenRuns }: { onOpenRuns: () => void }) {
         </Button>
       </Tooltip>
       <span className="text-[11px] text-muted-foreground">
-        {counts.role} roles · {counts.tool} skills · {counts.library} files · {counts.workstream} workstreams
+        {counts.role} roles · {counts.tool} skills · {counts.prompt} prompts · {counts.library + counts.strategy + counts.knowledge} files · {counts.workstream} workstreams
       </span>
       <div className="ml-auto flex items-center gap-1.5">
         <InspectorToggle label="Open inspector" />

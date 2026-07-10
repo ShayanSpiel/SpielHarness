@@ -15,10 +15,10 @@ type NavEntry = {
 
 const sections: NavEntry[] = [
   { href: "/", label: "Runs", icon: "play", match: (p) => p === "/" },
-  { href: "/knowledge", label: "Knowledge", icon: "brain", match: (p) => p.startsWith("/knowledge") },
-  { href: "/strategy", label: "Strategy", icon: "file-text", match: (p) => p.startsWith("/strategy") || p.startsWith("/prompts") },
+  { href: "/knowledge", label: "Knowledge", icon: "knowledge", match: (p) => p.startsWith("/knowledge") },
+  { href: "/strategy", label: "Strategy", icon: "strategy", match: (p) => p.startsWith("/strategy") || p.startsWith("/prompts") },
   { href: "/roles", label: "Roles", icon: "users", match: (p) => p.startsWith("/roles") },
-  { href: "/workstreams", label: "Workstreams", icon: "folder-kanban", match: (p) => p.startsWith("/workstreams") },
+  { href: "/workstreams", label: "Workstreams", icon: "git-branch", match: (p) => p.startsWith("/workstreams") },
   { href: "/evals", label: "Evals", icon: "bar-chart", match: (p) => p.startsWith("/evals") },
   { href: "/tools", label: "Skills", icon: "sparkles", match: (p) => p.startsWith("/tools") }
 ];
