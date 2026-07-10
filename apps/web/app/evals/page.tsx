@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, type KeyboardEvent } from "react";
 import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, SearchInput, Switch, Textarea, Tooltip, cn, toast } from "@spielos/design-system";
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { Icon } from "../../components/icons";
@@ -39,8 +39,8 @@ function blankEvalFile(): Omit<import("../../lib/workspace-data").EvalFile, "id"
 function blankRubric(): Rubric {
   return {
     id: `rubric_${crypto.randomUUID()}`,
-    label: "New Rubric",
-    description: "What this rubric checks",
+    label: "Required signal",
+    description: "",
     type: "contains",
     value: "",
     weight: 10,
@@ -48,7 +48,51 @@ function blankRubric(): Rubric {
   };
 }
 
-const RUBRIC_TYPES = ["contains", "missing", "min_words", "max_words", "regex", "llm_judge"] as const;
+const CHECK_TYPES: Record<Rubric["type"], {
+  label: string;
+  helper: string;
+  valueLabel: string;
+  valueKind: "chips" | "number" | "text" | "textarea";
+}> = {
+  contains: {
+    label: "Contains any of",
+    helper: "Passes when the output includes at least one selected phrase.",
+    valueLabel: "Accepted phrases",
+    valueKind: "chips"
+  },
+  missing: {
+    label: "Must not include",
+    helper: "Passes when none of these phrases appear in the output.",
+    valueLabel: "Blocked phrases",
+    valueKind: "chips"
+  },
+  min_words: {
+    label: "Minimum words",
+    helper: "Passes when the output has at least this many words.",
+    valueLabel: "Minimum",
+    valueKind: "number"
+  },
+  max_words: {
+    label: "Maximum words",
+    helper: "Passes when the output stays under this word count.",
+    valueLabel: "Maximum",
+    valueKind: "number"
+  },
+  regex: {
+    label: "Matches pattern",
+    helper: "Passes when the output matches this regular expression.",
+    valueLabel: "Pattern",
+    valueKind: "text"
+  },
+  llm_judge: {
+    label: "Quality judge",
+    helper: "Stores a judge prompt. Runtime scoring is not model-backed yet.",
+    valueLabel: "Judge instruction",
+    valueKind: "textarea"
+  }
+};
+
+const RUBRIC_TYPES = Object.keys(CHECK_TYPES) as Rubric["type"][];
 
 export default function EvalsPage() {
   const store = useWorkspaceStore();
@@ -58,7 +102,7 @@ export default function EvalsPage() {
     selected ?? blankEvalFile()
   );
   const [query, setQuery] = useState("");
-  const [sample, setSample] = useState("Paste content here to test your rubrics against.");
+  const [sample, setSample] = useState("Paste content here to test the criteria against.");
   const [running, setRunning] = useState(false);
   const [saving, setSaving] = useState(false);
   const isNew = selectedId === null;
@@ -333,11 +377,11 @@ export default function EvalsPage() {
                           <Icon className="text-muted-foreground" name="bar-chart" size={14} />
                           <span className="truncate text-sm font-medium text-foreground">{ef.name}</span>
                           <Pill tone={ef.status === "active" ? "success" : "default"} className="ml-auto text-[10px]">
-                            {ef.status}
+                            {ef.status === "active" ? "enabled" : "disabled"}
                           </Pill>
                         </div>
                         <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
-                          <span>{ef.rubrics.length} rubrics</span>
+                          <span>{ef.rubrics.length} criteria</span>
                           <span className="text-border">·</span>
                           <span>threshold {ef.overallThreshold}</span>
                           <span className="text-border">·</span>
@@ -357,7 +401,9 @@ export default function EvalsPage() {
                 <span>Evals</span>
                 <Icon name="chevron-right" size={12} />
                 <span className="max-w-72 truncate text-foreground">{draft.name}</span>
-                <Pill tone={draft.status === "active" ? "success" : "default"}>{draft.status}</Pill>
+                <Pill tone={draft.status === "active" ? "success" : "default"}>
+                  {draft.status === "active" ? "enabled" : "disabled"}
+                </Pill>
               </div>
               <div className="ml-auto flex items-center gap-1.5">
                 <Tooltip content="Export as JSON" side="bottom">
@@ -410,13 +456,37 @@ export default function EvalsPage() {
 
             <section className="flex min-h-0 flex-1">
               <div className="min-h-0 flex-1 overflow-y-auto">
-                <div className="grid gap-3 border-b border-border bg-panel-raised px-4 py-3">
+                <div className="grid gap-3 border-b border-border bg-panel-raised px-4 py-3 xl:grid-cols-[minmax(0,1fr)_160px_160px]">
                   <Field label="Eval name">
                     <Input
                       onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
                       value={draft.name}
                     />
                   </Field>
+                  <Field label="Pass score" hint="Overall score needed to pass.">
+                    <Input
+                      onChange={(e) => setDraft((d) => ({ ...d, overallThreshold: Number(e.target.value) }))}
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={draft.overallThreshold}
+                    />
+                  </Field>
+                  <div className="grid gap-1.5">
+                    <span className="text-xs font-medium text-muted-foreground">Enabled</span>
+                    <label className="flex h-9 items-center gap-2 text-xs text-foreground">
+                      <Switch
+                        checked={draft.status === "active"}
+                        onCheckedChange={(checked) =>
+                          setDraft((current) => ({
+                            ...current,
+                            status: checked ? "active" : "draft"
+                          }))
+                        }
+                      />
+                      <span>{draft.status === "active" ? "Can run in tests and workflows" : "Hidden from runtime pickers"}</span>
+                    </label>
+                  </div>
                 </div>
 
                 <div className="grid gap-4 px-4 py-3">
@@ -427,31 +497,7 @@ export default function EvalsPage() {
                     />
                   </Field>
 
-                  <div className="flex items-center gap-3">
-                    <div className="w-32">
-                      <Field label="Overall threshold">
-                        <Input
-                          onChange={(e) => setDraft((d) => ({ ...d, overallThreshold: Number(e.target.value) }))}
-                          type="number"
-                          min={0}
-                          max={100}
-                          value={draft.overallThreshold}
-                        />
-                      </Field>
-                    </div>
-                    <div className="w-32">
-                      <Field label="Status" hint="Only active evals can run or be used at runtime.">
-                        <NativeSelect
-                          ariaLabel="Status"
-                          onChange={(value) => setDraft((d) => ({ ...d, status: value as import("../../lib/workspace-data").EvalFile["status"] }))}
-                          options={["active", "draft", "archived"].map((v) => ({ label: v, value: v }))}
-                          value={draft.status}
-                        />
-                      </Field>
-                    </div>
-                  </div>
-
-                  <Field label="Sample content to evaluate">
+                  <Field label="Test sample" hint="Paste an output here to test the criteria before using the eval in a workflow.">
                     <Textarea
                       className="min-h-28 font-mono text-xs"
                       onChange={(e) => setSample(e.target.value)}
@@ -463,87 +509,44 @@ export default function EvalsPage() {
                 <div className="border-t border-border">
                   <div className="flex h-9 items-center gap-2 border-b border-border px-4">
                     <Icon className="text-muted-foreground" name="list" size={14} />
-                    <span className="text-xs font-medium text-foreground">Rubrics</span>
+                    <span className="text-xs font-medium text-foreground">Criteria</span>
                     <Pill className="ml-auto">{draft.rubrics.length}</Pill>
                     <Button className="ml-1 h-7" onClick={addRubric} size="sm" variant="outline">
                       <Icon name="plus" size={14} />
-                      Rubric
+                      Criterion
                     </Button>
                   </div>
-                  <div className="grid gap-1 p-4">
+                  <div className="p-4">
                     {draft.rubrics.length === 0 ? (
                       <div className="rounded-md border border-dashed border-border py-8 text-center text-xs text-muted-foreground">
-                        No rubrics yet. Add one to start scoring.
+                        No criteria yet. Add one to start scoring.
                       </div>
                     ) : (
-                      draft.rubrics.map((rubric, idx) => (
-                        <div
-                          className="grid items-center gap-2 rounded-md border border-border bg-panel-raised p-3 xl:grid-cols-[minmax(0,1fr)_100px_minmax(120px,1fr)_60px_60px_64px]"
-                          key={rubric.id}
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="text-[10px] font-mono text-muted-foreground">{idx + 1}</span>
-                            <Input
-                              className="h-7 text-xs"
-                              onChange={(e) => updateRubric(rubric.id, { label: e.target.value })}
-                              value={rubric.label}
-                            />
-                          </div>
-                          <NativeSelect
-                            ariaLabel="Rubric type"
-                            className="h-7"
-                            onChange={(value) => updateRubric(rubric.id, { type: value as Rubric["type"] })}
-                            options={RUBRIC_TYPES.map((t) => ({ label: t, value: t }))}
-                            value={rubric.type}
-                          />
-                          <Input
-                            className="h-7 font-mono text-xs"
-                            onChange={(e) => updateRubric(rubric.id, { value: e.target.value })}
-                            placeholder="values, comma-separated"
-                            value={rubric.value}
-                          />
-                          <Input
-                            className="h-7 text-xs"
-                            onChange={(e) => updateRubric(rubric.id, { weight: Number(e.target.value) })}
-                            type="number"
-                            min={1}
-                            value={rubric.weight}
-                          />
-                          <Input
-                            className="h-7 text-xs"
-                            onChange={(e) => updateRubric(rubric.id, { passThreshold: Number(e.target.value) })}
-                            type="number"
-                            min={0}
-                            max={100}
-                            value={rubric.passThreshold}
-                          />
-                          <div className="flex shrink-0 items-center gap-0.5">
-                            <button
-                              className="rounded p-0.5 text-muted-foreground hover:bg-hover hover:text-foreground disabled:opacity-30"
-                              disabled={idx === 0}
-                              onClick={() => moveRubric(rubric.id, "up")}
-                              type="button"
-                            >
-                              <Icon name="chevron-right" size={12} className="-rotate-90" />
-                            </button>
-                            <button
-                              className="rounded p-0.5 text-muted-foreground hover:bg-hover hover:text-foreground disabled:opacity-30"
-                              disabled={idx === draft.rubrics.length - 1}
-                              onClick={() => moveRubric(rubric.id, "down")}
-                              type="button"
-                            >
-                              <Icon name="chevron-right" size={12} className="rotate-90" />
-                            </button>
-                            <button
-                              className="rounded p-0.5 text-muted-foreground hover:bg-hover hover:text-foreground"
-                              onClick={() => deleteRubric(rubric.id)}
-                              type="button"
-                            >
-                              <Icon name="trash" size={12} />
-                            </button>
-                          </div>
+                      <div className="overflow-hidden rounded-md border border-border">
+                        <div className="hidden border-b border-border bg-panel-raised px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:grid xl:grid-cols-[minmax(220px,1.1fr)_190px_minmax(260px,1.4fr)_84px_84px_76px] xl:gap-3">
+                          <span>Criterion</span>
+                          <span>Check</span>
+                          <span>Condition</span>
+                          <span>Weight</span>
+                          <span>Pass</span>
+                          <span>Actions</span>
                         </div>
-                      ))
+                        <div className="divide-y divide-border">
+                          {draft.rubrics.map((rubric, idx) => (
+                            <CriteriaRow
+                              canMoveDown={idx < draft.rubrics.length - 1}
+                              canMoveUp={idx > 0}
+                              index={idx}
+                              key={rubric.id}
+                              onDelete={() => deleteRubric(rubric.id)}
+                              onMoveDown={() => moveRubric(rubric.id, "down")}
+                              onMoveUp={() => moveRubric(rubric.id, "up")}
+                              onUpdate={(patch) => updateRubric(rubric.id, patch)}
+                              rubric={rubric}
+                            />
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -551,70 +554,77 @@ export default function EvalsPage() {
                 <div className="border-t border-border">
                   <div className="flex h-9 items-center gap-2 border-b border-border px-4">
                     <Icon className="text-muted-foreground" name="repeat" size={14} />
-                    <span className="text-xs font-medium text-foreground">Loop Config</span>
+                    <span className="text-xs font-medium text-foreground">Workflow Retry Policy</span>
                     <Pill tone={draft.loopConfig.enabled ? "success" : "default"} className="ml-auto">
-                      {draft.loopConfig.enabled ? "enabled" : "disabled"}
+                      {draft.loopConfig.enabled ? "retry enabled" : "no retry"}
                     </Pill>
                   </div>
-                  <div className="grid gap-3 px-4 py-3 xl:grid-cols-4">
-                    <label className="flex items-center gap-2 text-xs text-foreground">
-                      <Switch
-                        checked={draft.loopConfig.enabled}
-                        onCheckedChange={(checked) =>
-                          setDraft((current) => ({
-                            ...current,
-                            loopConfig: { ...current.loopConfig, enabled: checked }
-                          }))
-                        }
-                      />
-                      Enable loop retry
-                    </label>
-                    <Field label="Max attempts">
-                      <Input
-                        className="h-7 text-xs"
-                        onChange={(event) =>
-                          setDraft((current) => ({
-                            ...current,
-                            loopConfig: { ...current.loopConfig, maxAttempts: Number(event.target.value) }
-                          }))
-                        }
-                        type="number"
-                        min={1}
-                        max={10}
-                        value={draft.loopConfig.maxAttempts}
-                      />
-                    </Field>
-                    <Field label="Break condition">
-                      <NativeSelect
-                        ariaLabel="Break condition"
-                        className="h-7"
-                        onChange={(value) =>
-                          setDraft((current) => ({
-                            ...current,
-                            loopConfig: { ...current.loopConfig, breakCondition: value as "on_pass" | "on_fail" }
-                          }))
-                        }
-                        options={[
-                          { label: "on pass", value: "on_pass" },
-                          { label: "on fail", value: "on_fail" }
-                        ]}
-                        value={draft.loopConfig.breakCondition}
-                      />
-                    </Field>
-                    <Field label="Retry delay (ms)">
-                      <Input
-                        className="h-7 text-xs"
-                        onChange={(event) =>
-                          setDraft((current) => ({
-                            ...current,
-                            loopConfig: { ...current.loopConfig, retryDelayMs: Number(event.target.value) }
-                          }))
-                        }
-                        type="number"
-                        min={0}
-                        value={draft.loopConfig.retryDelayMs}
-                      />
-                    </Field>
+                  <div className="grid gap-3 px-4 py-3">
+                    <div className="max-w-3xl text-xs leading-relaxed text-muted-foreground">
+                      When this eval is used as a QA step in a workflow, retry can send failed work back through the previous step before the workflow continues. Direct test runs on this page never retry.
+                    </div>
+                    <div className="grid gap-3 xl:grid-cols-[minmax(220px,1fr)_140px_180px_150px]">
+                      <div className="grid gap-1.5">
+                        <span className="text-xs font-medium text-muted-foreground">Retry failed workflow output</span>
+                        <label className="flex h-8 items-center gap-2 text-xs text-foreground">
+                          <Switch
+                            checked={draft.loopConfig.enabled}
+                            onCheckedChange={(checked) =>
+                              setDraft((current) => ({
+                                ...current,
+                                loopConfig: { ...current.loopConfig, enabled: checked }
+                              }))
+                            }
+                          />
+                          <span>{draft.loopConfig.enabled ? "Retry before continuing" : "Fail without retrying"}</span>
+                        </label>
+                      </div>
+                      <Field label="Attempts" hint="Total tries.">
+                        <Input
+                          className="h-8 text-xs"
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              loopConfig: { ...current.loopConfig, maxAttempts: Number(event.target.value) }
+                            }))
+                          }
+                          type="number"
+                          min={1}
+                          max={10}
+                          value={draft.loopConfig.maxAttempts}
+                        />
+                      </Field>
+                      <Field label="Stop retrying" hint="Usually stop when the eval passes.">
+                        <NativeSelect
+                          ariaLabel="Stop retrying"
+                          onChange={(value) =>
+                            setDraft((current) => ({
+                              ...current,
+                              loopConfig: { ...current.loopConfig, breakCondition: value as "on_pass" | "on_fail" }
+                            }))
+                          }
+                          options={[
+                            { label: "when it passes", value: "on_pass" },
+                            { label: "when it fails", value: "on_fail" }
+                          ]}
+                          value={draft.loopConfig.breakCondition}
+                        />
+                      </Field>
+                      <Field label="Delay" hint="Milliseconds between tries.">
+                        <Input
+                          className="h-8 text-xs"
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              loopConfig: { ...current.loopConfig, retryDelayMs: Number(event.target.value) }
+                            }))
+                          }
+                          type="number"
+                          min={0}
+                          value={draft.loopConfig.retryDelayMs}
+                        />
+                      </Field>
+                    </div>
                   </div>
                 </div>
 
@@ -625,10 +635,19 @@ export default function EvalsPage() {
                       <span className="text-xs font-medium text-foreground">Results History</span>
                       <Pill className="ml-auto">{selected.results.length}</Pill>
                     </div>
-                    <div className="grid gap-2 p-4">
-                      {[...selected.results].reverse().map((result) => (
-                        <ResultCard key={result.id} result={result} />
-                      ))}
+                    <div className="p-4">
+                      <div className="overflow-hidden rounded-md border border-border">
+                        <div className="hidden border-b border-border bg-panel-raised px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:grid xl:grid-cols-[160px_90px_minmax(0,1fr)] xl:gap-3">
+                          <span>Run</span>
+                          <span>Score</span>
+                          <span>Criteria</span>
+                        </div>
+                        <div className="divide-y divide-border">
+                          {[...selected.results].reverse().map((result) => (
+                            <ResultRow key={result.id} result={result} />
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -641,7 +660,280 @@ export default function EvalsPage() {
   );
 }
 
-function ResultCard({
+function splitRuleValues(value: string): string[] {
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function joinRuleValues(values: string[]): string {
+  return values.join(", ");
+}
+
+function CriteriaRow({
+  canMoveDown,
+  canMoveUp,
+  index,
+  onDelete,
+  onMoveDown,
+  onMoveUp,
+  onUpdate,
+  rubric
+}: {
+  canMoveDown: boolean;
+  canMoveUp: boolean;
+  index: number;
+  onDelete: () => void;
+  onMoveDown: () => void;
+  onMoveUp: () => void;
+  onUpdate: (patch: Partial<Rubric>) => void;
+  rubric: Rubric;
+}) {
+  const config = CHECK_TYPES[rubric.type];
+
+  return (
+    <div className="grid gap-3 bg-background px-3 py-3 xl:grid-cols-[minmax(220px,1.1fr)_190px_minmax(260px,1.4fr)_84px_84px_76px] xl:items-start">
+      <div className="grid gap-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+          Criterion
+        </span>
+        <div className="flex items-center gap-2">
+          <span className="w-5 shrink-0 text-right text-[10px] font-mono text-muted-foreground">
+            {index + 1}
+          </span>
+          <Input
+            className="h-8 text-xs font-medium"
+            onChange={(event) => onUpdate({ label: event.target.value })}
+            placeholder="Grounding"
+            value={rubric.label}
+          />
+        </div>
+        <Input
+          className="ml-7 h-7 text-xs"
+          onChange={(event) => onUpdate({ description: event.target.value })}
+          placeholder="Optional note for teammates"
+          value={rubric.description}
+        />
+      </div>
+
+      <div className="grid gap-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+          Check
+        </span>
+        <NativeSelect
+          ariaLabel="Criterion check"
+          onChange={(value) =>
+            onUpdate({
+              type: value as Rubric["type"],
+              value: value === rubric.type ? rubric.value : ""
+            })
+          }
+          options={RUBRIC_TYPES.map((type) => ({ label: CHECK_TYPES[type].label, value: type }))}
+          value={rubric.type}
+        />
+        <p className="text-[11px] leading-relaxed text-muted-foreground">{config.helper}</p>
+      </div>
+
+      <div className="grid gap-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+          Condition
+        </span>
+        <CriterionValueEditor
+          config={config}
+          onChange={(value) => onUpdate({ value })}
+          value={rubric.value}
+        />
+      </div>
+
+      <Field label="Weight">
+        <Input
+          className="h-8 text-xs"
+          onChange={(event) => onUpdate({ weight: Number(event.target.value) })}
+          min={1}
+          type="number"
+          value={rubric.weight}
+        />
+      </Field>
+
+      <Field label="Pass">
+        <Input
+          className="h-8 text-xs"
+          onChange={(event) => onUpdate({ passThreshold: Number(event.target.value) })}
+          min={0}
+          max={100}
+          type="number"
+          value={rubric.passThreshold}
+        />
+      </Field>
+
+      <div className="grid gap-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+          Actions
+        </span>
+        <div className="flex items-center gap-0.5">
+          <Tooltip content="Move up" side="bottom">
+            <button
+              aria-label="Move criterion up"
+              className="rounded p-1 text-muted-foreground hover:bg-hover hover:text-foreground disabled:opacity-30"
+              disabled={!canMoveUp}
+              onClick={onMoveUp}
+              type="button"
+            >
+              <Icon name="chevron-right" size={12} className="-rotate-90" />
+            </button>
+          </Tooltip>
+          <Tooltip content="Move down" side="bottom">
+            <button
+              aria-label="Move criterion down"
+              className="rounded p-1 text-muted-foreground hover:bg-hover hover:text-foreground disabled:opacity-30"
+              disabled={!canMoveDown}
+              onClick={onMoveDown}
+              type="button"
+            >
+              <Icon name="chevron-right" size={12} className="rotate-90" />
+            </button>
+          </Tooltip>
+          <Tooltip content="Delete criterion" side="bottom">
+            <button
+              aria-label="Delete criterion"
+              className="rounded p-1 text-muted-foreground hover:bg-hover hover:text-foreground"
+              onClick={onDelete}
+              type="button"
+            >
+              <Icon name="trash" size={12} />
+            </button>
+          </Tooltip>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CriterionValueEditor({
+  config,
+  onChange,
+  value
+}: {
+  config: typeof CHECK_TYPES[Rubric["type"]];
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  if (config.valueKind === "chips") {
+    return (
+      <EditableChips
+        label={config.valueLabel}
+        onChange={(values) => onChange(joinRuleValues(values))}
+        values={splitRuleValues(value)}
+      />
+    );
+  }
+
+  if (config.valueKind === "number") {
+    return (
+      <Field label={config.valueLabel}>
+        <Input
+          className="h-8 text-xs"
+          min={0}
+          onChange={(event) => onChange(event.target.value)}
+          type="number"
+          value={value}
+        />
+      </Field>
+    );
+  }
+
+  if (config.valueKind === "textarea") {
+    return (
+      <Field label={config.valueLabel}>
+        <Textarea
+          className="min-h-20 font-mono text-xs"
+          onChange={(event) => onChange(event.target.value)}
+          value={value}
+        />
+      </Field>
+    );
+  }
+
+  return (
+    <Field label={config.valueLabel}>
+      <Input
+        className="h-8 font-mono text-xs"
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Example: \\bproof\\b"
+        value={value}
+      />
+    </Field>
+  );
+}
+
+function EditableChips({
+  label,
+  onChange,
+  values
+}: {
+  label: string;
+  onChange: (values: string[]) => void;
+  values: string[];
+}) {
+  const [draftValue, setDraftValue] = useState("");
+
+  function addValue() {
+    const clean = draftValue.trim();
+    if (!clean) return;
+    const exists = values.some((value) => value.toLowerCase() === clean.toLowerCase());
+    if (!exists) onChange([...values, clean]);
+    setDraftValue("");
+  }
+
+  function removeValue(value: string) {
+    onChange(values.filter((entry) => entry !== value));
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      addValue();
+    }
+    if (event.key === "Backspace" && !draftValue && values.length > 0) {
+      onChange(values.slice(0, -1));
+    }
+  }
+
+  return (
+    <div className="grid gap-1.5">
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      <div className="flex min-h-8 flex-wrap items-center gap-1 rounded-md border border-border bg-input px-1.5 py-1">
+        {values.map((value) => (
+          <span
+            className="inline-flex h-5 max-w-full items-center gap-1 rounded-sm bg-panel-raised px-1.5 text-[11px] text-foreground"
+            key={value}
+          >
+            <span className="truncate">{value}</span>
+            <button
+              aria-label={`Remove ${value}`}
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => removeValue(value)}
+              type="button"
+            >
+              <Icon name="x" size={10} />
+            </button>
+          </span>
+        ))}
+        <input
+          className="h-5 min-w-32 flex-1 bg-transparent px-1 text-xs text-foreground outline-none placeholder:text-muted-foreground"
+          onBlur={addValue}
+          onChange={(event) => setDraftValue(event.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder={values.length ? "Add another" : "Type a phrase and press Enter"}
+          value={draftValue}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ResultRow({
   result
 }: {
   result: import("../../lib/workspace-data").EvalFileResult;
@@ -650,13 +942,22 @@ function ResultCard({
   const time = new Date(result.runAt).toLocaleTimeString();
 
   return (
-    <div className="rounded-md border border-border bg-panel-raised p-3">
-      <div className="flex items-center gap-2">
-        <Pill tone={tone}>{result.passed ? "PASSED" : "FAILED"}</Pill>
-        <span className="text-sm font-semibold text-foreground">{result.overallScore}/100</span>
-        <span className="ml-auto text-[10px] text-muted-foreground">{time}</span>
+    <div className="grid gap-3 bg-background px-3 py-3 text-xs xl:grid-cols-[160px_90px_minmax(0,1fr)] xl:items-start">
+      <div className="flex items-center gap-2 xl:grid xl:gap-1">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">Run</span>
+        <div className="flex items-center gap-2">
+          <Pill tone={tone}>{result.passed ? "passed" : "failed"}</Pill>
+          <span className="text-[11px] text-muted-foreground">{time}</span>
+        </div>
       </div>
-      <div className="mt-2 grid gap-1">
+      <div className="flex items-center justify-between gap-2 xl:block">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">Score</span>
+        <span className="text-sm font-semibold text-foreground">{result.overallScore}/100</span>
+      </div>
+      <div className="grid gap-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+          Criteria
+        </span>
         {Object.entries(result.rubricScores).map(([label, score]) => (
           <div className="flex items-center gap-2" key={label}>
             <span className="w-28 shrink-0 truncate text-[11px] text-foreground">{label}</span>
@@ -692,8 +993,8 @@ function ResultInspector({
   }
 
   return (
-    <div className="grid gap-3 p-3">
-      <div className="rounded-md border border-border bg-panel-raised p-3">
+    <div className="grid">
+      <div className="border-b border-border p-3">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-foreground">Score</span>
           <Pill tone={result.passed ? "success" : "destructive"} className="ml-auto">
@@ -728,7 +1029,7 @@ function ResultInspector({
       </div>
 
       {result.findings.length > 0 && (
-        <div className="rounded-md border border-border bg-panel-raised p-3">
+        <div className="border-b border-border p-3">
           <span className="text-xs font-semibold text-foreground">Findings</span>
           <div className="mt-2 grid gap-1">
             {result.findings.map((finding) => (
@@ -742,7 +1043,7 @@ function ResultInspector({
       )}
 
       {result.recommendations.length > 0 && (
-        <div className="rounded-md border border-border bg-panel-raised p-3">
+        <div className="border-b border-border p-3">
           <span className="text-xs font-semibold text-foreground">Recommendations</span>
           <div className="mt-2 grid gap-1">
             {result.recommendations.map((rec, i) => (
