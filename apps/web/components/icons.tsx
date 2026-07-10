@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  SearchAlt, Plus, TrashAlt, Save, Check, X, Cog, Filter, Pencil,
+  Search, SearchAlt, Plus, TrashAlt, Save, Check, X, Cog, Filter, Pencil,
   Copy, RefreshCw, RefreshCcw, LoaderDots, DotsHorizontalRounded,
   ArrowBigUp, ArrowBigDown, ArrowBigLeft, ArrowBigRight, ArrowRight,
   ArrowUp, ArrowToBottom, ArrowToTop,
@@ -36,7 +36,7 @@ export {
 import { useIconRegistry } from "./icon-registry";
 
 const ICON_COMPONENTS: Record<string, React.ComponentType<BoxIconProps>> = {
-  SearchAlt, Plus, TrashAlt, Save, Check, X, Cog, Filter, Pencil,
+  Search, SearchAlt, Plus, TrashAlt, Save, Check, X, Cog, Filter, Pencil,
   Copy, RefreshCw, RefreshCcw, LoaderDots, DotsHorizontalRounded,
   ArrowBigUp, ArrowBigDown, ArrowBigLeft, ArrowBigRight, ArrowRight, ArrowUp,
   ArrowToBottom, ArrowToTop,
