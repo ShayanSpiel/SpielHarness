@@ -162,7 +162,7 @@ export function CommandPalette({
         id: `run-${entry.id}`,
         label: entry.prompt || "Untitled run",
         group: "Last Runs",
-        icon: <Icon name={entry.status === "completed" ? "check" : entry.status === "failed" ? "x" : "play"} size={14} />,
+        icon: <Icon name={entry.status === "completed" ? "check" : entry.status === "failed" ? "x" : "play"} className={entry.status === "completed" ? "text-success" : entry.status === "failed" ? "text-destructive" : ""} size={14} />,
         hint: `${entry.status} · ${entry.inputs?.target?.type ?? entry.run_type}`,
         keywords: [entry.prompt.toLowerCase(), entry.status, entry.run_type, entry.inputs?.target?.type ?? ""],
         onSelect: () => void openRun(entry)

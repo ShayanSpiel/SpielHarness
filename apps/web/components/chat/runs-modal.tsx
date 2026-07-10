@@ -257,7 +257,7 @@ export function RunsModal({
                         onClick={() => void openPersistedRun(entry)}
                         type="button"
                       >
-                        <Icon name={entry.status === "completed" ? "check" : entry.status === "failed" ? "x" : "play"} className="mt-0.5 text-muted-foreground" size={14} />
+                        <Icon name={entry.status === "completed" ? "check" : entry.status === "failed" ? "x" : "play"} className={`mt-0.5 ${entry.status === "completed" ? "text-success" : entry.status === "failed" ? "text-destructive" : "text-muted-foreground"}`} size={14} />
                         <div className="min-w-0 flex-1">
                           <div className="line-clamp-1 text-[13px] font-medium text-foreground">
                             {entry.prompt || "Untitled run"}

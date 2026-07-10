@@ -9,7 +9,7 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
     <label className="grid gap-1.5">
       <span className="text-xs font-medium text-[var(--muted-foreground)]">{label}</span>
       {children}
-      {hint ? <span className="text-[11px] text-[var(--muted-foreground)]">{hint}</span> : null}
+      {hint ? <span className="text-xs text-[var(--muted-foreground)]">{hint}</span> : null}
     </label>
   );
 }
@@ -19,7 +19,7 @@ export function Kbd({ className, ...props }: HTMLAttributes<HTMLElement>) {
     <Slot>
       <kbd
         className={cn(
-          "inline-flex h-5 min-w-5 items-center justify-center rounded border border-[var(--border)] bg-[var(--panel-raised)] px-1 font-mono text-[10px] text-[var(--muted-foreground)]",
+          "inline-flex h-5 min-w-5 items-center justify-center rounded border border-[var(--border)] bg-[var(--panel-raised)] px-1 font-mono text-xs text-[var(--muted-foreground)]",
           className
         )}
         {...props}

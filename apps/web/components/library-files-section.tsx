@@ -120,9 +120,9 @@ export function LibraryFilesSection() {
   return (
     <div className="flex flex-1 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-4">
-        <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-          <Icon name="check-circle" size={14} />
-          <span>Connected</span>
+        <div className="flex min-w-0 items-center gap-2 text-xs text-success">
+           <Icon name="check-circle" size={14} />
+           <span>Connected</span>
         </div>
         <div className="ml-auto flex items-center gap-1">
           {accessToken ? (

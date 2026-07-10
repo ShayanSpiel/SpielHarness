@@ -245,7 +245,7 @@ function AssistantMessage() {
         <div className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
           <span>Assistant</span>
           {isRunning && run.activity ? (
-            <span className="inline-flex min-w-0 items-center gap-1 rounded-full border border-border bg-panel-raised px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            <span className="inline-flex min-w-0 items-center gap-1 rounded-full bg-panel-raised px-1.5 py-0.5 text-xs text-muted-foreground">
               <span className="h-1.5 w-1.5 shrink-0 animate-ping rounded-full bg-foreground" />
               <span className="truncate">{run.activity}</span>
             </span>

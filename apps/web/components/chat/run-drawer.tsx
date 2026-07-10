@@ -115,7 +115,7 @@ function SectionHeader({
       </span>
       <span className="flex-1 font-medium">{label}</span>
       {typeof count === "number" ? (
-        <span className="rounded-full border border-border bg-panel-raised px-1.5 py-0 text-[10px] tabular-nums text-muted-foreground">
+        <span className="rounded-full bg-panel-raised px-1.5 py-0 text-xs tabular-nums text-muted-foreground">
           {count}
         </span>
       ) : null}
@@ -144,7 +144,7 @@ function ContextRow({ item }: { item: ContextItem }) {
           <div className="line-clamp-1 text-[11px] text-muted-foreground">{item.subtitle}</div>
         ) : null}
       </div>
-      <span className="rounded-full border border-border bg-panel px-1.5 py-0 text-[9px] uppercase tracking-wider text-muted-foreground">
+      <span className="rounded-full bg-panel px-1.5 py-0 text-[10px] uppercase tracking-wider text-muted-foreground">
         {item.kind}
       </span>
     </div>
@@ -267,9 +267,9 @@ function OutputSection() {
           <header className="flex items-center gap-2 border-b border-border bg-panel-raised px-2.5 py-1.5">
             <Icon name="file-text" className="text-muted-foreground" size={12} />
             <span className="truncate text-xs font-medium text-foreground">{artifact.title}</span>
-            <span className="ml-auto rounded-full border border-border bg-panel px-1.5 py-0 text-[9px] uppercase tracking-wider text-muted-foreground">
-              {artifact.type}
-            </span>
+            <span className="ml-auto rounded-full bg-panel px-1.5 py-0 text-[10px] uppercase tracking-wider text-muted-foreground">
+               {artifact.type}
+             </span>
           </header>
           <pre className="max-h-72 overflow-auto whitespace-pre-wrap p-2.5 text-[11px] leading-relaxed text-foreground/90">
             {artifact.body}
@@ -316,11 +316,11 @@ export function RunDrawer() {
         </div>
         <div className="flex items-center gap-1">
           {run.running ? (
-            <span className="flex items-center gap-1 rounded-full border border-border bg-panel px-1.5 py-0.5 text-[10px] text-foreground">
+            <span className="flex items-center gap-1 rounded-full bg-panel px-1.5 py-0.5 text-xs text-foreground">
               <Icon name="loader" className="animate-spin" size={10} /> live
             </span>
           ) : totalEvents > 0 ? (
-            <span className="flex items-center gap-1 rounded-full border border-border bg-panel px-1.5 py-0.5 text-[10px] text-foreground">
+            <span className="flex items-center gap-1 rounded-full bg-panel px-1.5 py-0.5 text-xs text-foreground">
               <Icon name="check" size={10} /> idle
             </span>
           ) : null}

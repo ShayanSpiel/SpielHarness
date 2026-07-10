@@ -31,7 +31,7 @@ export function ContextChips({
     <div className={cn("flex flex-wrap items-center gap-1", className)}>
       {items.map((item) => (
         <span
-          className="group inline-flex max-w-[200px] items-center gap-1 rounded-md border border-border bg-panel-raised px-1.5 py-0.5 text-[11px] text-foreground"
+          className="group inline-flex max-w-[200px] items-center gap-1 rounded-md bg-panel-raised px-1.5 py-0.5 text-xs text-foreground"
           key={item.id}
           title={item.subtitle ?? item.title}
         >

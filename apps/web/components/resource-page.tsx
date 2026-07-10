@@ -200,7 +200,7 @@ export function ResourcePage({
                               item.status === "active"
                                 ? "success"
                                 : item.status === "archived"
-                                  ? "muted-foreground" as never
+                                  ? "warning"
                                   : "default"
                             }
                             className="shrink-0 text-[10px]"
