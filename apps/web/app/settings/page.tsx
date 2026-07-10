@@ -6,7 +6,6 @@ import {
   Button,
   Field,
   Input,
-  NativeSelect,
   PageHeader,
   Panel,
   PanelBody,
