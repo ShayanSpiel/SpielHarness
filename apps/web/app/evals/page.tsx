@@ -661,6 +661,8 @@ export default function EvalsPage() {
     </AppShell>
   );
 }
+
+function ResultCard({
   result
 }: {
   result: import("../../lib/workspace-data").EvalFileResult;

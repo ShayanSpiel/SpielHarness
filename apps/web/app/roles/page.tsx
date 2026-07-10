@@ -299,6 +299,8 @@ export default function RolesPage() {
     </AppShell>
   );
 }
+
+function RoleInspector({
   draft,
   setDraft,
   skillNames,
