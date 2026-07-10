@@ -7,22 +7,22 @@ import {
   Field,
   Input,
   Panel,
+  PanelBody,
+  PanelHeader,
+  PanelTitle,
   Pill,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+  Switch,
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
   Tooltip
 } from "@spielos/design-system";
+import { THEME_REGISTRY } from "@spielos/design-system";
 import { AppShell } from "../../components/app-shell";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
 import type { ProviderModel } from "../../lib/workspace-data";
-import { THEME_REGISTRY } from "@spielos/design-system";
+import { useTheme } from "@spielos/design-system/hooks/use-theme";
 
 function emptyModel(): Omit<ProviderModel, "id"> {
   return {
@@ -36,6 +36,7 @@ function emptyModel(): Omit<ProviderModel, "id"> {
 
 export default function SettingsPage() {
   const store = useWorkspaceStore();
+  const { theme: activeTheme, setTheme } = useTheme();
   const [integrations, setIntegrations] = useState<Array<{
     id: string;
     name: string;
@@ -186,18 +187,15 @@ export default function SettingsPage() {
                     />
                   </Field>
                   <Field label="Enabled">
-                    <Select
-                      onValueChange={(value) => setDraft({ ...draft, enabled: value === "true" })}
-                      value={draft.enabled ? "true" : "false"}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="true">enabled</SelectItem>
-                        <SelectItem value="false">disabled</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={draft.enabled}
+                        onCheckedChange={(checked) => setDraft({ ...draft, enabled: checked })}
+                      />
+                      <span className="text-xs text-muted-foreground">
+                        {draft.enabled ? "Enabled" : "Disabled"}
+                      </span>
+                    </div>
                   </Field>
                 </div>
               </Panel>
@@ -242,34 +240,36 @@ export default function SettingsPage() {
       <TabsContent className="mt-0 min-h-0 flex-1 overflow-y-auto" value="theme">
         <div className="mx-auto w-full max-w-2xl px-6 py-6">
           <Panel className="p-5">
-            <h2 className="text-sm font-semibold">Theme</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Switch the global theme. Adding new themes is a one-file change in the design
-              system.
-            </p>
-            <div className="mt-4 grid gap-2">
-              {THEME_REGISTRY.map((theme) => (
-                <button
-                  className="flex items-center justify-between rounded-md border border-border bg-panel-raised px-3 py-2 text-left transition-colors hover:border-border-strong"
-                  key={theme.id}
-                  onClick={() => {
-                    document.documentElement.dataset.theme = theme.id;
-                    window.localStorage.setItem("spielos.theme", theme.id);
-                  }}
-                  type="button"
-                >
-                  <div>
-                    <p className="text-sm font-medium text-foreground">{theme.label}</p>
-                    <p className="text-[11px] text-muted-foreground">{theme.group}</p>
-                  </div>
-                </button>
-              ))}
-            </div>
-            <p className="mt-3 text-[11px] text-muted-foreground">
-              More themes can be added by dropping a new palette + semantic mapping into
-              <span className="ml-1 font-mono text-foreground/80">packages/design-system/src/tokens/</span>
-              and registering it in the design system.
-            </p>
+            <PanelHeader>
+              <PanelTitle>Theme</PanelTitle>
+            </PanelHeader>
+            <PanelBody>
+              <p className="text-xs text-muted-foreground">
+                Switch the global theme. All themes use the same semantic token system.
+              </p>
+              <div className="mt-4 grid gap-2">
+                {THEME_REGISTRY.map((t) => (
+                  <button
+                    className={`flex items-center justify-between rounded-md border px-3 py-2 text-left transition-colors ${
+                      activeTheme === t.id
+                        ? "border-ring bg-selected"
+                        : "border-border bg-panel-raised hover:border-border-strong"
+                    }`}
+                    key={t.id}
+                    onClick={() => setTheme(t.id)}
+                    type="button"
+                  >
+                    <div>
+                      <p className="text-sm font-medium text-foreground">{t.label}</p>
+                      <p className="text-[11px] text-muted-foreground">{t.group} · {t.mode}</p>
+                    </div>
+                    {activeTheme === t.id ? (
+                      <Pill tone="primary" className="text-[10px]">active</Pill>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            </PanelBody>
           </Panel>
         </div>
       </TabsContent>

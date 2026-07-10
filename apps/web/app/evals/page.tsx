@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Button, EmptyState, Field, Input, Pill, Textarea, Tooltip, cn } from "@spielos/design-system";
+import { Button, EmptyState, Field, Input, Pill, Switch, Textarea, Tooltip, cn } from "@spielos/design-system";
 import { Icon } from "../../components/icons";
 import { AppShell } from "../../components/app-shell";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
@@ -345,9 +345,9 @@ export default function EvalsPage() {
                         </div>
                         <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
                           <span>{ef.rubrics.length} rubrics</span>
-                          <span className="text-border">|</span>
+                          <span className="text-border">·</span>
                           <span>threshold {ef.overallThreshold}</span>
-                          <span className="text-border">|</span>
+                          <span className="text-border">·</span>
                           <span>{ef.results.length} runs</span>
                         </div>
                       </button>
@@ -578,16 +578,14 @@ export default function EvalsPage() {
                   </div>
                   <div className="grid gap-3 px-4 py-3 xl:grid-cols-4">
                     <label className="flex items-center gap-2 text-xs text-foreground">
-                      <input
+                      <Switch
                         checked={draft.loopConfig.enabled}
-                        onChange={(event) =>
+                        onCheckedChange={(checked) =>
                           setDraft((current) => ({
                             ...current,
-                            loopConfig: { ...current.loopConfig, enabled: event.target.checked }
+                            loopConfig: { ...current.loopConfig, enabled: checked }
                           }))
                         }
-                        type="checkbox"
-                        className="h-4 w-4 rounded border-border"
                       />
                       Enable loop retry
                     </label>
