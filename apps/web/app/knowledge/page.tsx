@@ -3,6 +3,7 @@
 import { useState, useMemo } from "react";
 import { cn } from "@spielos/design-system";
 import { Icon } from "../../components/icons";
+import { PageHeader } from "@spielos/design-system";
 import { AppShell } from "../../components/app-shell";
 import { FolderFileBrowser } from "../../components/folder-file-browser";
 import { LibraryFilesSection } from "../../components/library-files-section";
@@ -37,16 +38,10 @@ export default function KnowledgePage() {
   return (
     <AppShell>
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
-        <header className="flex h-10 shrink-0 items-center gap-3 border-b border-border px-4">
-          <div className="flex min-w-0 items-center gap-2">
-            <div className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-panel-raised text-foreground">
-              <Icon name="brain" size={14} />
-            </div>
-            <div className="min-w-0">
-              <h1 className="truncate text-sm font-semibold text-foreground">Knowledge</h1>
-            </div>
-          </div>
-        </header>
+        <PageHeader
+          icon={<Icon name="brain" size={14} />}
+          title="Knowledge"
+        />
 
         <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-panel-raised px-3">
           {sections.map((section) => {

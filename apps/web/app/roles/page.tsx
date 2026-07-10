@@ -10,6 +10,7 @@ import {
   Field,
   Input,
   NativeSelect,
+  PageHeader,
   Pill,
   SearchInput,
   Textarea,
@@ -127,18 +128,18 @@ export default function RolesPage() {
       }
     >
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
-        <header className="flex h-10 shrink-0 items-center gap-3 border-b border-border px-4">
-          <div className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-panel-raised text-foreground">
-            <Icon name="users" size={14} />
-          </div>
-          <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold text-foreground">Roles</h1>
-          </div>
-          <div className="ml-auto hidden w-80 md:block">
-            <SearchInput placeholder="Search roles" value={query} onChange={setQuery} />
-          </div>
-          <InspectorToggle label="Open settings panel" />
-        </header>
+        <PageHeader
+          icon={<Icon name="users" size={14} />}
+          title="Roles"
+          actions={
+            <>
+              <div className="hidden w-80 md:block">
+                <SearchInput placeholder="Search roles" value={query} onChange={setQuery} />
+              </div>
+              <InspectorToggle label="Open settings panel" />
+            </>
+          }
+        />
 
         <div className="flex min-h-0 flex-1">
           <aside className="flex w-80 shrink-0 flex-col border-r border-border bg-background">

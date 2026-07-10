@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { Button, EmptyState, Field, Input, NativeSelect, Pill, SearchInput, Textarea, Tooltip, cn } from "@spielos/design-system";
+import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, SearchInput, Textarea, Tooltip, cn } from "@spielos/design-system";
 import { Icon } from "../../components/icons";
 import { InspectorToggle } from "../../components/inspector-toggle";
 import { AppShell } from "../../components/app-shell";
@@ -72,18 +72,18 @@ export default function ToolsPage() {
   return (
     <AppShell inspector={<SkillInspector draft={draft} setDraft={setDraft} />}>
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
-        <header className="flex h-10 shrink-0 items-center gap-3 border-b border-border px-4">
-          <div className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-panel-raised text-foreground">
-             <Icon name="sparkles" size={14} />
-          </div>
-          <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold text-foreground">Skills</h1>
-          </div>
-          <div className="ml-auto hidden w-80 md:block">
-            <SearchInput placeholder="Search skills" value={query} onChange={setQuery} />
-          </div>
-          <InspectorToggle label="Open settings panel" />
-        </header>
+        <PageHeader
+          icon={<Icon name="sparkles" size={14} />}
+          title="Skills"
+          actions={
+            <>
+              <div className="hidden w-80 md:block">
+                <SearchInput placeholder="Search skills" value={query} onChange={setQuery} />
+              </div>
+              <InspectorToggle label="Open settings panel" />
+            </>
+          }
+        />
 
         <div className="flex min-h-0 flex-1">
           <aside className="flex w-80 shrink-0 flex-col border-r border-border bg-background">

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Button, EmptyState, Field, Input, NativeSelect, Pill, SearchInput, Switch, Textarea, Tooltip, cn } from "@spielos/design-system";
+import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, SearchInput, Switch, Textarea, Tooltip, cn } from "@spielos/design-system";
 import { Icon } from "../../components/icons";
 import { InspectorToggle } from "../../components/inspector-toggle";
 import { AppShell } from "../../components/app-shell";
@@ -280,18 +280,18 @@ export default function EvalsPage() {
       }
     >
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
-        <header className="flex h-10 shrink-0 items-center gap-3 border-b border-border px-4">
-          <div className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-panel-raised text-foreground">
-            <Icon name="bar-chart" size={14} />
-          </div>
-          <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold text-foreground">Evals</h1>
-          </div>
-          <div className="ml-auto hidden w-80 md:block">
-            <SearchInput placeholder="Search evals" value={query} onChange={setQuery} />
-          </div>
-          <InspectorToggle label="Open inspector" />
-        </header>
+        <PageHeader
+          icon={<Icon name="bar-chart" size={14} />}
+          title="Evals"
+          actions={
+            <>
+              <div className="hidden w-80 md:block">
+                <SearchInput placeholder="Search evals" value={query} onChange={setQuery} />
+              </div>
+              <InspectorToggle label="Open inspector" />
+            </>
+          }
+        />
 
         <div className="flex min-h-0 flex-1">
           <aside className="flex w-80 shrink-0 flex-col border-r border-border bg-background">
