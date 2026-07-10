@@ -77,9 +77,8 @@ export function ContextPicker() {
           id: evalFile.id,
           kind: "eval" as const,
           title: evalFile.name,
-          subtitle: `${evalFile.targetType} · ${evalFile.rubrics.length} rubrics · threshold ${evalFile.overallThreshold}`,
-          body: evalFile.description,
-          meta: { targetType: evalFile.targetType, targetId: evalFile.targetId }
+          subtitle: `${evalFile.rubrics.length} rubrics - threshold ${evalFile.overallThreshold}`,
+          body: evalFile.description
         }));
       case "workstream":
         return store.workstreams.filter((workstream) => workstream.status === "active").map((workstream) => ({

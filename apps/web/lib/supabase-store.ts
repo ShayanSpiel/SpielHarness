@@ -189,7 +189,9 @@ export async function loadWorkspaceFromDb(): Promise<WorkspaceState> {
     if (item) {
       items.push(item);
       const folder = file.metadata.seedFolder;
-      if (typeof folder === "string") folderNames.add(folder);
+      if (typeof folder === "string" && ["knowledge", "library"].includes(item.kind)) {
+        folderNames.add(folder);
+      }
     }
 
     const role = parseRoleFromHarnessFile(file);

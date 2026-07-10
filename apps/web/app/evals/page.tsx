@@ -48,14 +48,6 @@ function blankRubric(): Rubric {
   };
 }
 
-const TARGET_TYPES: { value: import("../../lib/workspace-data").EvalTargetType; label: string; icon: string }[] = [
-  { value: "draft", label: "Draft", icon: "file-text" },
-  { value: "prompt", label: "Prompt", icon: "message-square" },
-  { value: "workflow", label: "Workflow", icon: "git-branch" },
-  { value: "skill", label: "Skill", icon: "sparkles" },
-  { value: "role", label: "Role", icon: "users" }
-];
-
 const RUBRIC_TYPES = ["contains", "missing", "min_words", "max_words", "regex", "llm_judge"] as const;
 
 export default function EvalsPage() {
@@ -229,24 +221,6 @@ export default function EvalsPage() {
     }
   }
 
-  function saveAsSkill() {
-    const slug = `eval.${draft.name.toLowerCase().replace(/\s+/g, "-")}`;
-    store.addSkill({
-      name: `${draft.name} (skill)`,
-      slug,
-      description: `Eval skill: ${draft.name}`,
-      category: "evaluation",
-      status: "active",
-      auth: "none",
-      sideEffect: "none",
-      inputSchema: '{ "input": "string" }',
-      outputSchema: '{ "score": "number", "passed": "boolean" }',
-      implementation: `Scores input with ${draft.rubrics.length} rubrics.`,
-      evalRubrics: draft.rubrics,
-      overallThreshold: draft.overallThreshold
-    });
-  }
-
   function exportJson() {
     if (isNew) return;
     const data = JSON.stringify(draft, null, 2);
@@ -356,7 +330,7 @@ export default function EvalsPage() {
                         type="button"
                       >
                         <div className="flex items-center gap-2">
-                          <Icon className="text-muted-foreground" name={TARGET_TYPES.find((t) => t.value === ef.targetType)?.icon ?? "file-text"} size={14} />
+                          <Icon className="text-muted-foreground" name="bar-chart" size={14} />
                           <span className="truncate text-sm font-medium text-foreground">{ef.name}</span>
                           <Pill tone={ef.status === "active" ? "success" : "default"} className="ml-auto text-[10px]">
                             {ef.status}
@@ -427,11 +401,6 @@ export default function EvalsPage() {
                     </Button>
                   </Tooltip>
                 ) : null}
-                <Tooltip content="Save eval as a skill (kind=eval)" side="bottom">
-                  <Button onClick={saveAsSkill} size="md" variant="outline">
-                    <Icon name="sparkles" size={14} /> Save as skill
-                  </Button>
-                </Tooltip>
                 <Button disabled={!dirty || saving} onClick={save} size="md" variant={dirty ? "primary" : "outline"}>
                    {saving ? <Icon name="loader" size={14} className="animate-spin" /> : <Icon name="save" size={14} />}
                    Save

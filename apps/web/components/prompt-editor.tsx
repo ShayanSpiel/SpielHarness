@@ -27,6 +27,7 @@ export function PromptEditor({
   const [formatMessage, setFormatMessage] = useState<string | null>(null);
   const isJson = fileName.toLowerCase().endsWith(".json");
   const jsonState = useMemo(() => (isJson && value.trim() ? parseJson(value) : null), [isJson, value]);
+  const jsonLabel = jsonState === null ? "json" : jsonState.valid ? "valid json" : "invalid json";
 
   function formatJson() {
     if (!isJson) return;
@@ -46,8 +47,8 @@ export function PromptEditor({
         <span className="text-xs font-medium text-foreground">
           {isJson ? "JSON Prompt" : "Markdown Prompt"}
         </span>
-        <Pill tone={isJson ? (jsonState?.valid === false ? "destructive" : "success") : "default"} className="ml-1">
-          {isJson ? (jsonState?.valid === false ? "invalid json" : "valid json") : "markdown"}
+        <Pill tone={isJson ? (jsonState?.valid === false ? "destructive" : "default") : "default"} className="ml-1">
+          {isJson ? jsonLabel : "markdown"}
         </Pill>
         {isJson && jsonState?.valid === false ? (
           <span className="min-w-0 truncate text-xs text-destructive">{jsonState.error}</span>

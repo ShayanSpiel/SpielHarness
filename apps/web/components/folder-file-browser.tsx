@@ -34,6 +34,7 @@ type FolderFileBrowserProps = {
   folderSectionLabel?: string;
   newFileLabel?: string;
   searchPlaceholder?: string;
+  useSharedFolders?: boolean;
   renderEditor: (props: {
     value: string;
     onChange: (value: string) => void;
@@ -58,20 +59,13 @@ export function FolderFileBrowser({
   folderSectionLabel = "Folders",
   newFileLabel = "File",
   searchPlaceholder = "Search files",
+  useSharedFolders = false,
   renderEditor,
   showStatusSelect = true,
   showFolderSelect = true,
   emptyStateDescription = "Create or select a file from the folder tree to start editing."
 }: FolderFileBrowserProps) {
   const store = useWorkspaceStore();
-  const folders = useMemo(() => {
-    const seen = new Set<string>();
-    return [...store.libraryFolders, ...defaultFolders].filter((f) => {
-      if (seen.has(f)) return false;
-      seen.add(f);
-      return true;
-    });
-  }, [store.libraryFolders, defaultFolders]);
   const resourceItems = useMemo(
     () =>
       store.items
@@ -80,6 +74,21 @@ export function FolderFileBrowser({
         .sort(sortByTitle),
     [store.items, itemKind, defaultFolders]
   );
+  const [localFolders, setLocalFolders] = useState<string[]>([]);
+  const folders = useMemo(() => {
+    const seen = new Set<string>();
+    const itemFolders = resourceItems
+      .map((item) => item.folder)
+      .filter((folder): folder is string => Boolean(folder));
+    const source = useSharedFolders
+      ? [...store.libraryFolders, ...defaultFolders, ...itemFolders, ...localFolders]
+      : [...defaultFolders, ...itemFolders, ...localFolders];
+    return source.filter((folder) => {
+      if (seen.has(folder)) return false;
+      seen.add(folder);
+      return true;
+    });
+  }, [defaultFolders, localFolders, resourceItems, store.libraryFolders, useSharedFolders]);
 
   const initialItem = resourceItems[0] ?? null;
   const [selectedFolder, setSelectedFolder] = useState<string>(
@@ -161,7 +170,8 @@ export function FolderFileBrowser({
     event?.preventDefault();
     const clean = folderName.trim();
     if (!clean) return;
-    store.addLibraryFolder(clean);
+    if (useSharedFolders) store.addLibraryFolder(clean);
+    else setLocalFolders((current) => current.includes(clean) ? current : [...current, clean]);
     setSelectedFolder(clean);
     setExpandedFolders((current) => new Set(current).add(clean));
     setFolderName("");
@@ -177,7 +187,22 @@ export function FolderFileBrowser({
     if (!editingFolder) return;
     const clean = folderDraft.trim();
     if (clean && clean !== editingFolder) {
-      store.renameLibraryFolder(editingFolder, clean);
+      if (useSharedFolders) {
+        store.renameLibraryFolder(editingFolder, clean);
+      } else {
+        setLocalFolders((current) =>
+          current.map((folder) => folder === editingFolder ? clean : folder)
+        );
+        resourceItems
+          .filter((item) => item.folder === editingFolder)
+          .forEach((item) =>
+            store.updateItem(item.id, {
+              ...item,
+              folder: clean,
+              metadata: { ...item.metadata, seedFolder: clean }
+            })
+          );
+      }
       setSelectedFolder((current) => (current === editingFolder ? clean : current));
       setDraft((current) =>
         current.folder === editingFolder ? { ...current, folder: clean } : current
@@ -196,7 +221,8 @@ export function FolderFileBrowser({
     resourceItems
       .filter((item) => item.folder === folder)
       .forEach((item) => store.deleteItem(item.id));
-    store.deleteLibraryFolder(folder, null);
+    if (useSharedFolders) store.deleteLibraryFolder(folder, null);
+    else setLocalFolders((current) => current.filter((entry) => entry !== folder));
     const nextFolder = folders.find((entry) => entry !== folder) ?? defaultFolders[0] ?? "Notes";
     const nextFile = resourceItems.find((item) => item.folder !== folder) ?? null;
     setSelectedFolder(nextFolder);

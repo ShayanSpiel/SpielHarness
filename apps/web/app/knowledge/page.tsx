@@ -79,6 +79,7 @@ export default function KnowledgePage() {
             itemKind="library"
             defaultFolders={LIBRARY_DEFAULT_FOLDERS}
             fileExtension=".md"
+            useSharedFolders
             renderEditor={({ value, onChange }) => (
               <DocumentEditor onChange={onChange} value={value} />
             )}

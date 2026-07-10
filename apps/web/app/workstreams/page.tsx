@@ -221,7 +221,7 @@ export default function WorkstreamsPage() {
   }
 
   async function runWorkflow() {
-    if (draft.nodes.length === 0 || running) return;
+    if (draft.nodes.length === 0 || draft.status !== "active" || running) return;
 
     setRunning(true);
     setRunLog(["Starting workflow execution..."]);
@@ -897,7 +897,9 @@ function GraphCanvas({
                 <div className="space-y-1 px-2 py-2 text-[11px] text-muted-foreground select-none">
                   <div className="truncate">in: {node.input}</div>
                   <div className="truncate">out: {node.output}</div>
-                  <div>role skills · {node.fileIds.length} files</div>
+                  <div>
+                    {node.skillIds.length ? `${node.skillIds.length} step skills` : "role skills"} - {node.fileIds.length} files
+                  </div>
                 </div>
                 <div className="flex items-center gap-1 border-t border-border px-2 py-1.5 select-none">
                   <button
