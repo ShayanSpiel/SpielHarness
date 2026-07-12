@@ -4,8 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Button, Tooltip, cn } from "@spielos/design-system";
 import { ThemeToggle } from "@spielos/design-system/components/theme-toggle";
-import { Icon } from "./icons";
-import { ENTITY_ICONS } from "./icon-constants";
+import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 
 type NavEntry = {
   href: string;
@@ -19,7 +18,7 @@ const sections: NavEntry[] = [
   { href: "/knowledge", label: "Knowledge", icon: ENTITY_ICONS.knowledge, match: (p) => p.startsWith("/knowledge") },
   { href: "/strategy", label: "Strategy", icon: ENTITY_ICONS.strategy, match: (p) => p.startsWith("/strategy") || p.startsWith("/prompts") },
   { href: "/roles", label: "Roles", icon: ENTITY_ICONS.role, match: (p) => p.startsWith("/roles") },
-  { href: "/workstreams", label: "Workstreams", icon: ENTITY_ICONS.workflow, match: (p) => p.startsWith("/workstreams") },
+  { href: "/workflows", label: "Workflows", icon: ENTITY_ICONS.workflow, match: (p) => p.startsWith("/workflows") },
   { href: "/evals", label: "Evals", icon: ENTITY_ICONS.eval, match: (p) => p.startsWith("/evals") },
   { href: "/tools", label: "Skills", icon: ENTITY_ICONS.skill, match: (p) => p.startsWith("/tools") }
 ];

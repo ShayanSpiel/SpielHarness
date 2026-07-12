@@ -1,6 +1,6 @@
 "use client";
 
-import { Icon } from "../icons";
+import { Icon } from "@spielos/design-system/components";
 import { InspectorToggle } from "../inspector-toggle";
 import { useEffect, useMemo, useState } from "react";
 import { Button, Tooltip } from "@spielos/design-system";

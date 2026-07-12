@@ -1,6 +1,6 @@
 "use client";
 
-import { Icon } from "./icons";
+import { Icon } from "@spielos/design-system/components";
 import { Button, Tooltip } from "@spielos/design-system";
 import { useWorkspaceStore } from "../lib/use-workspace-store";
 

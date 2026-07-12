@@ -1,7 +1,6 @@
 "use client";
 
-import { Icon } from "../icons";
-import { CONTEXT_KIND_ICONS, ENTITY_ICONS, EVENT_ICONS } from "../icon-constants";
+import { Icon, CONTEXT_KIND_ICONS, ENTITY_ICONS, EVENT_ICONS } from "@spielos/design-system/components";
 import {
   type ReactNode,
   useEffect,
@@ -327,7 +326,7 @@ export function RunDrawer() {
         <SectionHeader
           active={section === "context"}
           count={totalContext}
-          icon={<Icon name="sparkles" size={12} />}
+          icon={<Icon name="reading-glass" size={12} />}
           id="context"
           label="Context"
           onClick={() => setSection("context")}

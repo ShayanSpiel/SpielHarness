@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Button, Pill, Tooltip, cn } from "@spielos/design-system";
-import { Icon } from "./icons";
+import { Icon } from "@spielos/design-system/components";
 
 function parseJson(value: string): { valid: true; formatted: string } | { valid: false; error: string } {
   try {

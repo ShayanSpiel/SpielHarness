@@ -130,11 +130,11 @@ const DEFAULT_ICON_MAP: Record<string, string> = {
   "grip-vertical": "Move",
   move: "Move",
   brain: "Brain",
-  "folder-kanban": "FolderOpen",
+  "workflow-alt": "WorkflowAlt",
   wand: "MagicWand",
   flask: "Flask",
   "square-terminal": "Terminal",
-  "bar-chart": "BarChart",
+  "bar-chart": "MedicalFlask",
   pencil: "Pencil",
   bot: "Robot",
   "loader-2": "LoaderDots",
@@ -143,7 +143,10 @@ const DEFAULT_ICON_MAP: Record<string, string> = {
   prompt: "MessageBubbleCode",
   "prompt-json": "FileCode",
   "prompt-folder": "FileDetail",
+  task: "Task",
 };
+
+const INITIAL_ICON_MAP: Record<string, string> = { ...DEFAULT_ICON_MAP };
 
 interface IconRegistryContextType {
   icons: Record<string, string>;
@@ -175,7 +178,7 @@ export function IconRegistryProvider({
   }, []);
 
   const resetIcons = useCallback(() => {
-    setIconMap(DEFAULT_ICON_MAP);
+    setIconMap({ ...DEFAULT_ICON_MAP });
   }, []);
 
   return (
@@ -210,6 +213,6 @@ export const iconRegistry = {
     Object.keys(DEFAULT_ICON_MAP).forEach((key) => {
       delete DEFAULT_ICON_MAP[key];
     });
-    Object.assign(DEFAULT_ICON_MAP, DEFAULT_ICON_MAP);
+    Object.assign(DEFAULT_ICON_MAP, INITIAL_ICON_MAP);
   }
 };

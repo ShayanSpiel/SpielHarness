@@ -20,7 +20,7 @@ import {
   Tooltip,
   cn
 } from "@spielos/design-system";
-import { Icon } from "./icons";
+import { Icon } from "@spielos/design-system/components";
 import { useWorkspaceStore } from "../lib/use-workspace-store";
 import type { WorkspaceItem, WorkspaceKind } from "../lib/workspace-data";
 

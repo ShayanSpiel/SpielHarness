@@ -1,6 +1,20 @@
 "use client";
 
 export { Button, type ButtonProps } from "./button";
+export { Icon, type IconProps } from "./icons";
+export {
+  ENTITY_ICONS,
+  ACTION_ICONS,
+  EVENT_ICONS,
+  CONTEXT_KIND_ICONS,
+  MENTION_KIND_ICONS,
+  SETTINGS_TAB_ICONS
+} from "./icon-constants";
+export {
+  IconRegistryProvider,
+  useIconRegistry,
+  iconRegistry
+} from "./icon-registry";
 export {
   Command,
   CommandEmpty,

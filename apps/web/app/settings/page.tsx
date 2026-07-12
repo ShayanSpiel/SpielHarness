@@ -1,7 +1,6 @@
 "use client";
 
-import { Icon } from "../../components/icons";
-import { SETTINGS_TAB_ICONS } from "../../components/icon-constants";
+import { Icon, SETTINGS_TAB_ICONS } from "@spielos/design-system/components";
 import { useEffect, useState } from "react";
 import {
   Button,

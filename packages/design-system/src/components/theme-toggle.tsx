@@ -1,8 +1,8 @@
 "use client";
 
-import { Moon, Sun } from "lucide-react";
 import { useTheme } from "../hooks/use-theme";
 import { Button } from "./button";
+import { Icon } from "./icons";
 import { Tooltip } from "./tooltip";
 
 export function ThemeToggle() {
@@ -10,7 +10,7 @@ export function ThemeToggle() {
   return (
     <Tooltip content={isDark ? "Switch to light" : "Switch to dark"} side="right">
       <Button aria-label="Toggle theme" onClick={toggle} size="icon" variant="ghost">
-        {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        <Icon name={isDark ? "sun" : "moon"} size={16} />
       </Button>
     </Tooltip>
   );

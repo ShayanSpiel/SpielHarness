@@ -1,0 +1,68 @@
+import { memo } from "react";
+import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
+import { Icon } from "@spielos/design-system/components";
+import { Button, Pill, cn } from "@spielos/design-system";
+import type { WorkstreamNode } from "../../../lib/workspace-data";
+import { NODE_DIMENSIONS } from "../workflow-canvas-config";
+
+export type WorkflowNodeData = {
+  node: WorkstreamNode;
+  role?: string;
+  isConnecting: boolean;
+  selected: boolean;
+  onConnect: (nodeId: string) => void;
+  onDelete: (nodeId: string) => void;
+};
+
+function RoleNodeComponent({ data }: NodeProps<Node<WorkflowNodeData>>) {
+  const { node, role, isConnecting, selected, onConnect, onDelete } = data;
+
+  return (
+    <div
+      className={cn(
+        "w-52 rounded-md border bg-panel shadow-sm",
+        selected
+          ? "border-[var(--ring)] border-2 shadow-[var(--shadow-popover)]"
+          : "border-border",
+        isConnecting && "ring-2 ring-ring/30"
+      )}
+      style={{ width: NODE_DIMENSIONS.width }}
+    >
+      <Handle type="target" position={Position.Left} className="!h-5 !w-5 !border-2 !border-border !bg-panel-strong !flex !items-center !justify-center">
+        <Icon name="chevron-left" size={10} />
+      </Handle>
+      <div className="flex items-center gap-2 border-b border-border px-2 py-1.5 select-none">
+        <span className="text-muted-foreground">
+          <Icon name="grip-vertical" size={14} />
+        </span>
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{node.title}</span>
+        <Pill>{role ?? "role"}</Pill>
+      </div>
+      <div className="space-y-1 px-2 py-2 text-[11px] text-muted-foreground select-none">
+        <div className="truncate">in: {node.input}</div>
+        <div className="truncate">out: {node.output}</div>
+        <div>
+          {node.skillIds.length} step skills - {node.fileIds.length} files
+        </div>
+      </div>
+      <div className="flex items-center gap-1 border-t border-border px-2 py-1.5 select-none">
+        <button
+          className="flex h-6 flex-1 items-center justify-center gap-1 rounded-sm border border-border bg-panel text-[11px] text-muted-foreground hover:bg-hover hover:text-foreground transition-colors"
+          onClick={(e) => { e.stopPropagation(); onConnect(node.id); }}
+          type="button"
+        >
+          <Icon name="workflow-alt" size={12} />
+          Connect
+        </button>
+        <Button aria-label="Delete step" className="h-6 w-6" onClick={(e) => { e.stopPropagation(); onDelete(node.id); }} size="icon" variant="ghost">
+          <Icon name="trash" size={12} />
+        </Button>
+      </div>
+      <Handle type="source" position={Position.Right} className="!h-5 !w-5 !border-2 !border-border !bg-panel-strong !flex !items-center !justify-center">
+        <Icon name="chevron-right" size={10} />
+      </Handle>
+    </div>
+  );
+}
+
+export const RoleNode = memo(RoleNodeComponent);

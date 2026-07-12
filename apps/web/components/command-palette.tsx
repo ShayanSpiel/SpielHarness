@@ -1,7 +1,6 @@
 "use client";
 
-import { Icon } from "./icons";
-import { ENTITY_ICONS } from "./icon-constants";
+import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Dialog, DialogContent, Input, Pill, cn } from "@spielos/design-system";
 import { useWorkspaceStore } from "../lib/use-workspace-store";
@@ -46,7 +45,7 @@ const NAV: { href: string; label: string; icon: ReactNode; keywords: string[] }[
   { href: "/", label: "Runs", icon: <Icon name={ENTITY_ICONS.run} size={14} />, keywords: ["run", "chat", "home"] },
   { href: "/knowledge", label: "Knowledge", icon: <Icon name={ENTITY_ICONS.knowledge} size={14} />, keywords: ["knowledge", "evidence", "library", "file"] },
   { href: "/roles", label: "Roles", icon: <Icon name={ENTITY_ICONS.role} size={14} />, keywords: ["role", "agent"] },
-  { href: "/workstreams", label: "Workstreams", icon: <Icon name={ENTITY_ICONS.workflow} size={14} />, keywords: ["workflow", "workstream", "graph"] },
+  { href: "/workflows", label: "Workflows", icon: <Icon name={ENTITY_ICONS.workflow} size={14} />, keywords: ["workflow", "workstream", "graph"] },
   { href: "/tools", label: "Skills", icon: <Icon name={ENTITY_ICONS.skill} size={14} />, keywords: ["skill", "tool"] },
   { href: "/evals", label: "Evals", icon: <Icon name={ENTITY_ICONS.eval} size={14} />, keywords: ["eval", "rubric"] },
   { href: "/settings", label: "Settings", icon: <Icon name={ENTITY_ICONS.settings} size={14} />, keywords: ["settings", "integrations", "models"] }

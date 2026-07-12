@@ -15,14 +15,14 @@ export function PageHeader({ icon, title, actions, children, className }: PageHe
   return (
     <header
       className={cn(
-        "flex h-10 shrink-0 items-center gap-3 border-b border-[var(--border)] px-4",
+        "flex h-10 shrink-0 items-center gap-3 border-b border-border px-4",
         className
       )}
     >
-      <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--panel-raised)] text-[var(--foreground)]">
+      <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border bg-panel-raised text-foreground">
         {icon}
       </div>
-      <h1 className="truncate text-sm font-semibold text-[var(--foreground)]">{title}</h1>
+      <h1 className="truncate text-sm font-semibold text-foreground">{title}</h1>
       {children}
       {actions ? <div className="ml-auto flex items-center gap-1.5">{actions}</div> : null}
     </header>

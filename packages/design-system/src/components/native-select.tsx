@@ -20,7 +20,7 @@ export const NativeSelect = forwardRef<HTMLSelectElement, NativeSelectProps>(
       <div className={cn("relative", className)}>
         <select
           aria-label={ariaLabel}
-          className="h-8 w-full appearance-none rounded-md border border-[var(--border)] bg-[var(--input)] px-2.5 pr-8 text-sm text-[var(--foreground)] outline-none transition-colors duration-[var(--duration)] focus:border-[var(--ring)] focus:ring-2 focus:ring-[var(--ring)]/30"
+          className="h-8 w-full appearance-none rounded-md border border-border bg-input px-2.5 pr-8 text-sm text-foreground outline-none transition-colors duration-[var(--duration)] focus:border-[var(--ring)] focus:ring-2 focus:ring-[var(--ring)]/30"
           onChange={(event) => onChange(event.target.value)}
           ref={ref}
           value={value}
@@ -33,7 +33,7 @@ export const NativeSelect = forwardRef<HTMLSelectElement, NativeSelectProps>(
           ))}
         </select>
         <svg
-          className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--muted-foreground)]"
+          className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"

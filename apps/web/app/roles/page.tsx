@@ -1,8 +1,7 @@
 "use client";
 
 import type { Role } from "@spielos/core";
-import { Icon } from "../../components/icons";
-import { ENTITY_ICONS } from "../../components/icon-constants";
+import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { InspectorToggle } from "../../components/inspector-toggle";
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import {
@@ -401,7 +400,7 @@ function RoleInspector({
   }
 
   const tabs: Array<{ id: typeof tab; label: string; icon: string }> = [
-    { id: "skills", label: "Skills", icon: "sparkles" },
+    { id: "skills", label: "Skills", icon: "reading-glass" },
     { id: "input", label: "Input", icon: "arrow-down" },
     { id: "output", label: "Output", icon: "arrow-up" }
   ];
@@ -409,7 +408,7 @@ function RoleInspector({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
-         <Icon name="sparkles" className="text-muted-foreground" size={14} />
+         <Icon name="reading-glass" className="text-muted-foreground" size={14} />
         <span className="text-xs font-semibold text-foreground">Role Settings</span>
         <span className="ml-auto truncate text-[11px] text-muted-foreground">
           {tab === "skills" ? (skillNames.length ? skillNames.join(", ") : "No skills assigned") : "Role-owned contract"}

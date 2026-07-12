@@ -2,8 +2,7 @@
 
 import { useState, useMemo } from "react";
 import { cn } from "@spielos/design-system";
-import { Icon } from "../../components/icons";
-import { ENTITY_ICONS } from "../../components/icon-constants";
+import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { PageHeader } from "@spielos/design-system";
 import { AppShell } from "../../components/app-shell";
 import { FolderFileBrowser } from "../../components/folder-file-browser";

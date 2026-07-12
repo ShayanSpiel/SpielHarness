@@ -36,7 +36,7 @@ export const DialogContent = forwardRef<
       <DialogPrimitive.Content
         ref={ref}
         className={cn(
-          "fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 rounded-lg border border-[var(--border)] bg-[var(--panel)] text-[var(--foreground)] shadow-[var(--shadow-popover)] focus:outline-none",
+          "fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-panel text-foreground shadow-popover focus:outline-none",
           className
         )}
         {...props}
@@ -45,7 +45,7 @@ export const DialogContent = forwardRef<
         {!hideClose ? (
           <DialogPrimitive.Close
             aria-label="Close"
-            className="absolute right-3 top-3 rounded-sm text-[var(--muted-foreground)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="absolute right-3 top-3 rounded-sm text-muted-foreground transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
             <X className="h-4 w-4" />
           </DialogPrimitive.Close>
@@ -65,7 +65,7 @@ export function DialogTitle({
 }: ComponentPropsWithoutRef<typeof DialogPrimitive.Title>) {
   return (
     <DialogPrimitive.Title
-      className={cn("text-base font-semibold text-[var(--foreground)]", className)}
+      className={cn("text-base font-semibold text-foreground", className)}
       {...props}
     />
   );
@@ -77,7 +77,7 @@ export function DialogDescription({
 }: ComponentPropsWithoutRef<typeof DialogPrimitive.Description>) {
   return (
     <DialogPrimitive.Description
-      className={cn("text-sm text-[var(--muted-foreground)]", className)}
+      className={cn("text-sm text-muted-foreground", className)}
       {...props}
     />
   );

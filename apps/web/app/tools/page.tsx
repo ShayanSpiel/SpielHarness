@@ -3,8 +3,7 @@
 import { useMemo, useState, useEffect, type Dispatch, type SetStateAction } from "react";
 import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, SearchInput, Switch, Textarea, Tooltip, cn, toast } from "@spielos/design-system";
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
-import { Icon } from "../../components/icons";
-import { ENTITY_ICONS } from "../../components/icon-constants";
+import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { InspectorToggle } from "../../components/inspector-toggle";
 import { AppShell } from "../../components/app-shell";
 import { MentionTextarea } from "../../components/mention-textarea";
@@ -148,7 +147,7 @@ export default function ToolsPage() {
                           onClick={() => selectSkill(skill)}
                           type="button"
                         >
-                           <Icon name="sparkles" className="mt-0.5 shrink-0 text-muted-foreground" size={14} />
+                           <Icon name="reading-glass" className="mt-0.5 shrink-0 text-muted-foreground" size={14} />
                           <span className="min-w-0 flex-1">
                             <span className="flex items-center gap-2">
                               <span className="truncate text-sm font-medium">{skill.name}</span>

@@ -24,14 +24,14 @@ export function EmptyState({
       )}
     >
       {icon ? (
-        <div className="rounded-full border border-[var(--border)] bg-[var(--panel-raised)] p-3 text-[var(--muted-foreground)]">
+        <div className="rounded-full border border-border bg-panel-raised p-3 text-muted-foreground">
           {icon}
         </div>
       ) : null}
       <div className="space-y-1">
-        <p className="text-sm font-semibold text-[var(--foreground)]">{title}</p>
+        <p className="text-sm font-semibold text-foreground">{title}</p>
         {description ? (
-          <p className="max-w-sm text-xs text-[var(--muted-foreground)]">{description}</p>
+          <p className="max-w-sm text-xs text-muted-foreground">{description}</p>
         ) : null}
       </div>
       {action ? <div className="pt-1">{action}</div> : null}

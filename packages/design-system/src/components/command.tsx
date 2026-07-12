@@ -13,7 +13,7 @@ export const Command = forwardRef<
     <CommandPrimitive
       ref={ref}
       className={cn(
-        "flex h-full w-full flex-col overflow-hidden rounded-md bg-[var(--panel)] text-[var(--foreground)]",
+        "flex h-full w-full flex-col overflow-hidden rounded-md bg-panel text-foreground",
         className
       )}
       {...props}
@@ -26,12 +26,12 @@ export const CommandInput = forwardRef<
   ComponentPropsWithoutRef<typeof CommandPrimitive.Input>
 >(function CommandInput({ className, ...props }, ref) {
   return (
-    <div className="flex items-center gap-2 border-b border-[var(--border)] px-3">
-      <Search className="h-3.5 w-3.5 text-[var(--muted-foreground)]" />
+    <div className="flex items-center gap-2 border-b border-border px-3">
+      <Search className="h-3.5 w-3.5 text-muted-foreground" />
       <CommandPrimitive.Input
         ref={ref}
         className={cn(
-          "flex h-10 w-full bg-transparent text-sm text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none",
+          "flex h-10 w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none",
           className
         )}
         {...props}
@@ -60,7 +60,7 @@ export const CommandEmpty = forwardRef<
   return (
     <CommandPrimitive.Empty
       ref={ref}
-      className="py-6 text-center text-sm text-[var(--muted-foreground)]"
+      className="py-6 text-center text-sm text-muted-foreground"
       {...props}
     />
   );
@@ -74,7 +74,7 @@ export const CommandGroup = forwardRef<
     <CommandPrimitive.Group
       ref={ref}
       className={cn(
-        "overflow-hidden p-1 text-[var(--foreground)] [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-[var(--muted-foreground)]",
+        "overflow-hidden p-1 text-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-muted-foreground",
         className
       )}
       {...props}
@@ -90,7 +90,7 @@ export const CommandItem = forwardRef<
     <CommandPrimitive.Item
       ref={ref}
       className={cn(
-        "relative flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-[var(--foreground)] outline-none transition-colors data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 data-[selected=true]:bg-[var(--selected)] data-[selected=true]:text-[var(--foreground-strong)]",
+        "relative flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-foreground outline-none transition-colors data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 data-[selected=true]:bg-selected data-[selected=true]:text-foreground-strong",
         className
       )}
       {...props}
@@ -105,7 +105,7 @@ export const CommandSeparator = forwardRef<
   return (
     <CommandPrimitive.Separator
       ref={ref}
-      className={cn("-mx-1 my-1 h-px bg-[var(--border)]", className)}
+      className={cn("-mx-1 my-1 h-px bg-border", className)}
       {...props}
     />
   );

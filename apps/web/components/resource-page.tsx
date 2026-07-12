@@ -1,6 +1,6 @@
 "use client";
 
-import { Icon } from "./icons";
+import { Icon } from "@spielos/design-system/components";
 import Link from "next/link";
 import { useMemo, useState, type ReactNode } from "react";
 import {

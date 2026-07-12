@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Button, EmptyState } from "@spielos/design-system";
-import { Icon } from "./icons";
+import { Icon } from "@spielos/design-system/components";
 import { GooglePicker, type PickedFile } from "./google-picker";
 import { useWorkspaceStore } from "../lib/use-workspace-store";
 

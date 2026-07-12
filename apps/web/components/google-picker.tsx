@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@spielos/design-system";
-import { Icon } from "./icons";
+import { Icon } from "@spielos/design-system/components";
 
 export type PickedFile = {
   id: string;

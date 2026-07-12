@@ -11,16 +11,16 @@ const buttonStyles = cva(
     variants: {
       variant: {
         primary:
-          "bg-[var(--primary)] text-[var(--primary-foreground)] hover:brightness-110 active:brightness-95",
+          "bg-primary text-primary-foreground hover:brightness-110 active:brightness-95",
         outline:
-          "border-[var(--border)] bg-[var(--panel)] text-[var(--foreground)] hover:bg-[var(--hover)] hover:border-[var(--border-strong)]",
+          "border-border bg-panel text-foreground hover:bg-hover hover:border-border-strong",
         ghost:
-          "text-[var(--foreground-muted)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]",
+          "text-foreground-muted hover:bg-hover hover:text-foreground",
         subtle:
-          "bg-[var(--panel-raised)] text-[var(--foreground)] hover:bg-[var(--selected)]",
+          "bg-panel-raised text-foreground hover:bg-selected",
         danger:
-          "bg-[var(--destructive)] text-[var(--background)] hover:brightness-110",
-        link: "border-transparent text-[var(--primary)] underline-offset-4 hover:underline"
+          "bg-destructive text-background hover:brightness-110",
+        link: "border-transparent text-primary underline-offset-4 hover:underline"
       },
       size: {
         sm: "h-7 px-2 text-xs",

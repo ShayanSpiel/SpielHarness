@@ -1,6 +1,6 @@
 "use client";
 
-import { Icon } from "../icons";
+import { Icon } from "@spielos/design-system/components";
 import {
   ActionBarPrimitive,
   AssistantRuntimeProvider,
@@ -533,7 +533,7 @@ function WelcomeScreen() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-4 text-center">
       <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-panel">
-        <Icon name="sparkles" size={18} />
+        <Icon name="reading-glass" size={18} />
       </div>
       <h1 className="text-xl font-semibold tracking-tight text-foreground">
         What should the marketing team do?

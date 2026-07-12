@@ -4,14 +4,13 @@ import { EditorContent, ReactRenderer, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Mention from "@tiptap/extension-mention";
 import type { MentionNodeAttrs } from "@tiptap/extension-mention";
+import type { SuggestionProps } from "@tiptap/suggestion";
 import { useEffect, useMemo, useRef } from "react";
-import { Button, Tooltip } from "@spielos/design-system";
-import { Icon } from "@spielos/design-system/components";
+import { cn } from "@spielos/design-system";
 import { MentionDropdown } from "./mention-dropdown";
 import { buildObjectReferences, mentionText } from "../lib/object-references";
 import { useWorkspaceStore } from "../lib/use-workspace-store";
 import type { ObjectReference } from "../lib/object-references";
-import type { SuggestionProps } from "@tiptap/suggestion";
 
 function escapeHtml(value: string) {
   return value
@@ -21,9 +20,9 @@ function escapeHtml(value: string) {
     .replace(/"/g, "&quot;");
 }
 
-function bodyToHtml(value: string) {
-  if (value.trim().startsWith("<")) return value;
-  const paragraphs = value
+function textToHtml(text: string): string {
+  if (text.trim().startsWith("<")) return text;
+  const paragraphs = text
     .split(/\n{2,}/)
     .map((block) => block.trim())
     .filter(Boolean);
@@ -31,6 +30,36 @@ function bodyToHtml(value: string) {
   return paragraphs
     .map((block) => `<p>${escapeHtml(block).replace(/\n/g, "<br>")}</p>`)
     .join("");
+}
+
+function htmlToText(html: string): string {
+  if (!html.trim().startsWith("<")) return html;
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  const blocks: string[] = [];
+  for (const child of div.childNodes) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      const text = child.textContent?.trim();
+      if (text) blocks.push(text);
+    } else if (child instanceof HTMLElement) {
+      if (child.tagName === "P" || child.tagName === "DIV") {
+        const text = child.textContent?.trim();
+        if (text) blocks.push(text);
+      } else if (child.tagName === "UL" || child.tagName === "OL") {
+        const items = Array.from(child.querySelectorAll("li"))
+          .map((li) => li.textContent?.trim())
+          .filter(Boolean);
+        if (items.length) blocks.push(items.join("\n"));
+      } else if (child.tagName === "BLOCKQUOTE") {
+        const text = child.textContent?.trim();
+        if (text) blocks.push(`> ${text}`);
+      } else {
+        const text = child.textContent?.trim();
+        if (text) blocks.push(text);
+      }
+    }
+  }
+  return blocks.join("\n\n");
 }
 
 function useMentionSuggestion() {
@@ -77,9 +106,7 @@ function useMentionSuggestion() {
             }
           },
           onUpdate: (props: SuggestionProps<ObjectReference, MentionNodeAttrs>) => {
-            component?.updateProps({
-              items: props.items
-            });
+            component?.updateProps({ items: props.items });
           },
           onKeyDown: (props: { event: KeyboardEvent }) => {
             if (props.event instanceof KeyboardEvent) {
@@ -109,12 +136,18 @@ function useMentionSuggestion() {
   );
 }
 
-export function DocumentEditor({
+export function RichEditor({
   value,
-  onChange
+  onChange,
+  placeholder,
+  className,
+  mono
 }: {
   value: string;
   onChange: (value: string) => void;
+  placeholder?: string;
+  className?: string;
+  mono?: boolean;
 }) {
   const lastLoadedValue = useRef(value);
   const suggestion = useMentionSuggestion();
@@ -152,132 +185,43 @@ export function DocumentEditor({
           const id = node.attrs.id as string;
           return [
             "span",
-            {
-              "data-type": "mention",
-              "data-id": id,
-              "data-label": label,
-              "data-kind": kind
-            },
+            { "data-type": "mention", "data-id": id, "data-label": label, "data-kind": kind },
             `@${label}`
           ];
         },
         suggestion
       })
     ],
-    content: bodyToHtml(value),
+    content: textToHtml(value),
     editorProps: {
       attributes: {
-        class: "min-h-full px-6 py-6 text-[15px] leading-7 text-foreground outline-none"
+        class: cn(
+          "min-h-full px-6 py-6 text-[13px] leading-6 text-foreground outline-none",
+          mono && "font-mono"
+        ),
+        "data-placeholder": placeholder ?? ""
       }
     },
     immediatelyRender: false,
     onUpdate({ editor: activeEditor }) {
       const html = activeEditor.getHTML();
       lastLoadedValue.current = html;
-      onChange(html);
+      onChange(htmlToText(html));
     }
   });
 
   useEffect(() => {
     if (!editor || value === lastLoadedValue.current) return;
     lastLoadedValue.current = value;
-    editor.commands.setContent(bodyToHtml(value), { emitUpdate: false });
+    editor.commands.setContent(textToHtml(value), { emitUpdate: false });
   }, [editor, value]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-background">
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-panel-raised px-2">
-        <EditorButton
-          active={editor?.isActive("heading", { level: 1 }) ?? false}
-          disabled={!editor}
-          label="Heading 1"
-          onClick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()}
-        >
-          <Icon name="heading-1" size={14} />
-        </EditorButton>
-        <EditorButton
-          active={editor?.isActive("heading", { level: 2 }) ?? false}
-          disabled={!editor}
-          label="Heading 2"
-          onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
-        >
-          <Icon name="heading-2" size={14} />
-        </EditorButton>
-        <div className="mx-1 h-5 w-px bg-border" />
-        <EditorButton
-          active={editor?.isActive("bold") ?? false}
-          disabled={!editor}
-          label="Bold"
-          onClick={() => editor?.chain().focus().toggleBold().run()}
-        >
-          <Icon name="bold" size={14} />
-        </EditorButton>
-        <EditorButton
-          active={editor?.isActive("italic") ?? false}
-          disabled={!editor}
-          label="Italic"
-          onClick={() => editor?.chain().focus().toggleItalic().run()}
-        >
-          <Icon name="italic" size={14} />
-        </EditorButton>
-        <div className="mx-1 h-5 w-px bg-border" />
-        <EditorButton
-          active={editor?.isActive("bulletList") ?? false}
-          disabled={!editor}
-          label="Bullet list"
-          onClick={() => editor?.chain().focus().toggleBulletList().run()}
-        >
-          <Icon name="list" size={14} />
-        </EditorButton>
-        <EditorButton
-          active={editor?.isActive("blockquote") ?? false}
-          disabled={!editor}
-          label="Quote"
-          onClick={() => editor?.chain().focus().toggleBlockquote().run()}
-        >
-          <Icon name="quote" size={14} />
-        </EditorButton>
-        <span className="ml-auto text-[10px] text-muted-foreground select-none">
-          @ to mention
-        </span>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <EditorContent
-          aria-label="Document body"
-          className="min-h-full [&_.ProseMirror]:min-h-[calc(100vh-210px)] [&_.ProseMirror_h1]:mb-4 [&_.ProseMirror_h1]:text-3xl [&_.ProseMirror_h1]:font-semibold [&_.ProseMirror_h2]:mb-3 [&_.ProseMirror_h2]:text-xl [&_.ProseMirror_h2]:font-semibold [&_.ProseMirror_p]:mb-4 [&_.ProseMirror_ul]:mb-4 [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:pl-6 [&_.ProseMirror_blockquote]:border-l-2 [&_.ProseMirror_blockquote]:border-border-strong [&_.ProseMirror_blockquote]:pl-4 [&_.ProseMirror_blockquote]:text-muted-foreground [&_.ProseMirror_.mention]:rounded [&_.ProseMirror_.mention]:bg-selected [&_.ProseMirror_.mention]:px-1 [&_.ProseMirror_.mention]:py-0.5 [&_.ProseMirror_.mention]:text-foreground-strong [&_.ProseMirror_.mention]:font-medium"
-          editor={editor}
-        />
-      </div>
+    <div className={cn("min-h-0 flex-1 overflow-y-auto", className)}>
+      <EditorContent
+        className="min-h-full [&_.ProseMirror]:min-h-full [&_.ProseMirror_p]:mb-2 [&_.ProseMirror_.mention]:rounded [&_.ProseMirror_.mention]:bg-selected [&_.ProseMirror_.mention]:px-1 [&_.ProseMirror_.mention]:py-0.5 [&_.ProseMirror_.mention]:text-foreground-strong [&_.ProseMirror_.mention]:font-medium [&_.ProseMirror]:empty:before:content-[attr(data-placeholder)] [&_.ProseMirror]:empty:before:text-muted-foreground"
+        editor={editor}
+      />
     </div>
-  );
-}
-
-function EditorButton({
-  active,
-  children,
-  disabled,
-  label,
-  onClick
-}: {
-  active: boolean;
-  children: React.ReactNode;
-  disabled?: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <Tooltip content={label} side="bottom">
-      <Button
-        aria-label={label}
-        className={active ? "bg-selected text-foreground-strong" : undefined}
-        disabled={disabled}
-        onClick={onClick}
-        size="icon"
-        type="button"
-        variant="ghost"
-      >
-        {children}
-      </Button>
-    </Tooltip>
   );
 }

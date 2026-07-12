@@ -1,7 +1,6 @@
 "use client";
 
-import { Icon } from "../icons";
-import { CONTEXT_KIND_ICONS } from "../icon-constants";
+import { Icon, CONTEXT_KIND_ICONS } from "@spielos/design-system/components";
 import { type ReactNode } from "react";
 import { cn } from "@spielos/design-system";
 import { useRunContext, type ContextItem, type ContextItemKind } from "../../lib/run-context";

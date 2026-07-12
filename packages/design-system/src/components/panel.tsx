@@ -9,7 +9,7 @@ export const Panel = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
       <div
         ref={ref}
         className={cn(
-          "rounded-md border border-[var(--border)] bg-[var(--panel)] text-[var(--foreground)] shadow-[var(--shadow-panel)]",
+          "rounded-md border border-border bg-panel text-foreground shadow-panel",
           className
         )}
         {...props}
@@ -22,7 +22,7 @@ export function PanelHeader({ className, ...props }: HTMLAttributes<HTMLDivEleme
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-3 border-b border-[var(--border)] px-3 py-2 text-sm",
+        "flex items-center justify-between gap-3 border-b border-border px-3 py-2 text-sm",
         className
       )}
       {...props}
@@ -31,7 +31,7 @@ export function PanelHeader({ className, ...props }: HTMLAttributes<HTMLDivEleme
 }
 
 export function PanelTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
-  return <h3 className={cn("text-sm font-semibold text-[var(--foreground)]", className)} {...props} />;
+  return <h3 className={cn("text-sm font-semibold text-foreground", className)} {...props} />;
 }
 
 export function PanelBody({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
@@ -42,7 +42,7 @@ export function PanelFooter({ className, ...props }: HTMLAttributes<HTMLDivEleme
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-2 border-t border-[var(--border)] px-3 py-2 text-xs text-[var(--muted-foreground)]",
+        "flex items-center justify-between gap-2 border-t border-border px-3 py-2 text-xs text-muted-foreground",
         className
       )}
       {...props}

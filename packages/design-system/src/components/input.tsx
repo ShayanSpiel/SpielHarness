@@ -4,7 +4,7 @@ import { forwardRef, type InputHTMLAttributes, type TextareaHTMLAttributes } fro
 import { cn } from "../index";
 
 const fieldBase =
-  "w-full rounded-md border border-[var(--border)] bg-[var(--input)] px-2.5 text-sm text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] transition-colors duration-[var(--duration)] focus-visible:border-[var(--ring)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]/30 disabled:pointer-events-none disabled:opacity-50";
+  "w-full rounded-md border border-border bg-input px-2.5 text-sm text-foreground placeholder:text-muted-foreground transition-colors duration-[var(--duration)] focus-visible:border-[var(--ring)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]/30 disabled:pointer-events-none disabled:opacity-50";
 
 export type InputProps = InputHTMLAttributes<HTMLInputElement> & {
   variant?: "default" | "ghost";

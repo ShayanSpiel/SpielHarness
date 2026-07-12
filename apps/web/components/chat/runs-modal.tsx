@@ -1,7 +1,6 @@
 "use client";
 
-import { Icon } from "../icons";
-import { ENTITY_ICONS } from "../icon-constants";
+import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button, Dialog, DialogContent, Input, Pill, cn } from "@spielos/design-system";
 import { useRunContext } from "../../lib/run-context";
@@ -175,7 +174,7 @@ export function RunsModal({
   const navEntries = [
     { href: "/", label: "Runs", icon: <Icon name={ENTITY_ICONS.run} size={14} /> },
     { href: "/roles", label: "Roles", icon: <Icon name={ENTITY_ICONS.role} size={14} /> },
-    { href: "/workstreams", label: "Workstreams", icon: <Icon name={ENTITY_ICONS.workflow} size={14} /> },
+    { href: "/workflows", label: "Workflows", icon: <Icon name={ENTITY_ICONS.workflow} size={14} /> },
     { href: "/tools", label: "Skills", icon: <Icon name={ENTITY_ICONS.skill} size={14} /> },
     { href: "/evals", label: "Evals", icon: <Icon name={ENTITY_ICONS.eval} size={14} /> },
     { href: "/knowledge", label: "Knowledge", icon: <Icon name={ENTITY_ICONS.knowledge} size={14} /> },

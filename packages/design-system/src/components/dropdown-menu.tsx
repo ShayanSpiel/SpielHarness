@@ -22,7 +22,7 @@ export const DropdownMenuContent = forwardRef<
         ref={ref}
         sideOffset={sideOffset}
         className={cn(
-          "z-50 min-w-[10rem] overflow-hidden rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 text-sm text-[var(--foreground)] shadow-[var(--shadow-popover)]",
+          "z-50 min-w-[10rem] overflow-hidden rounded-md border border-border bg-panel p-1 text-sm text-foreground shadow-popover",
           className
         )}
         {...props}
@@ -39,7 +39,7 @@ export const DropdownMenuItem = forwardRef<
     <DropdownMenuPrimitive.Item
       ref={ref}
       className={cn(
-        "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-[var(--selected)] focus:text-[var(--foreground-strong)] data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+        "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-selected focus:text-foreground-strong data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
         inset && "pl-8",
         className
       )}
@@ -57,14 +57,14 @@ export const DropdownMenuCheckboxItem = forwardRef<
       ref={ref}
       checked={checked}
       className={cn(
-        "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm py-1.5 pl-7 pr-2 text-sm outline-none transition-colors focus:bg-[var(--selected)] focus:text-[var(--foreground-strong)] data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+        "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm py-1.5 pl-7 pr-2 text-sm outline-none transition-colors focus:bg-selected focus:text-foreground-strong data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
         className
       )}
       {...props}
     >
       <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
         <DropdownMenuPrimitive.ItemIndicator>
-          <Check className="h-3.5 w-3.5 text-[var(--primary)]" />
+          <Check className="h-3.5 w-3.5 text-primary" />
         </DropdownMenuPrimitive.ItemIndicator>
       </span>
       {children}
@@ -80,7 +80,7 @@ export const DropdownMenuLabel = forwardRef<
     <DropdownMenuPrimitive.Label
       ref={ref}
       className={cn(
-        "px-2 py-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]",
+        "px-2 py-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground",
         className
       )}
       {...props}
@@ -95,7 +95,7 @@ export const DropdownMenuSeparator = forwardRef<
   return (
     <DropdownMenuPrimitive.Separator
       ref={ref}
-      className={cn("-mx-1 my-1 h-px bg-[var(--border)]", className)}
+      className={cn("-mx-1 my-1 h-px bg-border", className)}
       {...props}
     />
   );
@@ -107,7 +107,7 @@ export const DropdownMenuShortcut = ({
 }: React.HTMLAttributes<HTMLSpanElement>) => {
   return (
     <span
-      className={cn("ml-auto text-xs tracking-wider text-[var(--muted-foreground)]", className)}
+      className={cn("ml-auto text-xs tracking-wider text-muted-foreground", className)}
       {...props}
     />
   );
@@ -121,7 +121,7 @@ export const DropdownMenuSubTrigger = forwardRef<
     <DropdownMenuPrimitive.SubTrigger
       ref={ref}
       className={cn(
-        "flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-[var(--selected)] data-[state=open]:bg-[var(--selected)]",
+        "flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-selected data-[state=open]:bg-selected",
         className
       )}
       {...props}

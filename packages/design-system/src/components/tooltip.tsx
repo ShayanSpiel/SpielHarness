@@ -17,7 +17,7 @@ export const TooltipContent = forwardRef<
       <TooltipPrimitive.Content
         ref={ref}
         className={cn(
-          "z-50 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--panel-strong)] px-2 py-1 text-xs text-[var(--foreground)] shadow-[var(--shadow-popover)]",
+          "z-50 overflow-hidden rounded-md border border-border bg-panel-strong px-2 py-1 text-xs text-foreground shadow-popover",
           className
         )}
         sideOffset={sideOffset}

@@ -9,14 +9,14 @@ const pillStyles = cva(
   {
     variants: {
       tone: {
-        default: "bg-[var(--panel-raised)] text-[var(--foreground-muted)]",
-        primary: "bg-[var(--primary-soft)] text-[var(--primary)]",
-        success: "bg-[var(--success-soft)] text-[var(--success)]",
-        warning: "bg-[var(--warning-soft)] text-[var(--warning)]",
-        destructive: "bg-[var(--destructive-soft)] text-[var(--destructive)]",
-        info: "bg-[var(--info-soft)] text-[var(--info)]",
-        accent: "bg-[var(--accent-soft)] text-[var(--accent)]",
-        purple: "bg-[var(--purple-soft)] text-[var(--purple)]"
+        default: "bg-panel-raised text-foreground-muted",
+        primary: "bg-primary-soft text-primary",
+        success: "bg-success-soft text-success",
+        warning: "bg-warning-soft text-warning",
+        destructive: "bg-destructive-soft text-destructive",
+        info: "bg-info-soft text-info",
+        accent: "bg-accent-soft text-accent",
+        purple: "bg-purple-soft text-purple"
       }
     },
     defaultVariants: { tone: "default" }

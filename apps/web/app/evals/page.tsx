@@ -3,8 +3,7 @@
 import { useMemo, useState, useEffect, type KeyboardEvent } from "react";
 import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, SearchInput, Switch, Textarea, Tooltip, cn, toast } from "@spielos/design-system";
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
-import { Icon } from "../../components/icons";
-import { ENTITY_ICONS } from "../../components/icon-constants";
+import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { InspectorToggle } from "../../components/inspector-toggle";
 import { AppShell } from "../../components/app-shell";
 import { MentionTextarea } from "../../components/mention-textarea";
