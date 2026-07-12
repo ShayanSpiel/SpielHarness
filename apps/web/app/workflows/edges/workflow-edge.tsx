@@ -47,22 +47,17 @@ function WorkflowEdgeComponent({
       />
       {selected && (data as WorkflowEdgeData | undefined)?.onDelete && (
         <EdgeLabelRenderer>
-          <div
-            className="absolute flex h-5 w-12 items-center justify-center gap-1 rounded-sm border border-border bg-panel text-[10px] text-muted-foreground hover:bg-hover hover:text-foreground transition-colors"
+          <button
+            className="absolute flex h-5 w-5 items-center justify-center rounded-sm border border-border bg-panel text-muted-foreground hover:bg-hover hover:text-foreground transition-colors"
+            onClick={() => (data as WorkflowEdgeData)?.onDelete?.(id)}
             style={{
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
               pointerEvents: "all",
             }}
+            type="button"
           >
-            <button
-              className="flex items-center gap-1"
-              onClick={() => (data as WorkflowEdgeData)?.onDelete?.(id)}
-              type="button"
-            >
-              <Icon name="x" size={10} />
-              Remove
-            </button>
-          </div>
+            <Icon name="trash" size={10} />
+          </button>
         </EdgeLabelRenderer>
       )}
     </>

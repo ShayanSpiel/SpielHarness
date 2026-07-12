@@ -214,7 +214,7 @@ function FlowContent({
       selectNodesOnDrag={false}
       className="bg-background"
     >
-      <Background variant={BackgroundVariant.Lines} gap={32} />
+      <Background variant={BackgroundVariant.Lines} gap={32} size={0.5} color="var(--border)" style={{ opacity: 0.3 }} />
       <Controls showInteractive={false} />
       <MiniMap
         nodeStrokeColor="var(--border)"
