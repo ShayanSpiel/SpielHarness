@@ -87,6 +87,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         try {
           let waitingForHuman = false;
           let terminalSent = false;
+          let terminalStatus: "completed" | "failed" | "cancelled" | null = null;
           for await (const item of streamRun({
             orgId: org.orgId,
             runId,
@@ -103,6 +104,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             if (item.kind === "event") {
               if (item.event.type === "run_completed" || item.event.type === "run_failed" || item.event.type === "run_cancelled") {
                 terminalSent = true;
+                terminalStatus =
+                  item.event.type === "run_failed" ? "failed" :
+                  item.event.type === "run_cancelled" ? "cancelled" :
+                  "completed";
               }
               await supabase.from("run_events").insert({
                 org_id: org.orgId,
@@ -158,7 +163,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             await supabase
               .from("runs")
               .update({
-                status: "completed",
+                status: terminalStatus ?? "completed",
                 outputs: { text: outputText, artifactIds },
                 completed_at: new Date().toISOString()
               })

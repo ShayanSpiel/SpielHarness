@@ -62,6 +62,18 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function withoutUndefined(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutUndefined);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (entry !== undefined) out[key] = withoutUndefined(entry);
+    }
+    return out;
+  }
+  return value;
+}
+
 const EVAL_SKILL_CONFIG: Record<string, Pick<SeedFile, "metadata">["metadata"]> = {
   "pipeline-gate-evaluator": {
     kind: "eval",
@@ -180,13 +192,13 @@ async function walk(dir: string, base: string, out: SeedFile[]): Promise<void> {
     const body = await readFile(full, "utf8");
     const { fileType, metadata: classifiedMetadata } = classify(rel);
     const folderName = FOLDER_BY_SEED_DIR[rel.split(path.sep)[0] ?? ""] ?? "Knowledge";
-    const metadata = {
+    const metadata = withoutUndefined({
       ...classifiedMetadata,
       ...(EVAL_SKILL_CONFIG[classifiedMetadata.slug as string] ?? {}),
       seed: true,
       seedPath: rel,
       seedFolder: folderName
-    };
+    }) as Record<string, unknown>;
     if (fileType === "harness_eval" && entry.name.endsWith(".json")) {
       try {
         const parsed = JSON.parse(body);
@@ -197,13 +209,14 @@ async function walk(dir: string, base: string, out: SeedFile[]): Promise<void> {
           body: body,
           fileType,
           folder: folderName,
-          metadata: {
+          metadata: withoutUndefined({
             ...metadata,
             eval: true,
             targetType: parsed.targetType,
             overallThreshold: parsed.overallThreshold,
-            rubrics: parsed.rubrics
-          }
+            rubrics: parsed.rubrics,
+            loopConfig: parsed.loopConfig
+          }) as Record<string, unknown>
         });
         continue;
       } catch {
@@ -219,12 +232,12 @@ async function walk(dir: string, base: string, out: SeedFile[]): Promise<void> {
           body: parsed.description ?? "",
           fileType,
           folder: folderName,
-          metadata: {
+          metadata: withoutUndefined({
             ...metadata,
             workstream: true,
             nodes: parsed.nodes ?? [],
             edges: parsed.edges ?? []
-          }
+          }) as Record<string, unknown>
         });
         continue;
       } catch {
@@ -314,7 +327,7 @@ export async function POST() {
           file_type: file.fileType,
           status: "active",
           folder_id: folderId,
-          metadata: file.metadata,
+          metadata: withoutUndefined(file.metadata) as Record<string, unknown>,
           content_format: "markdown"
         };
         if (existingFile) {

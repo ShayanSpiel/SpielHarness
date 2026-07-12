@@ -35,12 +35,28 @@ export type ExecuteBody = {
   runId?: string;
   nodes?: Array<{
     id: string;
+    nodeType?: "role" | "eval";
     roleId: string;
     title: string;
     promptOverride?: string;
     skillIds?: string[];
     fileIds?: string[];
+    loopConfig?: RuntimeLoopConfig;
+    evalInput?: RuntimeEvalInputSource;
   }>;
+};
+
+export type RuntimeLoopConfig = {
+  enabled: boolean;
+  maxAttempts: number;
+  breakCondition: "on_pass" | "on_fail";
+  evalId: string | null;
+  retryDelayMs: number;
+};
+
+export type RuntimeEvalInputSource = {
+  type: "previous_output" | "workflow_input" | "node_output";
+  nodeId?: string;
 };
 
 export type FileRow = {
@@ -56,10 +72,13 @@ export type FileRow = {
 export type RuntimeNode = {
   id: string;
   title: string;
+  nodeType?: "role" | "eval";
   roleId: string;
   promptOverride?: string;
   skillIds: string[];
   fileIds?: string[];
+  loopConfig?: RuntimeLoopConfig;
+  evalInput?: RuntimeEvalInputSource;
 };
 
 export type ResolvedExecution = {
@@ -132,7 +151,10 @@ function fileToRole(row: FileRow, slugToId: Map<string, string>): Role {
     outputArtifactTypes: (meta.outputTypes as Role["outputArtifactTypes"] | undefined) ?? [],
     skillIds,
     status: row.status === "active" ? "active" : row.status === "archived" ? "archived" : "draft",
-    metadata: meta
+    metadata: {
+      ...meta,
+      contracts: meta.contracts
+    }
   };
 }
 
@@ -373,11 +395,14 @@ export async function resolveExecution(
   if (body.nodes && body.nodes.length > 0) {
     nodes = body.nodes.map((node) => ({
       id: node.id,
-      roleId: node.roleId,
+      nodeType: node.nodeType === "eval" ? "eval" : "role",
+      roleId: node.nodeType === "eval" ? "runtime.eval" : node.roleId,
       title: node.title,
       promptOverride: node.promptOverride?.trim() ? node.promptOverride : undefined,
       skillIds: (node.skillIds ?? []).map((id) => slugToId.get(id) ?? id),
-      fileIds: node.fileIds ?? []
+      fileIds: node.fileIds ?? [],
+      loopConfig: node.loopConfig,
+      evalInput: node.evalInput
     }));
   } else if (target.type === "workflow") {
     const workflow = filesById.get(target.id)!;
@@ -385,12 +410,15 @@ export async function resolveExecution(
     const rawNodes = (workflow.metadata?.nodes as Array<Record<string, unknown>> | undefined) ?? [];
     nodes = rawNodes.map((node, index) => ({
       id: String(node.id ?? `node-${index + 1}`),
-      roleId: slugToId.get(String(node.roleSlug ?? node.roleId ?? "")) ?? String(node.roleId ?? ""),
+      nodeType: node.nodeType === "eval" ? "eval" : "role",
+      roleId: node.nodeType === "eval" ? "runtime.eval" : slugToId.get(String(node.roleSlug ?? node.roleId ?? "")) ?? String(node.roleId ?? ""),
       title: String(node.title ?? `Step ${index + 1}`),
       promptOverride: String(node.promptOverride ?? "").trim() ? String(node.promptOverride) : undefined,
       skillIds: ((node.skillSlugs as string[] | undefined) ?? (node.skillIds as string[] | undefined) ?? [])
         .map((id) => slugToId.get(id) ?? id),
-      fileIds: (node.fileIds as string[] | undefined) ?? []
+      fileIds: (node.fileIds as string[] | undefined) ?? [],
+      loopConfig: node.loopConfig as RuntimeLoopConfig | undefined,
+      evalInput: node.evalInput as RuntimeEvalInputSource | undefined
     }));
   } else if (target.type === "role") {
     const role = assertActiveRole(rolesById[target.id]);
@@ -458,8 +486,28 @@ export async function resolveExecution(
     }];
   }
 
+  if (nodes.some((node) => node.nodeType === "eval")) {
+    rolesById["runtime.eval"] = {
+      id: "runtime.eval",
+      orgId,
+      name: "Evaluation Runner",
+      description: "Runs reusable workflow QA evaluations.",
+      prompt: "Evaluate the previous workflow output against the selected rubric.",
+      modelId: null,
+      memoryPolicy: ["run"],
+      inputArtifactTypes: [],
+      outputArtifactTypes: ["eval_report"],
+      skillIds: [],
+      status: "active",
+      metadata: {}
+    };
+  }
+
   for (const node of nodes) {
     const role = assertActiveRole(rolesById[node.roleId], `Workflow node "${node.title}" role`);
+    if (node.nodeType === "eval" && node.skillIds.length !== 1) {
+      throw new HttpError(400, `QA step "${node.title}" must reference exactly one evaluation.`);
+    }
     if (node.skillIds.length === 0) {
       node.skillIds = role.skillIds.filter((id) => {
         const skill = skillsById.get(id);
@@ -477,6 +525,14 @@ export async function resolveExecution(
         throw new HttpError(400, `Node "${node.title}" references a missing skill.`);
       }
       assertActiveSkill(skill, `Node "${node.title}" skill`);
+    }
+    if (node.nodeType === "eval" && !node.loopConfig) {
+      const evalSkill = skillsById.get(node.skillIds[0]);
+      const loopConfig = evalSkill?.metadata?.loopConfig as RuntimeLoopConfig | undefined;
+      if (loopConfig) node.loopConfig = { ...loopConfig, evalId: evalSkill?.id ?? loopConfig.evalId ?? null };
+    }
+    if (node.nodeType === "eval" && !node.evalInput) {
+      node.evalInput = { type: "previous_output" };
     }
   }
 

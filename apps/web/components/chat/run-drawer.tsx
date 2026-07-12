@@ -1,6 +1,7 @@
 "use client";
 
 import { Icon } from "../icons";
+import { CONTEXT_KIND_ICONS, ENTITY_ICONS, EVENT_ICONS } from "../icon-constants";
 import {
   type ReactNode,
   useEffect,
@@ -15,14 +16,14 @@ import { useWorkspaceStore } from "../../lib/use-workspace-store";
 type Section = "context" | "events" | "output";
 
 const ICONS: Record<ContextItemKind, ReactNode> = {
-  role: <Icon name="users" size={12} />,
-  tool: <Icon name="sparkles" size={12} />,
-  library: <Icon name="archive" size={12} />,
-  workstream: <Icon name="folder-kanban" size={12} />,
-  strategy: <Icon name="file-text" size={12} />,
-  knowledge: <Icon name="brain" size={12} />,
-  prompt: <Icon name="prompt" size={12} />,
-  eval: <Icon name="bar-chart" size={12} />
+  role: <Icon name={CONTEXT_KIND_ICONS.role} size={12} />,
+  tool: <Icon name={CONTEXT_KIND_ICONS.tool} size={12} />,
+  library: <Icon name={CONTEXT_KIND_ICONS.library} size={12} />,
+  workstream: <Icon name={CONTEXT_KIND_ICONS.workstream} size={12} />,
+  strategy: <Icon name={CONTEXT_KIND_ICONS.strategy} size={12} />,
+  knowledge: <Icon name={CONTEXT_KIND_ICONS.knowledge} size={12} />,
+  prompt: <Icon name={CONTEXT_KIND_ICONS.prompt} size={12} />,
+  eval: <Icon name={CONTEXT_KIND_ICONS.eval} size={12} />
 };
 
 function eventTone(type: string): "default" | "active" | "success" | "destructive" {
@@ -33,14 +34,8 @@ function eventTone(type: string): "default" | "active" | "success" | "destructiv
 }
 
 function eventIcon(type: string): ReactNode {
-  if (type === "run_completed") return <Icon name="check" size={10} />;
-  if (type === "run_failed" || type === "run_cancelled") return <Icon name="x" size={10} />;
-  if (type === "node_started" || type === "node_status" || type === "skill_started") return <Icon name="circle-dot" size={10} />;
-  if (type === "node_completed" || type === "skill_completed") return <Icon name="check" size={10} />;
-  if (type === "artifact_created") return <Icon name="file-text" size={10} />;
-  if (type === "eval_score_updated") return <Icon name="bar-chart" size={10} />;
-  if (type === "human_input_requested") return <Icon name="user" size={10} />;
-  if (type === "human_input_received") return <Icon name="check-circle" size={10} />;
+  const iconName = EVENT_ICONS[type as keyof typeof EVENT_ICONS];
+  if (iconName) return <Icon name={iconName} size={10} />;
   return <span className="block h-1.5 w-1.5 rounded-full bg-current" />;
 }
 
@@ -167,7 +162,7 @@ function ContextSection() {
   if (run.contextItems.length === 0) {
     return (
       <div className="flex flex-col items-center gap-1.5 px-3 py-6 text-center text-[11px] text-muted-foreground">
-        <Icon name="sparkles" size={14} />
+            <Icon name={ENTITY_ICONS.skill} size={14} />
         <div>No context attached yet.</div>
         <div>Click the + in the composer to add roles, skills, library, or workstreams.</div>
       </div>
@@ -308,7 +303,7 @@ export function RunDrawer() {
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-panel-raised px-3">
-        <Icon name="play" size={14} className="text-muted-foreground" />
+        <Icon name={ENTITY_ICONS.run} size={14} className="text-muted-foreground" />
         <div className="flex flex-col leading-tight min-w-0 flex-1">
           <span className="text-xs font-medium text-foreground">Run inspector</span>
           <span className="text-[10px] text-muted-foreground truncate">

@@ -84,7 +84,7 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
-  useEffect(() => {
+  const reloadWorkspace = useCallback(() => {
     loadWorkspaceFromDb()
       .then((loaded) => {
         setState(loaded);
@@ -95,6 +95,15 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
         setReady(true);
       });
   }, []);
+
+  useEffect(() => {
+    reloadWorkspace();
+  }, [reloadWorkspace]);
+
+  useEffect(() => {
+    window.addEventListener("spielos:workspace-reload", reloadWorkspace);
+    return () => window.removeEventListener("spielos:workspace-reload", reloadWorkspace);
+  }, [reloadWorkspace]);
 
   const debouncedSaveItem = useCallback((id: string, patch: Partial<WorkspaceItem>) => {
     const timer = saveTimers.current.get(id);
@@ -318,7 +327,8 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
             modelId: role.modelId,
             memoryPolicy: role.memoryPolicy,
             inputTypes: role.inputArtifactTypes,
-            outputTypes: role.outputArtifactTypes
+            outputTypes: role.outputArtifactTypes,
+            contracts: role.metadata?.contracts
           }
         }).catch(() => {});
         return created;
@@ -344,7 +354,8 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
             modelId: next.modelId ?? null,
             memoryPolicy: next.memoryPolicy ?? [],
             inputTypes: next.inputArtifactTypes ?? [],
-            outputTypes: next.outputArtifactTypes ?? []
+            outputTypes: next.outputArtifactTypes ?? [],
+            contracts: next.metadata?.contracts
           }
         }).catch(() => {});
       },

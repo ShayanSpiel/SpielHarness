@@ -1,19 +1,20 @@
 "use client";
 
 import { Icon } from "../icons";
+import { CONTEXT_KIND_ICONS } from "../icon-constants";
 import { type ReactNode } from "react";
 import { cn } from "@spielos/design-system";
 import { useRunContext, type ContextItem, type ContextItemKind } from "../../lib/run-context";
 
 const ICONS: Record<ContextItemKind, ReactNode> = {
-  role: <Icon name="users" size={12} />,
-  tool: <Icon name="sparkles" size={12} />,
-  library: <Icon name="archive" size={12} />,
-  workstream: <Icon name="folder-kanban" size={12} />,
-  strategy: <Icon name="file-text" size={12} />,
-  knowledge: <Icon name="brain" size={12} />,
-  prompt: <Icon name="prompt" size={12} />,
-  eval: <Icon name="bar-chart" size={12} />
+  role: <Icon name={CONTEXT_KIND_ICONS.role} size={12} />,
+  tool: <Icon name={CONTEXT_KIND_ICONS.tool} size={12} />,
+  library: <Icon name={CONTEXT_KIND_ICONS.library} size={12} />,
+  workstream: <Icon name={CONTEXT_KIND_ICONS.workstream} size={12} />,
+  strategy: <Icon name={CONTEXT_KIND_ICONS.strategy} size={12} />,
+  knowledge: <Icon name={CONTEXT_KIND_ICONS.knowledge} size={12} />,
+  prompt: <Icon name={CONTEXT_KIND_ICONS.prompt} size={12} />,
+  eval: <Icon name={CONTEXT_KIND_ICONS.eval} size={12} />
 };
 
 export function ContextChips({

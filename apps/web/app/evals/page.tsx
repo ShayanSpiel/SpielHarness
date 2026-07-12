@@ -4,8 +4,10 @@ import { useMemo, useState, useEffect, type KeyboardEvent } from "react";
 import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, SearchInput, Switch, Textarea, Tooltip, cn, toast } from "@spielos/design-system";
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { Icon } from "../../components/icons";
+import { ENTITY_ICONS } from "../../components/icon-constants";
 import { InspectorToggle } from "../../components/inspector-toggle";
 import { AppShell } from "../../components/app-shell";
+import { MentionTextarea } from "../../components/mention-textarea";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
 
 type Rubric = {
@@ -92,7 +94,7 @@ const CHECK_TYPES: Record<Rubric["type"], {
   }
 };
 
-const RUBRIC_TYPES = Object.keys(CHECK_TYPES) as Rubric["type"][];
+const RUBRIC_TYPES = (Object.keys(CHECK_TYPES) as Rubric["type"][]).filter((type) => type !== "llm_judge");
 
 export default function EvalsPage() {
   const store = useWorkspaceStore();
@@ -317,7 +319,7 @@ export default function EvalsPage() {
     >
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
         <PageHeader
-          icon={<Icon name="bar-chart" size={14} />}
+          icon={<Icon name={ENTITY_ICONS.eval} size={14} />}
           title="Evals"
           actions={
             <>
@@ -431,9 +433,9 @@ export default function EvalsPage() {
                   {running ? (
                     <Icon name="loader" size={14} className="animate-spin" />
                   ) : (
-                    <Icon name="play" size={14} />
+                    <Icon name="bar-chart" size={14} />
                   )}
-                  Run
+                  Test
                 </Button>
                 {!isNew ? (
                   <Tooltip content="Delete eval" side="bottom">
@@ -493,17 +495,26 @@ export default function EvalsPage() {
 
                 <div className="grid gap-4 px-4 py-3">
                   <Field label="Description">
-                    <Input
-                      onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
+                    <MentionTextarea
+                      className="min-h-9"
+                      onChange={(v) => setDraft((d) => ({ ...d, description: v }))}
+                      placeholder="Eval description (type @ to mention)"
+                      rows={1}
                       value={draft.description}
                     />
                   </Field>
 
                   <div className="grid gap-1.5">
-                    <InfoLabel label="Test sample" info="Paste an output here to test the criteria before using the eval in a workflow." />
-                    <Textarea
-                      className="min-h-28 font-mono text-xs"
-                      onChange={(e) => setSample(e.target.value)}
+                    <div className="flex items-center gap-2">
+                      <InfoLabel label="Test sample" info="Paste an output here to test the criteria before using the eval in a workflow." />
+                      <span className="ml-auto text-[10px] text-muted-foreground select-none">
+                        @ to mention
+                      </span>
+                    </div>
+                    <MentionTextarea
+                      className="min-h-28"
+                      mono
+                      onChange={setSample}
                       value={sample}
                     />
                   </div>
@@ -730,12 +741,15 @@ function CriteriaRow({
               value: value === rubric.type ? rubric.value : ""
             })
           }
-          options={RUBRIC_TYPES.map((type) => ({ label: CHECK_TYPES[type].label, value: type }))}
+          options={[
+            ...(rubric.type === "llm_judge" ? [{ label: CHECK_TYPES.llm_judge.label, value: "llm_judge" }] : []),
+            ...RUBRIC_TYPES.map((type) => ({ label: CHECK_TYPES[type].label, value: type }))
+          ]}
           value={rubric.type}
         />
       </div>
 
-      <div className="grid gap-1.5">
+      <div className="grid min-w-0 gap-1.5 overflow-hidden">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
           Condition
         </span>
@@ -904,7 +918,7 @@ function EditableChips({
   }
 
   return (
-    <div className="flex h-8 items-center gap-1 overflow-x-auto rounded-md border border-border bg-input px-1.5 py-1">
+    <div className="flex h-8 min-w-0 items-center gap-1 overflow-hidden rounded-md border border-border bg-input px-1.5 py-1">
       {values.map((value) => (
         <span
           className="inline-flex h-5 max-w-40 shrink-0 items-center gap-1 rounded-sm bg-panel-raised px-1.5 text-[11px] text-foreground"
@@ -922,7 +936,7 @@ function EditableChips({
         </span>
       ))}
       <input
-        className="h-5 min-w-24 flex-1 bg-transparent px-1 text-xs text-foreground outline-none placeholder:text-muted-foreground"
+        className="h-5 min-w-0 flex-1 bg-transparent px-1 text-xs text-foreground outline-none placeholder:text-muted-foreground"
         onBlur={addValue}
         onChange={(event) => setDraftValue(event.target.value)}
         onKeyDown={onKeyDown}

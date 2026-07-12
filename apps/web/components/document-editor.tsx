@@ -1,10 +1,17 @@
 "use client";
 
-import { EditorContent, useEditor } from "@tiptap/react";
+import { EditorContent, ReactRenderer, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { useEffect, useRef } from "react";
+import Mention from "@tiptap/extension-mention";
+import type { MentionNodeAttrs } from "@tiptap/extension-mention";
+import { useEffect, useMemo, useRef } from "react";
 import { Button, Tooltip } from "@spielos/design-system";
 import { Icon } from "./icons";
+import { MentionDropdown } from "./mention-dropdown";
+import { buildObjectReferences, mentionText } from "../lib/object-references";
+import { useWorkspaceStore } from "../lib/use-workspace-store";
+import type { ObjectReference } from "../lib/object-references";
+import type { SuggestionProps } from "@tiptap/suggestion";
 
 function escapeHtml(value: string) {
   return value
@@ -26,6 +33,82 @@ function bodyToHtml(value: string) {
     .join("");
 }
 
+function useMentionSuggestion() {
+  const store = useWorkspaceStore();
+  const items = useMemo(() => buildObjectReferences(store), [store]);
+
+  return useMemo(
+    () => ({
+      char: "@",
+      items: ({ query }: { query: string }) => {
+        const lower = query.toLowerCase();
+        if (!lower) return items;
+        return items.filter(
+          (ref) =>
+            ref.title.toLowerCase().includes(lower) ||
+            ref.kind.toLowerCase().includes(lower) ||
+            ref.subtitle.toLowerCase().includes(lower)
+        );
+      },
+      render: () => {
+        let component: ReactRenderer | null = null;
+
+        return {
+          onStart: (props: SuggestionProps<ObjectReference, MentionNodeAttrs>) => {
+            component = new ReactRenderer(MentionDropdown, {
+              props: {
+                items: props.items,
+                onSelect: (ref: ObjectReference) => {
+                  props.command({ id: ref.id, label: ref.title, kind: ref.kind } as MentionNodeAttrs);
+                }
+              },
+              editor: props.editor
+            });
+
+            if (props.clientRect) {
+              const rect = props.clientRect();
+              if (rect) {
+                component.element.style.position = "absolute";
+                component.element.style.left = `${rect.left}px`;
+                component.element.style.top = `${rect.top - 8}px`;
+                component.element.style.transform = "translateY(-100%)";
+                document.body.appendChild(component.element);
+              }
+            }
+          },
+          onUpdate: (props: SuggestionProps<ObjectReference, MentionNodeAttrs>) => {
+            component?.updateProps({
+              items: props.items
+            });
+          },
+          onKeyDown: (props: { event: KeyboardEvent }) => {
+            if (props.event instanceof KeyboardEvent) {
+              const key = props.event.key;
+              if (key === "Escape") {
+                component?.destroy();
+                return true;
+              }
+              if (key === "ArrowDown" || key === "ArrowUp" || key === "Enter" || key === "Tab") {
+                const dropdownEl = component?.element.querySelector("[role='listbox']");
+                if (dropdownEl) {
+                  dropdownEl.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+                }
+                return true;
+              }
+            }
+            return false;
+          },
+          onExit: () => {
+            component?.destroy();
+          }
+        };
+      },
+      allowSpaces: true
+    }),
+    [items]
+  );
+}
+
 export function DocumentEditor({
   value,
   onChange
@@ -34,8 +117,53 @@ export function DocumentEditor({
   onChange: (value: string) => void;
 }) {
   const lastLoadedValue = useRef(value);
+  const suggestion = useMentionSuggestion();
+
   const editor = useEditor({
-    extensions: [StarterKit],
+    extensions: [
+      StarterKit,
+      Mention.extend({
+        addAttributes() {
+          return {
+            ...this.parent?.(),
+            kind: {
+              default: null,
+              parseHTML: (element) => element.getAttribute("data-kind"),
+              renderHTML: (attributes) => {
+                if (!attributes.kind) return {};
+                return { "data-kind": attributes.kind };
+              }
+            }
+          };
+        }
+      }).configure({
+        HTMLAttributes: {
+          class: "mention"
+        },
+        renderText({ node }) {
+          const label = (node.attrs.label as string) ?? (node.attrs.id as string);
+          const kind = (node.attrs.kind as string) ?? "file";
+          const id = node.attrs.id as string;
+          return mentionText({ id, kind: kind as ObjectReference["kind"], title: label, subtitle: "" });
+        },
+        renderHTML({ node }) {
+          const label = (node.attrs.label as string) ?? (node.attrs.id as string);
+          const kind = (node.attrs.kind as string) ?? "file";
+          const id = node.attrs.id as string;
+          return [
+            "span",
+            {
+              "data-type": "mention",
+              "data-id": id,
+              "data-label": label,
+              "data-kind": kind
+            },
+            `@${label}`
+          ];
+        },
+        suggestion
+      })
+    ],
     content: bodyToHtml(value),
     editorProps: {
       attributes: {
@@ -109,11 +237,14 @@ export function DocumentEditor({
         >
           <Icon name="quote" size={14} />
         </EditorButton>
+        <span className="ml-auto text-[10px] text-muted-foreground select-none">
+          @ to mention
+        </span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <EditorContent
           aria-label="Document body"
-          className="min-h-full [&_.ProseMirror]:min-h-[calc(100vh-210px)] [&_.ProseMirror_h1]:mb-4 [&_.ProseMirror_h1]:text-3xl [&_.ProseMirror_h1]:font-semibold [&_.ProseMirror_h2]:mb-3 [&_.ProseMirror_h2]:text-xl [&_.ProseMirror_h2]:font-semibold [&_.ProseMirror_p]:mb-4 [&_.ProseMirror_ul]:mb-4 [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:pl-6 [&_.ProseMirror_blockquote]:border-l-2 [&_.ProseMirror_blockquote]:border-border-strong [&_.ProseMirror_blockquote]:pl-4 [&_.ProseMirror_blockquote]:text-muted-foreground"
+          className="min-h-full [&_.ProseMirror]:min-h-[calc(100vh-210px)] [&_.ProseMirror_h1]:mb-4 [&_.ProseMirror_h1]:text-3xl [&_.ProseMirror_h1]:font-semibold [&_.ProseMirror_h2]:mb-3 [&_.ProseMirror_h2]:text-xl [&_.ProseMirror_h2]:font-semibold [&_.ProseMirror_p]:mb-4 [&_.ProseMirror_ul]:mb-4 [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:pl-6 [&_.ProseMirror_blockquote]:border-l-2 [&_.ProseMirror_blockquote]:border-border-strong [&_.ProseMirror_blockquote]:pl-4 [&_.ProseMirror_blockquote]:text-muted-foreground [&_.ProseMirror_.mention]:rounded [&_.ProseMirror_.mention]:bg-selected [&_.ProseMirror_.mention]:px-1 [&_.ProseMirror_.mention]:py-0.5 [&_.ProseMirror_.mention]:text-foreground-strong [&_.ProseMirror_.mention]:font-medium"
           editor={editor}
         />
       </div>

@@ -15,6 +15,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
   useEffect,
+  useMemo,
   useState
 } from "react";
 import ReactMarkdown from "react-markdown";
@@ -25,6 +26,7 @@ import { useRunContext } from "../../lib/run-context";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
 import { ContextChips } from "./context-chips";
 import { ContextPicker } from "./context-picker";
+import { useChatMentionAdapter, spielosDirectiveFormatter } from "./chat-mentions";
 import type { HumanInputOption, HumanInputQuestion } from "@spielos/core";
 
 function ComposerAddContext() {
@@ -73,6 +75,46 @@ function ComposerCancel() {
   );
 }
 
+function ComposerTriggerPopoverUI() {
+  const mention = useChatMentionAdapter();
+
+  return (
+    <ComposerPrimitive.Unstable_TriggerPopover
+      char="@"
+      adapter={mention}
+      className="z-50"
+    >
+      <ComposerPrimitive.Unstable_TriggerPopover.Directive
+        formatter={spielosDirectiveFormatter}
+      />
+      <ComposerPrimitive.Unstable_TriggerPopoverCategories>
+        {(categories) =>
+          categories.map((cat) => (
+            <ComposerPrimitive.Unstable_TriggerPopoverCategoryItem
+              key={cat.id}
+              categoryId={cat.id}
+            >
+              {cat.label}
+            </ComposerPrimitive.Unstable_TriggerPopoverCategoryItem>
+          ))
+        }
+      </ComposerPrimitive.Unstable_TriggerPopoverCategories>
+      <ComposerPrimitive.Unstable_TriggerPopoverItems>
+        {(items) =>
+          items.map((item) => (
+            <ComposerPrimitive.Unstable_TriggerPopoverItem
+              key={item.id}
+              item={item}
+            >
+              {item.label}
+            </ComposerPrimitive.Unstable_TriggerPopoverItem>
+          ))
+        }
+      </ComposerPrimitive.Unstable_TriggerPopoverItems>
+    </ComposerPrimitive.Unstable_TriggerPopover>
+  );
+}
+
 function Composer() {
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const run = useRunContext();
@@ -86,26 +128,29 @@ function Composer() {
   };
 
   return (
-    <ComposerPrimitive.Root className="aui-composer relative flex w-full flex-col gap-1.5">
-      <ContextChips items={run.contextItems} onRemove={run.removeContext} />
-      <div
-        data-slot="aui-composer-shell"
-        className="flex w-full flex-col gap-1 overflow-hidden rounded-xl border border-border bg-panel-raised p-2 shadow-[var(--shadow-panel)] transition-colors focus-within:border-foreground/40"
-      >
-        <ComposerPrimitive.Input
-          autoFocus
-          className="min-h-9 w-full resize-none bg-transparent px-2 py-1.5 text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
-          enterKeyHint="send"
-          placeholder="Message the team…"
-          rows={1}
-          onKeyDown={handleKeyDown}
-        />
-        <div className="flex items-center justify-between px-1">
-          <ComposerAddContext />
-          {isRunning ? <ComposerCancel /> : <ComposerSend />}
+    <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+      <ComposerPrimitive.Root className="aui-composer relative flex w-full flex-col gap-1.5">
+        <ContextChips items={run.contextItems} onRemove={run.removeContext} />
+        <div
+          data-slot="aui-composer-shell"
+          className="flex w-full flex-col gap-1 overflow-hidden rounded-xl border border-border bg-panel-raised p-2 shadow-[var(--shadow-panel)] transition-colors focus-within:border-foreground/40"
+        >
+          <ComposerPrimitive.Input
+            autoFocus
+            className="min-h-9 w-full resize-none bg-transparent px-2 py-1.5 text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
+            enterKeyHint="send"
+            placeholder="Message the team… (type @ to mention)"
+            rows={1}
+            onKeyDown={handleKeyDown}
+          />
+          <div className="flex items-center justify-between px-1">
+            <ComposerAddContext />
+            {isRunning ? <ComposerCancel /> : <ComposerSend />}
+          </div>
         </div>
-      </div>
-    </ComposerPrimitive.Root>
+        <ComposerTriggerPopoverUI />
+      </ComposerPrimitive.Root>
+    </ComposerPrimitive.Unstable_TriggerPopoverRoot>
   );
 }
 
@@ -167,11 +212,61 @@ function EditComposer() {
   );
 }
 
+function MentionText({ text }: { text: string }) {
+  const segments = useMemo(() => {
+    const result: Array<{ type: "text"; text: string } | { type: "mention"; label: string; kind: string; id: string }> = [];
+    const regex = /@\[([^\]]+)\]\(spielos:\/\/(\w+)\/([^)]+)\)/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        result.push({ type: "text", text: text.slice(lastIndex, match.index) });
+      }
+      result.push({ type: "mention", label: match[1], kind: match[2], id: match[3] });
+      lastIndex = regex.lastIndex;
+    }
+
+    if (lastIndex < text.length) {
+      result.push({ type: "text", text: text.slice(lastIndex) });
+    }
+
+    return result;
+  }, [text]);
+
+  return (
+    <>
+      {segments.map((segment, i) =>
+        segment.type === "mention" ? (
+          <span
+            className="inline-flex items-center gap-1 rounded bg-selected px-1.5 py-0.5 text-xs font-medium text-foreground-strong"
+            key={`m-${i}`}
+          >
+            <Icon name="at" size={10} />
+            {segment.label}
+          </span>
+        ) : (
+          <span key={`t-${i}`}>{segment.text}</span>
+        )
+      )}
+    </>
+  );
+}
+
+function UserMessageText() {
+  const { text } = useMessagePartText();
+  return (
+    <span className="text-sm leading-7 text-foreground">
+      <MentionText text={text} />
+    </span>
+  );
+}
+
 function UserMessage() {
   return (
     <MessagePrimitive.Root className="fade-in slide-in-from-bottom-1 relative grid w-full grid-cols-[1fr_auto] gap-x-3 animate-in duration-150">
       <div className="min-w-0 max-w-[85%] overflow-hidden rounded-xl border border-border bg-panel-strong px-3 py-2 text-sm leading-relaxed text-foreground">
-        <MessagePrimitive.Parts />
+        <MessagePrimitive.Parts components={{ Text: UserMessageText }} />
         <div className="mt-1.5 flex items-center justify-end gap-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
           <ActionBar />
         </div>

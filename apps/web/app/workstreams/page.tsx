@@ -1,6 +1,8 @@
 "use client";
 
+import type { Role } from "@spielos/core";
 import { Icon } from "../../components/icons";
+import { ENTITY_ICONS } from "../../components/icon-constants";
 import { InspectorToggle } from "../../components/inspector-toggle";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
@@ -12,15 +14,16 @@ import {
   PageHeader,
   Pill,
   SearchInput,
-  Textarea,
+  Switch,
   Tooltip,
   cn,
   toast
 } from "@spielos/design-system";
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { AppShell } from "../../components/app-shell";
+import { MentionTextarea } from "../../components/mention-textarea";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
-import type { SkillDefinition, WorkstreamDefinition, WorkstreamNode } from "../../lib/workspace-data";
+import type { EvalFile, RoleContractDefinition, SkillDefinition, WorkstreamDefinition, WorkstreamNode } from "../../lib/workspace-data";
 
 function blankWorkstream(): Omit<WorkstreamDefinition, "id" | "updatedAt"> {
   return {
@@ -30,6 +33,20 @@ function blankWorkstream(): Omit<WorkstreamDefinition, "id" | "updatedAt"> {
     nodes: [],
     edges: []
   };
+}
+
+type RoleContractMetadata = {
+  inputs?: RoleContractDefinition[];
+  outputs?: RoleContractDefinition[];
+};
+
+function roleContractName(
+  role: Role,
+  direction: "inputs" | "outputs",
+  fallback: string
+) {
+  const saved = (role.metadata?.contracts as RoleContractMetadata | undefined)?.[direction]?.[0];
+  return saved?.name?.trim() || fallback;
 }
 
 export default function WorkstreamsPage() {
@@ -101,11 +118,12 @@ export default function WorkstreamsPage() {
     createWorkstream();
   }
 
-  function addNode(roleId: string, x?: number, y?: number) {
+  function addRoleNode(roleId: string, x?: number, y?: number) {
     const role = store.roles.find((entry) => entry.id === roleId);
     if (!role || role.status !== "active") return;
     const node: WorkstreamNode = {
       id: `node_${crypto.randomUUID()}`,
+      nodeType: "role",
       roleId,
       title: role.name,
       x: x ?? (80 + draft.nodes.length * 220),
@@ -113,12 +131,40 @@ export default function WorkstreamsPage() {
       prompt: "",
       skillIds: [],
       fileIds: [],
-      input: role.inputArtifactTypes[0] ?? "input",
-      output: role.outputArtifactTypes[0] ?? "output"
+      input: roleContractName(role, "inputs", "Role input"),
+      output: roleContractName(role, "outputs", "Role output")
     };
     setDraft((current) => ({ ...current, nodes: [...current.nodes, node] }));
     setSelectedNodeId(node.id);
     store.setInspectorOpen(true);
+  }
+
+  function addEvalNode(evalId: string, x?: number, y?: number) {
+    const evalFile = store.evalFiles.find((entry) => entry.id === evalId);
+    if (!evalFile || evalFile.status !== "active") return;
+    const node: WorkstreamNode = {
+      id: `node_${crypto.randomUUID()}`,
+      nodeType: "eval",
+      roleId: "runtime.eval",
+      title: `QA: ${evalFile.name}`,
+      x: x ?? (80 + draft.nodes.length * 220),
+      y: y ?? (120 + (draft.nodes.length % 2) * 120),
+      prompt: "",
+      skillIds: [evalFile.id],
+      fileIds: [],
+      input: "previous_output",
+      output: "Eval report",
+      loopConfig: { ...evalFile.loopConfig, evalId: evalFile.id },
+      evalInput: { type: "previous_output" }
+    };
+    setDraft((current) => ({ ...current, nodes: [...current.nodes, node] }));
+    setSelectedNodeId(node.id);
+    store.setInspectorOpen(true);
+  }
+
+  function addStep(type: "role" | "eval", id: string, x?: number, y?: number) {
+    if (type === "eval") addEvalNode(id, x, y);
+    else addRoleNode(id, x, y);
   }
 
   function updateNode(nodeId: string, patch: Partial<WorkstreamNode>) {
@@ -231,14 +277,16 @@ export default function WorkstreamsPage() {
       const allFileIds = new Set<string>();
       const nodesPayload = ordered.map((node) => {
         for (const id of node.fileIds) allFileIds.add(id);
-        if (node.roleId) allFileIds.add(node.roleId);
         return {
           id: node.id,
+          nodeType: node.nodeType ?? "role",
           roleId: node.roleId,
           title: node.title,
           promptOverride: node.prompt || undefined,
           skillIds: node.skillIds,
-          fileIds: node.fileIds
+          fileIds: node.fileIds,
+          loopConfig: node.loopConfig,
+          evalInput: node.evalInput
         };
       });
 
@@ -313,6 +361,8 @@ export default function WorkstreamsPage() {
           <NodeInspector
             files={files}
             node={selectedNode}
+            nodes={draft.nodes}
+            evals={store.evalFiles}
             roles={store.roles}
             skills={store.skills}
             toggleNodeList={toggleNodeList}
@@ -323,7 +373,7 @@ export default function WorkstreamsPage() {
     >
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
         <PageHeader
-          icon={<Icon name="git-branch" size={14} />}
+          icon={<Icon name={ENTITY_ICONS.workflow} size={14} />}
           title="Workstreams"
           actions={
             <>
@@ -388,7 +438,9 @@ export default function WorkstreamsPage() {
                 <span>Workstreams</span>
                  <Icon name="chevron-right" size={12} />
                 <span className="max-w-72 truncate text-foreground">{draft.title}</span>
-                <Pill tone={draft.status === "active" ? "success" : "default"}>{draft.status}</Pill>
+                <Pill tone={draft.status === "active" ? "success" : "default"}>
+                  {draft.status === "active" ? "enabled" : "disabled"}
+                </Pill>
               </div>
               <div className="ml-auto flex items-center gap-1.5">
                 <Button
@@ -420,7 +472,7 @@ export default function WorkstreamsPage() {
 
             <section className="flex min-h-0 flex-1">
               <div className="flex min-h-0 flex-1 flex-col">
-                <div className="grid shrink-0 gap-3 border-b border-border bg-panel-raised px-4 py-3 xl:grid-cols-[minmax(0,1fr)_140px]">
+                <div className="grid shrink-0 gap-3 border-b border-border bg-panel-raised px-4 py-3 xl:grid-cols-[minmax(0,1fr)_180px]">
                   <Field label="Workflow name">
                     <Input
                       className="h-8 text-sm font-medium"
@@ -428,18 +480,24 @@ export default function WorkstreamsPage() {
                       value={draft.title}
                     />
                   </Field>
-                  <Field label="Status">
-                    <NativeSelect
-                      ariaLabel="Workflow status"
-                      onChange={(value) => setDraft((current) => ({ ...current, status: value as WorkstreamDefinition["status"] }))}
-                      options={["active", "draft", "archived"].map((value) => ({ label: value, value }))}
-                      value={draft.status}
-                    />
+                  <Field label="Enabled">
+                    <label className="flex h-8 items-center gap-2 rounded-md border border-border bg-background px-2 text-xs text-muted-foreground">
+                      <Switch
+                        checked={draft.status === "active"}
+                        onCheckedChange={(checked) =>
+                          setDraft((current) => ({
+                            ...current,
+                            status: checked ? "active" : "draft"
+                          }))
+                        }
+                      />
+                      <span>{draft.status === "active" ? "Can run" : "Cannot run"}</span>
+                    </label>
                   </Field>
                 </div>
-                <div className="flex h-11 shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-3">
+                <div className="flex h-11 shrink-0 items-center gap-2 overflow-x-auto border-b border-border px-3">
                   <span className="mr-2 shrink-0 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    Roles
+                    Steps
                   </span>
                   {store.roles.map((role) => {
                     const disabled = role.status !== "active";
@@ -449,10 +507,11 @@ export default function WorkstreamsPage() {
                         disabled={disabled}
                         draggable={!disabled}
                         key={role.id}
-                        onClick={() => addNode(role.id)}
+                        onClick={() => addRoleNode(role.id)}
                         onDragStart={(e) => {
                           if (disabled) return;
-                          e.dataTransfer.setData("text/plain", role.id);
+                          e.dataTransfer.setData("application/spielos-step", JSON.stringify({ type: "role", id: role.id }));
+                          e.dataTransfer.setData("text/plain", `role:${role.id}`);
                           e.dataTransfer.effectAllowed = "copy";
                         }}
                         size="sm"
@@ -463,13 +522,32 @@ export default function WorkstreamsPage() {
                       </Button>
                     );
                   })}
+                  {store.evalFiles.filter((evalFile) => evalFile.status === "active").map((evalFile) => (
+                    <Button
+                      className="h-7 shrink-0"
+                      draggable
+                      key={evalFile.id}
+                      onClick={() => addEvalNode(evalFile.id)}
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData("application/spielos-step", JSON.stringify({ type: "eval", id: evalFile.id }));
+                        e.dataTransfer.setData("text/plain", `eval:${evalFile.id}`);
+                        e.dataTransfer.effectAllowed = "copy";
+                      }}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      <Icon name="bar-chart" size={14} />
+                      QA: {evalFile.name}
+                    </Button>
+                  ))}
                 </div>
                 <GraphCanvas
-                  addNode={addNode}
+                  addStep={addStep}
                   addEdge={addEdge}
                   connectNode={connectNode}
                   deleteNode={deleteNode}
                   draft={draft}
+                  evalsById={new Map(store.evalFiles.map((evalFile) => [evalFile.id, evalFile.name]))}
                   fromNodeId={fromNodeId}
                   removeEdge={removeEdge}
                   rolesById={new Map(store.roles.map((role) => [role.id, role.name]))}
@@ -496,11 +574,12 @@ export default function WorkstreamsPage() {
 }
 
 function GraphCanvas({
-  addNode,
+  addStep,
   addEdge,
   connectNode,
   deleteNode,
   draft,
+  evalsById,
   fromNodeId,
   removeEdge,
   rolesById,
@@ -509,11 +588,12 @@ function GraphCanvas({
   setSelectedNodeId,
   updateNode
 }: {
-  addNode: (roleId: string, x?: number, y?: number) => void;
+  addStep: (type: "role" | "eval", id: string, x?: number, y?: number) => void;
   addEdge: (sourceId: string, targetId: string) => void;
   connectNode: (targetId: string) => void;
   deleteNode: (nodeId: string) => void;
   draft: WorkstreamDefinition | Omit<WorkstreamDefinition, "id" | "updatedAt">;
+  evalsById: Map<string, string>;
   fromNodeId: string | null;
   removeEdge: (edgeId: string) => void;
   rolesById: Map<string, string>;
@@ -736,12 +816,28 @@ function GraphCanvas({
 
   function handleDrop(event: React.DragEvent) {
     event.preventDefault();
-    const roleId = event.dataTransfer.getData("text/plain");
-    if (!roleId || !containerRef.current) return;
+    const rawStep = event.dataTransfer.getData("application/spielos-step");
+    const fallback = event.dataTransfer.getData("text/plain");
+    let step: { type: "role" | "eval"; id: string } | null = null;
+    if (rawStep) {
+      try {
+        const parsed = JSON.parse(rawStep) as { type?: string; id?: string };
+        if ((parsed.type === "role" || parsed.type === "eval") && parsed.id) {
+          step = { type: parsed.type, id: parsed.id };
+        }
+      } catch {
+        step = null;
+      }
+    }
+    if (!step && fallback) {
+      const [type, id] = fallback.includes(":") ? fallback.split(":") : ["role", fallback];
+      if ((type === "role" || type === "eval") && id) step = { type, id };
+    }
+    if (!step || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
     const x = Math.max(24, (event.clientX - rect.left - pan.x) / zoom - NODE_WIDTH / 2);
     const y = Math.max(24, (event.clientY - rect.top - pan.y) / zoom - 22);
-    addNode(roleId, x, y);
+    addStep(step.type, step.id, x, y);
   }
 
   function renderEdgePath(source: WorkstreamNode, target: WorkstreamNode) {
@@ -864,12 +960,14 @@ function GraphCanvas({
           {draft.nodes.length === 0 ? (
             <EmptyState
               className="absolute inset-0"
-              description="Add roles from the sidebar or drag a role onto the canvas."
+              description="Add roles or QA eval steps from the toolbar, or drag a step onto the canvas."
               title="No steps yet"
             />
           ) : null}
           {draft.nodes.map((node) => {
-            const role = rolesById.get(node.roleId);
+            const isEvalNode = node.nodeType === "eval";
+            const evalName = isEvalNode ? evalsById.get(node.skillIds[0] ?? "") : undefined;
+            const role = isEvalNode ? evalName : rolesById.get(node.roleId);
             return (
               <div
                 key={node.id}
@@ -892,13 +990,13 @@ function GraphCanvas({
                     <Icon name="grip-vertical" size={14} />
                   </span>
                   <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{node.title}</span>
-                  <Pill>{role ?? "role"}</Pill>
+                  <Pill>{isEvalNode ? "QA" : role ?? "role"}</Pill>
                 </div>
                 <div className="space-y-1 px-2 py-2 text-[11px] text-muted-foreground select-none">
                   <div className="truncate">in: {node.input}</div>
                   <div className="truncate">out: {node.output}</div>
                   <div>
-                    {node.skillIds.length ? `${node.skillIds.length} step skills` : "role skills"} - {node.fileIds.length} files
+                    {isEvalNode ? role ?? "Eval" : node.skillIds.length ? `${node.skillIds.length} step skills` : "role skills"} - {node.fileIds.length} files
                   </div>
                 </div>
                 <div className="flex items-center gap-1 border-t border-border px-2 py-1.5 select-none">
@@ -946,16 +1044,20 @@ function GraphCanvas({
 }
 
 function NodeInspector({
+  evals,
   files,
   node,
+  nodes,
   roles,
   skills,
   toggleNodeList,
   updateNode
 }: {
+  evals: EvalFile[];
   files: Array<{ id: string; title: string; folder?: string; kind: string }>;
   node: WorkstreamNode | null;
-  roles: Array<{ id: string; name: string; status?: string }>;
+  nodes: WorkstreamNode[];
+  roles: Role[];
   skills: SkillDefinition[];
   toggleNodeList: (nodeId: string, key: "skillIds" | "fileIds", value: string) => void;
   updateNode: (nodeId: string, patch: Partial<WorkstreamNode>) => void;
@@ -976,6 +1078,30 @@ function NodeInspector({
       label: role.status === "active" ? role.name : `${role.name} (disabled)`,
       value: role.id
     }));
+  const isEvalNode = node.nodeType === "eval";
+  const selectedRole = roles.find((role) => role.id === node.roleId) ?? null;
+  const evalOptions = evals
+    .filter((evalFile) => evalFile.status === "active" || node.skillIds.includes(evalFile.id))
+    .map((evalFile) => ({
+      label: evalFile.status === "active" ? evalFile.name : `${evalFile.name} (disabled)`,
+      value: evalFile.id
+    }));
+  const selectedEvalId = node.skillIds[0] ?? "";
+  const evalInputValue = (() => {
+    if (!node.evalInput || node.evalInput.type === "previous_output") return "previous_output";
+    if (node.evalInput.type === "workflow_input") return "workflow_input";
+    return `node:${node.evalInput.nodeId ?? ""}`;
+  })();
+  const evalInputOptions = [
+    { label: "Previous step output", value: "previous_output" },
+    { label: "Workflow request", value: "workflow_input" },
+    ...nodes
+      .filter((entry) => entry.id !== node.id)
+      .map((entry) => ({
+        label: `${entry.title} output${entry.output ? ` (${entry.output})` : ""}`,
+        value: `node:${entry.id}`
+      }))
+  ];
 
   return (
     <div>
@@ -989,30 +1115,101 @@ function NodeInspector({
         </Field>
       </div>
       <div className="grid gap-3 p-3">
-        <Field label="Role">
-          <NativeSelect
-            ariaLabel="Step role"
-            onChange={(value) => updateNode(node.id, { roleId: value })}
-            options={roleOptions}
-            value={node.roleId}
-          />
-        </Field>
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Input contract">
-            <Input onChange={(event) => updateNode(node.id, { input: event.target.value })} value={node.input} />
+        {isEvalNode ? (
+          <>
+            <Field label="QA eval">
+              <NativeSelect
+                ariaLabel="Step QA eval"
+                onChange={(value) => {
+                  const evalFile = evals.find((entry) => entry.id === value);
+                  updateNode(node.id, {
+                    roleId: "runtime.eval",
+                    skillIds: [value],
+                    title: evalFile ? `QA: ${evalFile.name}` : node.title,
+                    output: "Eval report",
+                    loopConfig: evalFile ? { ...evalFile.loopConfig, evalId: evalFile.id } : node.loopConfig
+                  });
+                }}
+                options={evalOptions}
+                value={selectedEvalId}
+              />
+            </Field>
+            <Field label="Gate behavior">
+              <div className="rounded-md border border-border bg-panel-raised px-2 py-2 text-[11px] text-muted-foreground">
+                {(() => {
+                  const evalFile = evals.find((entry) => entry.id === selectedEvalId);
+                  const loopConfig = node.loopConfig ?? (evalFile ? { ...evalFile.loopConfig, evalId: evalFile.id } : null);
+                  if (!loopConfig?.enabled) return "Pass continues. Fail stops the workflow.";
+                  return `Pass continues. Fail retries the previous step up to ${loopConfig.maxAttempts} attempts.`;
+                })()}
+              </div>
+            </Field>
+            <Field label="Evaluate">
+              <NativeSelect
+                ariaLabel="Eval input source"
+                onChange={(value) => {
+                  if (value === "workflow_input") {
+                    updateNode(node.id, { input: "workflow_request", evalInput: { type: "workflow_input" } });
+                    return;
+                  }
+                  if (value.startsWith("node:")) {
+                    const nodeId = value.slice("node:".length);
+                    const sourceNode = nodes.find((entry) => entry.id === nodeId);
+                    updateNode(node.id, {
+                      input: sourceNode?.output ?? "selected_output",
+                      evalInput: { type: "node_output", nodeId }
+                    });
+                    return;
+                  }
+                  updateNode(node.id, { input: "previous_output", evalInput: { type: "previous_output" } });
+                }}
+                options={evalInputOptions}
+                value={evalInputValue}
+              />
+            </Field>
+          </>
+        ) : (
+          <Field label="Role">
+            <NativeSelect
+              ariaLabel="Step role"
+              onChange={(value) => {
+                const nextRole = roles.find((role) => role.id === value);
+                updateNode(node.id, {
+                  roleId: value,
+                  title: nextRole?.name ?? node.title,
+                  input: nextRole ? roleContractName(nextRole, "inputs", "Role input") : node.input,
+                  output: nextRole ? roleContractName(nextRole, "outputs", "Role output") : node.output
+                });
+              }}
+              options={roleOptions}
+              value={node.roleId}
+            />
           </Field>
-          <Field label="Output contract">
-            <Input onChange={(event) => updateNode(node.id, { output: event.target.value })} value={node.output} />
+        )}
+        <ContractFlow
+          input={isEvalNode ? evalInputLabel(evalInputValue, nodes) : selectedRole ? roleContractName(selectedRole, "inputs", node.input) : node.input}
+          output={isEvalNode ? "Eval report" : selectedRole ? roleContractName(selectedRole, "outputs", node.output) : node.output}
+          tone={isEvalNode ? "QA" : "Role"}
+        />
+        {!isEvalNode ? (
+          <Field label="Prompt override">
+            <div className="overflow-hidden rounded-md border border-border bg-background">
+              <div className="flex h-8 items-center gap-2 border-b border-border bg-panel-raised px-2">
+                <span className="text-[11px] text-muted-foreground">Optional role prompt override</span>
+                <span className="ml-auto text-[10px] text-muted-foreground select-none">
+                  @ to mention
+                </span>
+              </div>
+              <MentionTextarea
+                className="min-h-36"
+                mono
+                onChange={(event) => updateNode(node.id, { prompt: event })}
+                placeholder="Optional. Leave blank to use the role's current prompt."
+                value={node.prompt}
+              />
+            </div>
           </Field>
-        </div>
-        <Field label="Prompt override">
-          <Textarea
-            className="min-h-36 font-mono text-xs"
-            onChange={(event) => updateNode(node.id, { prompt: event.target.value })}
-            placeholder="Optional. Leave blank to use the role's current prompt."
-            value={node.prompt}
-          />
-        </Field>
+        ) : null}
         <PickList
           activeIds={node.fileIds}
           items={files.map((file) => ({ id: file.id, title: file.title, subtitle: file.folder ?? file.kind }))}
@@ -1021,20 +1218,63 @@ function NodeInspector({
           searchPlaceholder="Search files"
           onToggle={(id) => toggleNodeList(node.id, "fileIds", id)}
         />
-        <PickList
-          activeIds={node.skillIds}
-          items={skills
-            .filter((skill) => skill.status === "active" || node.skillIds.includes(skill.id))
-            .map((skill) => ({
-              id: skill.id,
-              title: skill.name,
-              subtitle: skill.status === "active" ? skill.category : `${skill.category} - disabled`
-            }))}
-          iconName="sparkles"
-          label="Skills"
-          searchPlaceholder="Search skills"
-          onToggle={(id) => toggleNodeList(node.id, "skillIds", id)}
-        />
+        {!isEvalNode ? (
+          <PickList
+            activeIds={node.skillIds}
+            items={skills
+              .filter((skill) => skill.status === "active" || node.skillIds.includes(skill.id))
+              .map((skill) => ({
+                id: skill.id,
+                title: skill.name,
+                subtitle: skill.status === "active" ? skill.category : `${skill.category} - disabled`
+              }))}
+            iconName="sparkles"
+            label="Skills"
+            searchPlaceholder="Search skills"
+            onToggle={(id) => toggleNodeList(node.id, "skillIds", id)}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function evalInputLabel(value: string, nodes: WorkstreamNode[]) {
+  if (value === "workflow_input") return "Workflow request";
+  if (value.startsWith("node:")) {
+    const node = nodes.find((entry) => entry.id === value.slice("node:".length));
+    return node ? `${node.title} output` : "Selected step output";
+  }
+  return "Previous step output";
+}
+
+function ContractFlow({
+  input,
+  output,
+  tone
+}: {
+  input: string;
+  output: string;
+  tone: "Role" | "QA";
+}) {
+  return (
+    <div className="rounded-md border border-border bg-panel p-2">
+      <div className="mb-2 flex items-center gap-2">
+        <Icon name="git-branch" className="text-muted-foreground" size={13} />
+        <span className="text-[11px] font-medium text-muted-foreground">{tone} flow</span>
+      </div>
+      <div className="grid gap-1.5">
+        <div className="rounded-md bg-panel-raised px-2 py-1.5">
+          <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Input</div>
+          <div className="mt-0.5 truncate text-xs text-foreground">{input}</div>
+        </div>
+        <div className="flex justify-center text-muted-foreground">
+          <Icon name="arrow-down" size={13} />
+        </div>
+        <div className="rounded-md bg-panel-raised px-2 py-1.5">
+          <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Output</div>
+          <div className="mt-0.5 truncate text-xs text-foreground">{output}</div>
+        </div>
       </div>
     </div>
   );

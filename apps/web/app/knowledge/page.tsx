@@ -3,6 +3,7 @@
 import { useState, useMemo } from "react";
 import { cn } from "@spielos/design-system";
 import { Icon } from "../../components/icons";
+import { ENTITY_ICONS } from "../../components/icon-constants";
 import { PageHeader } from "@spielos/design-system";
 import { AppShell } from "../../components/app-shell";
 import { FolderFileBrowser } from "../../components/folder-file-browser";
@@ -39,7 +40,7 @@ export default function KnowledgePage() {
     <AppShell>
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
         <PageHeader
-          icon={<Icon name="knowledge" size={14} />}
+          icon={<Icon name={ENTITY_ICONS.knowledge} size={14} />}
           title="Knowledge"
         />
 
@@ -80,6 +81,7 @@ export default function KnowledgePage() {
             defaultFolders={LIBRARY_DEFAULT_FOLDERS}
             fileExtension=".md"
             useSharedFolders
+            showStatusSelect={false}
             renderEditor={({ value, onChange }) => (
               <DocumentEditor onChange={onChange} value={value} />
             )}

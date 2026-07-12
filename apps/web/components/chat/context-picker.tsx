@@ -1,6 +1,7 @@
 "use client";
 
 import { Icon } from "../icons";
+import { ENTITY_ICONS } from "../icon-constants";
 import {
   type FormEvent,
   useEffect,
@@ -21,12 +22,12 @@ type Section = {
 };
 
 const SECTIONS: Section[] = [
-  { id: "role", label: "Roles", icon: <Icon name="users" size={14} />, blurb: "Agents that will collaborate" },
-  { id: "tool", label: "Skills", icon: <Icon name="sparkles" size={14} />, blurb: "Callable capabilities the team can use" },
-  { id: "workstream", label: "Workstreams", icon: <Icon name="folder-kanban" size={14} />, blurb: "Multi-step graphs" },
-  { id: "eval", label: "Evals", icon: <Icon name="bar-chart" size={14} />, blurb: "Rubrics for scoring content, prompts, and workflows" },
-  { id: "prompt", label: "Prompts", icon: <Icon name="prompt" size={14} />, blurb: "Reusable system and strategy instructions" },
-  { id: "knowledge", label: "Knowledge Base", icon: <Icon name="brain" size={14} />, blurb: "Strategy, files, and evidence" },
+  { id: "role", label: "Roles", icon: <Icon name={ENTITY_ICONS.role} size={14} />, blurb: "Agents that will collaborate" },
+  { id: "tool", label: "Skills", icon: <Icon name={ENTITY_ICONS.skill} size={14} />, blurb: "Callable capabilities the team can use" },
+  { id: "workstream", label: "Workstreams", icon: <Icon name={ENTITY_ICONS.workflow} size={14} />, blurb: "Multi-step graphs" },
+  { id: "eval", label: "Evals", icon: <Icon name={ENTITY_ICONS.eval} size={14} />, blurb: "Rubrics for scoring content, prompts, and workflows" },
+  { id: "prompt", label: "Prompts", icon: <Icon name={ENTITY_ICONS.prompt} size={14} />, blurb: "Reusable system and strategy instructions" },
+  { id: "knowledge", label: "Knowledge Base", icon: <Icon name={ENTITY_ICONS.knowledge} size={14} />, blurb: "Strategy, files, and evidence" },
 ];
 
 type Candidate = {

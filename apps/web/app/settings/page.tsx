@@ -1,6 +1,7 @@
 "use client";
 
 import { Icon } from "../../components/icons";
+import { SETTINGS_TAB_ICONS } from "../../components/icon-constants";
 import { useEffect, useState } from "react";
 import {
   Button,
@@ -23,10 +24,10 @@ import type { ProviderModel } from "../../lib/workspace-data";
 type SettingsTab = "models" | "integrations" | "theme" | "workspace";
 
 const TAB_ICONS: Record<SettingsTab, string> = {
-  models: "server",
-  integrations: "tool",
-  theme: "sun",
-  workspace: "database"
+  models: SETTINGS_TAB_ICONS.models,
+  integrations: SETTINGS_TAB_ICONS.integrations,
+  theme: SETTINGS_TAB_ICONS.theme,
+  workspace: SETTINGS_TAB_ICONS.workspace
 };
 
 const TAB_LABELS: Record<SettingsTab, string> = {

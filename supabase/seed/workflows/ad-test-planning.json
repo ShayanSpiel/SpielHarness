@@ -37,12 +37,14 @@
     },
     {
       "id": "plan-eval",
-      "title": "Plan Eval",
-      "roleSlug": "editor",
-      "skillSlugs": ["grounding-evaluator"],
+      "nodeType": "eval",
+      "title": "QA: Ad Test Plan Quality",
+      "roleId": "runtime.eval",
+      "skillSlugs": ["ad-test-plan-quality"],
       "prompt": "Evaluate whether the test plan is grounded and executable.",
       "input": "test_plan",
       "output": "eval_report",
+      "evalInput": { "type": "node_output", "nodeId": "plan" },
       "x": 960,
       "y": 180
     }

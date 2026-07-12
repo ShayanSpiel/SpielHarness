@@ -49,7 +49,7 @@ export type RunState = {
   skills: Skill[];
   role: Role | null;
   skill: Skill | null;
-  node: { id: string; title: string; roleId: string; promptOverride?: string; skillIds: string[]; fileIds?: string[] } | null;
+  node: RunNode | null;
   provider: ModelProvider | null;
   model: Model | null;
   knowledgeFiles: Array<{
@@ -62,9 +62,47 @@ export type RunState = {
   // accumulated text from the active llm_call skill
   output: string;
   // list of nodes to execute (single node is the common case)
-  nodes: Array<{ id: string; title: string; roleId: string; promptOverride?: string; skillIds: string[]; fileIds?: string[] }>;
+  nodes: RunNode[];
   cursor: number;
+  evalAttempts: Record<string, number>;
+  outputsByNode: Record<string, string>;
 };
+
+type RunNode = {
+  id: string;
+  title: string;
+  nodeType?: "role" | "eval";
+  roleId: string;
+  promptOverride?: string;
+  skillIds: string[];
+  fileIds?: string[];
+  loopConfig?: RuntimeLoopConfig;
+  evalInput?: RuntimeEvalInputSource;
+};
+
+type RuntimeLoopConfig = {
+  enabled: boolean;
+  maxAttempts: number;
+  breakCondition: "on_pass" | "on_fail";
+  evalId: string | null;
+  retryDelayMs: number;
+};
+
+type RuntimeEvalInputSource = {
+  type: "previous_output" | "workflow_input" | "node_output";
+  nodeId?: string;
+};
+
+function resolveEvalInput(state: RunState, node: RunNode): string {
+  const source = node.evalInput ?? { type: "previous_output" };
+  if (source.type === "workflow_input") return state.prompt;
+  if (source.type === "node_output" && source.nodeId) {
+    return state.outputsByNode[source.nodeId] || state.output || state.prompt;
+  }
+  const previousNode = state.nodes[state.cursor - 1];
+  if (previousNode) return state.outputsByNode[previousNode.id] || state.output || state.prompt;
+  return state.output || state.prompt;
+}
 
 const RunStateAnnotation = Annotation.Root({
   orgId: Annotation<string>,
@@ -112,6 +150,14 @@ const RunStateAnnotation = Annotation.Root({
   cursor: Annotation<number>({
     reducer: (_current, update: number) => update,
     default: () => 0
+  }),
+  evalAttempts: Annotation<Record<string, number>>({
+    reducer: (current, update: Record<string, number>) => ({ ...current, ...update }),
+    default: () => ({})
+  }),
+  outputsByNode: Annotation<Record<string, string>>({
+    reducer: (current, update: Record<string, string>) => ({ ...current, ...update }),
+    default: () => ({})
   })
 });
 
@@ -226,7 +272,8 @@ const graph = new StateGraph(RunStateAnnotation)
         value: r.value,
         weight: r.weight
       }));
-      const result = evaluateRules(state.output || state.prompt, rules);
+      const evalInput = resolveEvalInput(state, node);
+      const result = evaluateRules(evalInput, rules);
       const artifact: Artifact = {
         id: `art_${crypto.randomUUID()}`,
         orgId: state.orgId,
@@ -242,18 +289,78 @@ const graph = new StateGraph(RunStateAnnotation)
           ...result.findings.map((f) => `- ${f.label}: ${f.score} (${f.notes})`)
         ].join("\n"),
         parentArtifactIds: [],
-        metadata: { result, skillId: skill.id, nodeId: node.id }
+        metadata: { result, skillId: skill.id, nodeId: node.id, evalInput: node.evalInput ?? { type: "previous_output" } }
       };
       const passed = result.overall >= (skill.overallThreshold ?? 75);
+      const isWorkflowGate = node.nodeType === "eval";
+      const loopConfig = node.loopConfig ?? (skill.metadata?.loopConfig as RuntimeLoopConfig | undefined);
+      const attempt = (state.evalAttempts[node.id] ?? 0) + 1;
+      const maxAttempts = Math.max(1, Number(loopConfig?.maxAttempts ?? 1));
+      const retryDelayMs = Math.max(0, Number(loopConfig?.retryDelayMs ?? 0));
+      const shouldRetry =
+        isWorkflowGate &&
+        !passed &&
+        loopConfig?.enabled === true &&
+        loopConfig.breakCondition === "on_pass" &&
+        attempt < maxAttempts &&
+        state.cursor > 0;
+      if (shouldRetry && retryDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      }
+      const shouldFailGate = isWorkflowGate && !passed && !shouldRetry;
+      const gateEvents: RunEvent[] = [];
+      if (shouldRetry) {
+        gateEvents.push(event(
+          { orgId: state.orgId, runId: state.runId },
+          "node_status",
+          `QA failed at ${result.overall}/100. Retrying the previous step (${attempt + 1}/${maxAttempts}).`,
+          {
+            node: node.title,
+            skill: skill.name || skill.slug,
+            payload: {
+              nodeId: node.id,
+              skillId: skill.id,
+              score: result.overall,
+              threshold: skill.overallThreshold ?? 75,
+              passed,
+              attempt,
+              maxAttempts
+            }
+          }
+        ));
+      } else if (shouldFailGate) {
+        gateEvents.push(event(
+          { orgId: state.orgId, runId: state.runId },
+          "node_status",
+          `QA failed at ${result.overall}/100. Workflow stopped.`,
+          {
+            node: node.title,
+            skill: skill.name || skill.slug,
+            payload: {
+              nodeId: node.id,
+              skillId: skill.id,
+              score: result.overall,
+              threshold: skill.overallThreshold ?? 75,
+              passed,
+              attempt,
+              maxAttempts
+            }
+          }
+        ));
+      }
       return {
         artifacts: [artifact],
-        status: "running",
+        output: artifact.body,
+        outputsByNode: { [node.id]: artifact.body },
+        status: shouldFailGate ? "failed" : "running",
+        evalAttempts: { [node.id]: attempt },
+        cursor: shouldRetry ? Math.max(0, state.cursor - 2) : state.cursor,
         events: [
           started,
           event(
             { orgId: state.orgId, runId: state.runId },
             "eval_score_updated",
-            `Eval try 1: ${passed ? "Passed" : "Failed"} at ${result.overall}/100.`,
+            `Eval try ${attempt}: ${passed ? "Passed" : "Failed"} at ${result.overall}/100.`,
             {
               node: node.title,
               skill: skill.name || skill.slug,
@@ -264,10 +371,12 @@ const graph = new StateGraph(RunStateAnnotation)
                 score: result.overall,
                 threshold: skill.overallThreshold ?? 75,
                 passed,
-                attempt: 1
+                attempt,
+                maxAttempts
               }
             }
           ),
+          ...gateEvents,
           event(
             { orgId: state.orgId, runId: state.runId },
             "skill_completed",
@@ -287,6 +396,9 @@ const graph = new StateGraph(RunStateAnnotation)
       if (!state.provider || !state.model) {
         return {
           output: "[ERROR] LLM is not connected. Set MODEL_PROVIDER, MODEL_PROVIDER_KIND, and MODEL_NAME environment variables (or configure a provider in Settings).",
+          outputsByNode: {
+            [node.id]: "[ERROR] LLM is not connected. Set MODEL_PROVIDER, MODEL_PROVIDER_KIND, and MODEL_NAME environment variables (or configure a provider in Settings)."
+          },
           events: [
             started,
             event(
@@ -323,6 +435,7 @@ const graph = new StateGraph(RunStateAnnotation)
       }
       return {
         output,
+        outputsByNode: { [node.id]: output },
         events: [
           started,
           event(
@@ -352,10 +465,12 @@ const graph = new StateGraph(RunStateAnnotation)
           : state.knowledgeFiles
               .filter((file) => terms.some((term) => file.title.toLowerCase().includes(term)))
               .slice(0, 3);
-        return {
-          output: matches.length
+        const output = matches.length
             ? matches.map((file) => `# ${file.title}\n\n${file.body}`).join("\n\n---\n\n")
-            : "No matching file was found for RAG File Read.",
+            : "No matching file was found for RAG File Read.";
+        return {
+          output,
+          outputsByNode: { [node.id]: output },
           events: [
             started,
             event(
@@ -380,12 +495,14 @@ const graph = new StateGraph(RunStateAnnotation)
         .filter((entry) => entry.score > 0)
         .sort((a, b) => b.score - a.score)
         .slice(0, 5);
-      return {
-        output: scored.length
+      const output = scored.length
           ? scored
               .map(({ file }) => `- ${file.title} (${file.fileType}, ${file.id}): ${file.body.slice(0, 500)}`)
               .join("\n")
-          : "No matching harness files found.",
+          : "No matching harness files found.";
+      return {
+        output,
+        outputsByNode: { [node.id]: output },
         events: [
           started,
           event(
@@ -405,8 +522,10 @@ const graph = new StateGraph(RunStateAnnotation)
     // HTTP / CODE / MCP — placeholders for now.
     // Each kind should be implemented as a small adapter in packages/providers
     // or by the user via the skills catalog.
+    const output = `[skill:${skill.kind}] ${skill.name || skill.slug} ran with input: ${state.prompt.slice(0, 200)}`;
     return {
-      output: `[skill:${skill.kind}] ${skill.name || skill.slug} ran with input: ${state.prompt.slice(0, 200)}`,
+      output,
+      outputsByNode: { [node.id]: output },
       events: [
         started,
         event(
@@ -438,6 +557,9 @@ const graph = new StateGraph(RunStateAnnotation)
         status: "running",
         cursor: state.cursor + 1
       };
+    }
+    if (state.status === "failed") {
+      return {};
     }
     return {
       cursor: state.cursor + 1,
@@ -538,7 +660,9 @@ function buildInitialState(req: RunRequest): RunState {
     knowledgeFiles: req.knowledgeFiles ?? [],
     output: "",
     nodes: req.nodes,
-    cursor: req.resume ? 1 : 0
+    cursor: req.resume ? 1 : 0,
+    evalAttempts: {},
+    outputsByNode: {}
   };
   return base;
 }
@@ -562,6 +686,7 @@ export async function* streamRun(
   let lastText = "";
   const yieldedEvents = new Set<string>();
   const yieldedArtifacts = new Set<string>();
+  let finalStatus: "completed" | "failed" = "completed";
 
   for await (const graphChunk of stream) {
     const [mode, chunk] = graphChunk as ["custom" | "values", GraphCustomChunk | RunState];
@@ -576,6 +701,7 @@ export async function* streamRun(
       continue;
     }
     const state = chunk as RunState;
+    if (state.status === "failed") finalStatus = "failed";
     // Surface events that the reducer accumulated this tick
     for (const evt of state.events) {
       if (yieldedEvents.has(evt.id)) continue;
@@ -611,7 +737,11 @@ export async function* streamRun(
 
   yield {
     kind: "event",
-    event: event({ orgId: req.orgId, runId: req.runId }, "run_completed", "Run completed.")
+    event: event(
+      { orgId: req.orgId, runId: req.runId },
+      finalStatus === "failed" ? "run_failed" : "run_completed",
+      finalStatus === "failed" ? "Run failed." : "Run completed."
+    )
   };
 }
 

@@ -39,6 +39,7 @@ type FolderFileBrowserProps = {
     value: string;
     onChange: (value: string) => void;
     fileName: string;
+    onRename?: (newFileName: string) => void;
   }) => ReactNode;
   showStatusSelect?: boolean;
   showFolderSelect?: boolean;
@@ -298,7 +299,7 @@ export function FolderFileBrowser({
                 variant="ghost"
               >
                 <Icon name="folder-plus" size={14} />
-                <span className="ml-1 text-xs">Folder</span>
+                <span className="ml-1 text-xs">Category</span>
               </Button>
             </Tooltip>
             <Tooltip content="New file" side="bottom">
@@ -463,15 +464,6 @@ export function FolderFileBrowser({
                 }
               />
             ) : null}
-            {showFolderSelect ? (
-              <FolderSelect
-                folders={folders}
-                value={draft.folder || selectedFolder}
-                onChange={(value) =>
-                  setDraft((current) => ({ ...current, folder: value }))
-                }
-              />
-            ) : null}
             <Tooltip content="Delete file" side="bottom">
               <Button
                 aria-label="Delete file"
@@ -518,7 +510,13 @@ export function FolderFileBrowser({
             {renderEditor({
               value: draft.body,
               onChange: (body) => setDraft((current) => ({ ...current, body })),
-              fileName: draft.title
+              fileName: draft.title,
+              onRename: selected
+                ? (newFileName: string) => {
+                    setDraft((current) => ({ ...current, title: newFileName }));
+                    store.updateItem(selected.id, { title: newFileName });
+                  }
+                : undefined
             })}
           </section>
         ) : (

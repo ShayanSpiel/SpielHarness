@@ -1,7 +1,8 @@
 "use client";
 
-import type { Role, ArtifactType } from "@spielos/core";
+import type { Role } from "@spielos/core";
 import { Icon } from "../../components/icons";
+import { ENTITY_ICONS } from "../../components/icon-constants";
 import { InspectorToggle } from "../../components/inspector-toggle";
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import {
@@ -13,48 +14,91 @@ import {
   PageHeader,
   Pill,
   SearchInput,
-  Textarea,
+  Switch,
   Tooltip,
   cn,
   toast
 } from "@spielos/design-system";
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { AppShell } from "../../components/app-shell";
+import { RichEditor } from "../../components/rich-editor";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
+import type { RoleContractDefinition, RoleContractFormat } from "../../lib/workspace-data";
 
-const artifactTypes: ArtifactType[] = [
-  "draft",
-  "brief",
-  "research_report",
-  "eval_report",
-  "strategy_file",
-  "asset"
-];
+type RoleContractMetadata = {
+  inputs?: RoleContractDefinition[];
+  outputs?: RoleContractDefinition[];
+};
 
-function newRole(): Omit<Role, "id" | "orgId"> {
+function defaultContract(direction: "inputs" | "outputs"): RoleContractDefinition {
+  return {
+    name: direction === "inputs" ? "Input" : "Output",
+    format: "markdown",
+    body:
+      direction === "inputs"
+        ? "Describe the request, context, constraints, source material, and success criteria this role needs before it starts."
+        : "Describe the exact deliverable this role must return, including structure, tone, required sections, and quality bar.",
+    required: true,
+    multiple: false
+  };
+}
+
+function normalizeRoleContract(value: unknown, direction: "inputs" | "outputs"): RoleContractDefinition {
+  const fallback = defaultContract(direction);
+  if (!value || typeof value !== "object") return fallback;
+  const record = value as Record<string, unknown>;
+  const legacyFormat = record.format ?? record.dataType;
+  const format: RoleContractFormat =
+    legacyFormat === "json" || legacyFormat === "file" ? legacyFormat : "markdown";
+  return {
+    name: typeof record.name === "string" && record.name.trim() ? record.name : fallback.name,
+    format,
+    body:
+      typeof record.body === "string" ? record.body :
+      typeof record.description === "string" ? record.description :
+      fallback.body,
+    required: typeof record.required === "boolean" ? record.required : fallback.required,
+    multiple: typeof record.multiple === "boolean" ? record.multiple : fallback.multiple
+  };
+}
+
+function roleContracts(
+  role: Role | Omit<Role, "id" | "orgId">,
+  direction: "inputs" | "outputs"
+): RoleContractDefinition[] {
+  const savedContracts = (role.metadata?.contracts as RoleContractMetadata | undefined)?.[direction];
+  if (savedContracts?.length) {
+    return savedContracts.map((contract) => normalizeRoleContract(contract, direction));
+  }
+  return [defaultContract(direction)];
+}
+
+function newRole(modelId = "mistral-large-latest"): Omit<Role, "id" | "orgId"> {
   return {
     name: "New Agent",
     description: "Configurable marketing role.",
-    prompt: "Define this agent's job, constraints, skills, memory, and output contract.",
+    prompt: "Define this agent's job, constraints, skills, memory, and decision rules.",
     skillIds: [],
     memoryPolicy: ["run"],
     inputArtifactTypes: ["draft"],
     outputArtifactTypes: ["draft"],
-    modelId: "mistral-large-latest",
+    modelId,
     status: "active",
-    metadata: {}
+    metadata: {
+      contracts: {
+        inputs: [defaultContract("inputs")],
+        outputs: [defaultContract("outputs")]
+      }
+    }
   };
-}
-
-function roleId(role: Role | Omit<Role, "id" | "orgId">) {
-  return "id" in role ? role.id : "new";
 }
 
 export default function RolesPage() {
   const store = useWorkspaceStore();
+  const defaultModel = store.models.find((model) => model.enabled)?.model ?? store.models[0]?.model ?? "mistral-large-latest";
   const [selectedId, setSelectedId] = useState<string | null>(store.roles[0]?.id ?? null);
   const { draft, setDraft, dirty, reset, markSaved } = useDirty<Role | Omit<Role, "id" | "orgId">>(
-    store.roles[0] ?? newRole()
+    store.roles[0] ?? newRole(defaultModel)
   );
   const [query, setQuery] = useState("");
   const [saving, setSaving] = useState(false);
@@ -83,7 +127,7 @@ export default function RolesPage() {
 
   function createRole() {
     setSelectedId(null);
-    reset(newRole());
+    reset(newRole(defaultModel));
   }
 
   function selectRole(role: Role) {
@@ -143,7 +187,7 @@ export default function RolesPage() {
     >
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
         <PageHeader
-          icon={<Icon name="users" size={14} />}
+          icon={<Icon name={ENTITY_ICONS.role} size={14} />}
           title="Roles"
           actions={
             <>
@@ -224,19 +268,23 @@ export default function RolesPage() {
                 <span>Roles</span>
                  <Icon name="chevron-right" size={12} />
                 <span className="max-w-72 truncate text-foreground">{draft.name}</span>
-                <Pill tone={isNew ? "warning" : "default"}>{isNew ? "new" : roleId(draft)}</Pill>
+                <Pill tone={draft.status === "active" ? "success" : "default"}>
+                  {draft.status === "active" ? "enabled" : "disabled"}
+                </Pill>
               </div>
               <div className="ml-auto flex items-center gap-1.5">
-                <NativeSelect
-                  ariaLabel="Role enabled"
-                  className="w-28"
-                  onChange={(value) => setDraft((current) => ({ ...current, status: value === "active" ? "active" : "draft" }))}
-                  options={[
-                    { label: "enabled", value: "active" },
-                    { label: "disabled", value: "draft" }
-                  ]}
-                  value={draft.status === "active" ? "active" : "draft"}
-                />
+                <label className="flex h-8 items-center gap-2 rounded-md border border-border bg-background px-2 text-xs text-muted-foreground">
+                  <Switch
+                    checked={draft.status === "active"}
+                    onCheckedChange={(checked) =>
+                      setDraft((current) => ({
+                        ...current,
+                        status: checked ? "active" : "draft"
+                      }))
+                    }
+                  />
+                  <span>{draft.status === "active" ? "Enabled" : "Disabled"}</span>
+                </label>
                 {!isNew ? (
                   <Tooltip content="Delete role" side="bottom">
                     <Button aria-label="Delete role" onClick={remove} size="icon" variant="ghost">
@@ -299,10 +347,13 @@ export default function RolesPage() {
                     <span className="ml-auto text-[10px] text-muted-foreground">
                       {draft.prompt.length} chars
                     </span>
+                    <span className="ml-auto text-[10px] text-muted-foreground select-none">
+                      @ to mention
+                    </span>
                   </div>
-                  <Textarea
-                    className="min-h-0 flex-1 resize-none rounded-none border-0 bg-background px-6 py-6 font-mono text-[13px] leading-6 focus-visible:ring-0"
-                    onChange={(event) => setDraft((current) => ({ ...current, prompt: event.target.value }))}
+                  <RichEditor
+                    mono
+                    onChange={(v) => setDraft((current) => ({ ...current, prompt: v }))}
                     value={draft.prompt}
                   />
                 </div>
@@ -328,81 +379,193 @@ function RoleInspector({
   store: ReturnType<typeof useWorkspaceStore>;
   toggleSkill: (skillId: string) => void;
 }) {
+  const [tab, setTab] = useState<"skills" | "input" | "output">("skills");
+  const inputContract = roleContracts(draft, "inputs")[0] ?? defaultContract("inputs");
+  const outputContract = roleContracts(draft, "outputs")[0] ?? defaultContract("outputs");
+
+  function updateContract(direction: "inputs" | "outputs", patch: Partial<RoleContractDefinition>) {
+    setDraft((current) => {
+      const currentContracts = (current.metadata?.contracts as RoleContractMetadata | undefined) ?? {};
+      const currentContract = roleContracts(current, direction)[0] ?? defaultContract(direction);
+      return {
+        ...current,
+        metadata: {
+          ...current.metadata,
+          contracts: {
+            ...currentContracts,
+            [direction]: [{ ...currentContract, ...patch }]
+          }
+        }
+      };
+    });
+  }
+
+  const tabs: Array<{ id: typeof tab; label: string; icon: string }> = [
+    { id: "skills", label: "Skills", icon: "sparkles" },
+    { id: "input", label: "Input", icon: "arrow-down" },
+    { id: "output", label: "Output", icon: "arrow-up" }
+  ];
+
   return (
-    <div>
+    <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
          <Icon name="sparkles" className="text-muted-foreground" size={14} />
         <span className="text-xs font-semibold text-foreground">Role Settings</span>
         <span className="ml-auto truncate text-[11px] text-muted-foreground">
-          {skillNames.length ? skillNames.join(", ") : "No skills assigned"}
+          {tab === "skills" ? (skillNames.length ? skillNames.join(", ") : "No skills assigned") : "Role-owned contract"}
         </span>
       </div>
-      <div className="grid gap-1 p-2">
-        {store.skills.map((skill) => {
-          const selected = draft.skillIds.includes(skill.id);
-          const disabled = skill.status !== "active" && !selected;
-          return (
-            <button
-              className={cn(
-                "flex items-start gap-2 rounded-md border px-2 py-2 text-left transition-colors",
-                selected ? "border-border bg-selected" : "border-transparent hover:bg-hover",
-                skill.status !== "active" && "opacity-55"
-              )}
-              disabled={disabled}
-              key={skill.id}
-              onClick={() => toggleSkill(skill.id)}
-              type="button"
-            >
-              <span
-                className={cn(
-                  "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border",
-                  selected
-                    ? "border-foreground-strong bg-foreground-strong text-background"
-                    : "border-border"
-                )}
-              >
-                 {selected ? <Icon name="check" size={12} /> : null}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-2">
-                  <span className="block min-w-0 flex-1 truncate text-[13px] text-foreground">{skill.name}</span>
-                  {skill.status !== "active" ? <Pill className="shrink-0">disabled</Pill> : null}
-                </span>
-                <span className="line-clamp-2 text-[11px] text-muted-foreground">
-                  {skill.description}
-                </span>
-              </span>
-            </button>
-          );
-        })}
+      <div className="grid grid-cols-3 gap-1 border-b border-border bg-panel-raised p-2">
+        {tabs.map((entry) => (
+          <button
+            className={cn(
+              "flex h-8 items-center justify-center gap-1.5 rounded-md text-xs font-medium transition-colors",
+              tab === entry.id
+                ? "bg-selected text-foreground-strong"
+                : "text-muted-foreground hover:bg-hover hover:text-foreground"
+            )}
+            key={entry.id}
+            onClick={() => setTab(entry.id)}
+            type="button"
+          >
+            <Icon name={entry.icon} size={13} />
+            {entry.label}
+          </button>
+        ))}
       </div>
-      <div className="border-t border-border p-3">
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Input">
-            <NativeSelect
-              ariaLabel="Input artifact"
-              onChange={(value) =>
-                setDraft((current) => ({
-                  ...current,
-                  inputArtifactTypes: [value as ArtifactType]
-                }))
-              }
-              options={artifactTypes.map((type) => ({ label: type, value: type }))}
-              value={draft.inputArtifactTypes[0] ?? "draft"}
+      {tab === "skills" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          <div className="grid gap-1">
+            {store.skills.map((skill) => {
+              const selected = draft.skillIds.includes(skill.id);
+              const disabled = skill.status !== "active" && !selected;
+              return (
+                <button
+                  className={cn(
+                    "flex items-start gap-2 rounded-md border px-2 py-2 text-left transition-colors",
+                    selected ? "border-border bg-selected" : "border-transparent hover:bg-hover",
+                    skill.status !== "active" && "opacity-55"
+                  )}
+                  disabled={disabled}
+                  key={skill.id}
+                  onClick={() => toggleSkill(skill.id)}
+                  type="button"
+                >
+                  <span
+                    className={cn(
+                      "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border",
+                      selected
+                        ? "border-foreground-strong bg-foreground-strong text-background"
+                        : "border-border"
+                    )}
+                  >
+                     {selected ? <Icon name="check" size={12} /> : null}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="block min-w-0 flex-1 truncate text-[13px] text-foreground">{skill.name}</span>
+                      {skill.status !== "active" ? <Pill className="shrink-0">disabled</Pill> : null}
+                    </span>
+                    <span className="line-clamp-2 text-[11px] text-muted-foreground">
+                      {skill.description}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <ContractEditor
+          contract={tab === "input" ? inputContract : outputContract}
+          direction={tab === "input" ? "inputs" : "outputs"}
+          onChange={(patch) => updateContract(tab === "input" ? "inputs" : "outputs", patch)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ContractEditor({
+  contract,
+  direction,
+  onChange
+}: {
+  contract: RoleContractDefinition;
+  direction: "inputs" | "outputs";
+  onChange: (patch: Partial<RoleContractDefinition>) => void;
+}) {
+  const formatOptions: RoleContractFormat[] = ["markdown", "json"];
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div className="rounded-md border border-border bg-panel p-3 shadow-sm">
+        <div className="mb-3 flex items-center gap-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-panel-raised text-muted-foreground">
+            <Icon name={direction === "inputs" ? "arrow-down" : "arrow-up"} size={14} />
+          </div>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-foreground">
+              {direction === "inputs" ? "Input contract" : "Output contract"}
+            </div>
+            <div className="text-[11px] text-muted-foreground">Owned by this role</div>
+          </div>
+        </div>
+        <div className="grid gap-3">
+          <Field label="Name">
+            <Input
+              className="h-8"
+              onChange={(event) => onChange({ name: event.target.value })}
+              value={contract.name}
             />
           </Field>
-          <Field label="Output">
-            <NativeSelect
-              ariaLabel="Output artifact"
-              onChange={(value) =>
-                setDraft((current) => ({
-                  ...current,
-                  outputArtifactTypes: [value as ArtifactType]
-                }))
-              }
-              options={artifactTypes.map((type) => ({ label: type, value: type }))}
-              value={draft.outputArtifactTypes[0] ?? "draft"}
-            />
+          <div>
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium text-muted-foreground">Format</span>
+              <div className="flex rounded-md border border-border bg-background p-0.5">
+                {formatOptions.map((format) => (
+                  <button
+                    className={cn(
+                      "h-6 rounded px-2 text-[11px] font-medium capitalize transition-colors",
+                      contract.format === format
+                        ? "bg-selected text-foreground-strong"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                    key={format}
+                    onClick={() => onChange({ format })}
+                    type="button"
+                  >
+                    {format}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center gap-3 rounded-md border border-border bg-background px-2 py-2">
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Switch checked={contract.required} onCheckedChange={(required) => onChange({ required })} />
+                Required
+              </label>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Switch checked={contract.multiple} onCheckedChange={(multiple) => onChange({ multiple })} />
+                Multiple
+              </label>
+            </div>
+          </div>
+          <Field label="Contract body">
+            <div className="overflow-hidden rounded-md border border-border bg-background">
+              <div className="flex h-8 items-center gap-2 border-b border-border bg-panel-raised px-2">
+                <Pill className="text-[10px]">{contract.format}</Pill>
+                <span className="text-[10px] text-muted-foreground">{contract.body.length} chars</span>
+                <span className="ml-auto text-[10px] text-muted-foreground select-none">
+                  @ to mention
+                </span>
+              </div>
+              <RichEditor
+                className="min-h-56"
+                mono
+                onChange={(v) => onChange({ body: v })}
+                value={contract.body}
+              />
+            </div>
           </Field>
         </div>
       </div>

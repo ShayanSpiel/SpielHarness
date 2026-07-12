@@ -28,6 +28,16 @@ export type SkillDefinition = {
   updatedAt: string;
 };
 
+export type RoleContractFormat = "markdown" | "json" | "file";
+
+export type RoleContractDefinition = {
+  name: string;
+  format: RoleContractFormat;
+  body: string;
+  required: boolean;
+  multiple: boolean;
+};
+
 export type EvalRubric = {
   id: string;
   label: string;
@@ -79,8 +89,14 @@ export type LoopConfig = {
   retryDelayMs: number;
 };
 
+export type EvalInputSource = {
+  type: "previous_output" | "workflow_input" | "node_output";
+  nodeId?: string;
+};
+
 export type WorkstreamNode = {
   id: string;
+  nodeType?: "role" | "eval";
   roleId: string;
   title: string;
   x: number;
@@ -91,6 +107,7 @@ export type WorkstreamNode = {
   input: string;
   output: string;
   loopConfig?: LoopConfig;
+  evalInput?: EvalInputSource;
 };
 
 export type WorkstreamEdge = {

@@ -75,7 +75,9 @@ function parseRoleFromHarnessFile(file: HarnessFileResponse): Role | null {
     outputArtifactTypes: (meta.outputTypes as Role["outputArtifactTypes"]) ?? [],
     modelId: (((meta.modelId as string | undefined) ?? (meta.model as string | undefined)) ?? "mistral-large-latest") as string | null,
     status: file.status === "active" ? "active" : file.status === "archived" ? "archived" : "draft",
-    metadata: {}
+    metadata: {
+      contracts: meta.contracts
+    }
   };
 }
 
@@ -157,6 +159,7 @@ function parseWorkstreamFromHarnessFile(
     status: (file.status as WorkstreamDefinition["status"]) ?? "draft",
     nodes: rawNodes.map((node, index) => ({
       id: String(node.id ?? `node-${index + 1}`),
+      nodeType: node.nodeType === "eval" ? "eval" : "role",
       roleId: idsBySlug.get(String(node.roleSlug ?? node.roleId ?? "")) ?? String(node.roleId ?? ""),
       title: String(node.title ?? `Step ${index + 1}`),
       x: Number(node.x ?? 120 + index * 260),
@@ -165,12 +168,21 @@ function parseWorkstreamFromHarnessFile(
       skillIds: ((node.skillSlugs as string[] | undefined) ?? (node.skillIds as string[] | undefined) ?? [])
         .map((id) => idsBySlug.get(id) ?? id),
       fileIds: (node.fileIds as string[] | undefined) ?? [],
-      input: String(node.input ?? node.inputType ?? "any"),
-      output: String(node.output ?? node.outputType ?? "any")
+      input: String(node.input ?? node.inputType ?? "role_input"),
+      output: String(node.output ?? node.outputType ?? "role_output"),
+      evalInput: node.evalInput as WorkstreamDefinition["nodes"][number]["evalInput"]
     })),
     edges: (meta.edges as WorkstreamDefinition["edges"]) ?? [],
     updatedAt: file.updatedAt
   };
+}
+
+function roleContractName(role: Role | undefined, direction: "inputs" | "outputs", fallback: string) {
+  const contracts = role?.metadata?.contracts as
+    | { inputs?: Array<{ name?: unknown }>; outputs?: Array<{ name?: unknown }> }
+    | undefined;
+  const name = contracts?.[direction]?.[0]?.name;
+  return typeof name === "string" && name.trim() ? name : fallback;
 }
 
 export async function loadWorkspaceFromDb(): Promise<WorkspaceState> {
@@ -222,6 +234,21 @@ export async function loadWorkspaceFromDb(): Promise<WorkspaceState> {
     ...role,
     skillIds: role.skillIds.map((slug) => idsBySlug.get(slug) ?? slug)
   }));
+  const rolesById = new Map(resolvedRoles.map((role) => [role.id, role]));
+  const normalizedWorkstreams = workstreams.map((workstream) => ({
+    ...workstream,
+    nodes: workstream.nodes.map((node) => {
+      if (node.nodeType === "eval") {
+        return { ...node, output: "Eval report" };
+      }
+      const role = rolesById.get(node.roleId);
+      return {
+        ...node,
+        input: roleContractName(role, "inputs", node.input || "Role input"),
+        output: roleContractName(role, "outputs", node.output || "Role output")
+      };
+    })
+  }));
 
   return {
     ...initialWorkspaceState,
@@ -229,7 +256,7 @@ export async function loadWorkspaceFromDb(): Promise<WorkspaceState> {
     roles: resolvedRoles,
     skills,
     evalFiles,
-    workstreams,
+    workstreams: normalizedWorkstreams,
     libraryFolders: Array.from(folderNames)
   };
 }

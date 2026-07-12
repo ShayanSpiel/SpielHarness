@@ -1,11 +1,13 @@
 "use client";
 
 import { useMemo, useState, useEffect, type Dispatch, type SetStateAction } from "react";
-import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, SearchInput, Textarea, Tooltip, cn, toast } from "@spielos/design-system";
+import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, SearchInput, Switch, Textarea, Tooltip, cn, toast } from "@spielos/design-system";
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { Icon } from "../../components/icons";
+import { ENTITY_ICONS } from "../../components/icon-constants";
 import { InspectorToggle } from "../../components/inspector-toggle";
 import { AppShell } from "../../components/app-shell";
+import { MentionTextarea } from "../../components/mention-textarea";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
 import type { SkillDefinition } from "../../lib/workspace-data";
 
@@ -91,7 +93,7 @@ export default function ToolsPage() {
     <AppShell inspector={<SkillInspector draft={draft} setDraft={setDraft} />}>
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
         <PageHeader
-          icon={<Icon name="sparkles" size={14} />}
+          icon={<Icon name={ENTITY_ICONS.skill} size={14} />}
           title="Skills"
           actions={
             <>
@@ -172,7 +174,9 @@ export default function ToolsPage() {
                 <span>Skills</span>
                  <Icon name="chevron-right" size={12} />
                 <span className="max-w-72 truncate text-foreground">{draft.name}</span>
-                <Pill tone={draft.status === "active" ? "success" : "default"}>{draft.status}</Pill>
+                <Pill tone={draft.status === "active" ? "success" : "default"}>
+                  {draft.status === "active" ? "enabled" : "disabled"}
+                </Pill>
               </div>
               <div className="ml-auto flex items-center gap-1.5">
                 {!isNew ? (
@@ -191,7 +195,7 @@ export default function ToolsPage() {
 
             <section className="flex min-h-0 flex-1">
               <div className="flex min-h-0 flex-1 flex-col">
-                <div className="grid shrink-0 gap-3 border-b border-border bg-panel-raised px-4 py-3 lg:grid-cols-2 2xl:grid-cols-[minmax(0,1fr)_180px_140px_140px]">
+                <div className="grid shrink-0 gap-3 border-b border-border bg-panel-raised px-4 py-3 lg:grid-cols-2 2xl:grid-cols-[minmax(0,1fr)_180px_140px_160px]">
                   <Field label="Name">
                     <Input
                       className="h-8 text-sm font-medium"
@@ -214,23 +218,33 @@ export default function ToolsPage() {
                       value={draft.category}
                     />
                   </Field>
-                  <Field label="Status">
-                    <NativeSelect
-                      ariaLabel="Status"
-                      onChange={(value) => setDraft((d) => ({ ...d, status: value as SkillDefinition["status"] }))}
-                      options={["active", "draft", "archived"].map((value) => ({ label: value, value }))}
-                      value={draft.status}
-                    />
+                  <Field label="Enabled">
+                    <label className="flex h-8 items-center gap-2 rounded-md border border-border bg-background px-2 text-xs text-muted-foreground">
+                      <Switch
+                        checked={draft.status === "active"}
+                        onCheckedChange={(checked) =>
+                          setDraft((d) => ({
+                            ...d,
+                            status: checked ? "active" : "draft"
+                          }))
+                        }
+                      />
+                      <span>{draft.status === "active" ? "Can run" : "Cannot run"}</span>
+                    </label>
                   </Field>
                 </div>
 
                 <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-panel-raised px-4">
                    <Icon name="code" className="text-muted-foreground" size={14} />
                   <span className="text-xs font-medium text-foreground">Implementation Contract</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground select-none">
+                    @ to mention
+                  </span>
                 </div>
-                <Textarea
-                  className="min-h-0 flex-1 resize-none rounded-none border-0 bg-background px-6 py-6 font-mono text-[13px] leading-6 focus-visible:ring-0"
-                  onChange={(event) => setDraft((d) => ({ ...d, implementation: event.target.value }))}
+                <MentionTextarea
+                  className="min-h-0 flex-1"
+                  mono
+                  onChange={(v) => setDraft((d) => ({ ...d, implementation: v }))}
                   value={draft.implementation}
                 />
               </div>

@@ -195,6 +195,7 @@ export type Role = z.infer<typeof roleSchema>;
 // ── Workstream (graph) ─────────────────────────────────────────
 export const workstreamNodeSchema = z.object({
   id: z.string(),
+  nodeType: z.enum(["role", "eval"]).default("role"),
   roleId: z.string(),
   title: z.string(),
   x: z.number().default(0),
@@ -203,7 +204,18 @@ export const workstreamNodeSchema = z.object({
   skillIds: z.array(z.string()).default([]),
   fileIds: z.array(z.string()).default([]),
   inputType: z.string().default("any"),
-  outputType: z.string().default("any")
+  outputType: z.string().default("any"),
+  loopConfig: z.object({
+    enabled: z.boolean().default(false),
+    maxAttempts: z.number().default(3),
+    breakCondition: z.enum(["on_pass", "on_fail"]).default("on_pass"),
+    evalId: z.string().nullable().default(null),
+    retryDelayMs: z.number().default(0)
+  }).optional(),
+  evalInput: z.object({
+    type: z.enum(["previous_output", "workflow_input", "node_output"]).default("previous_output"),
+    nodeId: z.string().optional()
+  }).optional()
 });
 
 export const workstreamEdgeSchema = z.object({
