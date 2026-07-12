@@ -16,7 +16,7 @@ type Section = "context" | "events" | "output";
 
 const ICONS: Record<ContextItemKind, ReactNode> = {
   role: <Icon name={CONTEXT_KIND_ICONS.role} size={12} />,
-  tool: <Icon name={CONTEXT_KIND_ICONS.tool} size={12} />,
+  skill: <Icon name={CONTEXT_KIND_ICONS.skill} size={12} />,
   library: <Icon name={CONTEXT_KIND_ICONS.library} size={12} />,
   workstream: <Icon name={CONTEXT_KIND_ICONS.workstream} size={12} />,
   strategy: <Icon name={CONTEXT_KIND_ICONS.strategy} size={12} />,
@@ -136,10 +136,10 @@ function ContextRow({ item }: { item: ContextItem }) {
           <span className="truncate text-xs font-medium text-foreground">{item.title}</span>
         </div>
         {item.subtitle ? (
-          <div className="line-clamp-1 text-[11px] text-muted-foreground">{item.subtitle}</div>
+          <div className="line-clamp-1 text-2xs text-muted-foreground">{item.subtitle}</div>
         ) : null}
       </div>
-      <span className="rounded-full bg-panel px-1.5 py-0 text-[10px] uppercase tracking-wider text-muted-foreground">
+      <span className="rounded-full bg-panel px-1.5 py-0 text-3xs uppercase tracking-wider text-muted-foreground">
         {item.kind}
       </span>
     </div>
@@ -160,7 +160,7 @@ function ContextSection() {
 
   if (run.contextItems.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-1.5 px-3 py-6 text-center text-[11px] text-muted-foreground">
+      <div className="flex flex-col items-center gap-1.5 px-3 py-6 text-center text-2xs text-muted-foreground">
             <Icon name={ENTITY_ICONS.skill} size={14} />
         <div>No context attached yet.</div>
         <div>Click the + in the composer to add roles, skills, library, or workstreams.</div>
@@ -172,7 +172,7 @@ function ContextSection() {
     <div className="flex flex-col gap-3 p-3">
       {grouped.map(([kind, items]) => (
         <div className="flex flex-col gap-1.5" key={kind}>
-          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+          <div className="flex items-center gap-1.5 text-3xs uppercase tracking-wider text-muted-foreground">
             {ICONS[kind]}
             <span>{kind}</span>
             <span className="ml-auto tabular-nums">{items.length}</span>
@@ -192,7 +192,7 @@ function EventsSection() {
   const run = useRunContext();
   if (run.events.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-1.5 px-3 py-6 text-center text-[11px] text-muted-foreground">
+      <div className="flex flex-col items-center gap-1.5 px-3 py-6 text-center text-2xs text-muted-foreground">
         <Icon name="activity" size={14} />
         {run.running ? (
           <div>Waiting for events…</div>
@@ -224,14 +224,14 @@ function EventsSection() {
               {eventIcon(event.type)}
             </span>
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5 text-[11px] text-foreground">
+              <div className="flex items-center gap-1.5 text-2xs text-foreground">
                 <span className="font-medium">{eventLabel(event)}</span>
-                <span className="ml-auto font-mono text-[10px] text-muted-foreground shrink-0">
+                <span className="ml-auto font-mono text-3xs text-muted-foreground shrink-0">
                   {new Date(event.receivedAt).toLocaleTimeString([], { hour12: false })}
                 </span>
               </div>
               {event.message ? (
-                <div className="line-clamp-3 text-[11px] text-muted-foreground mt-0.5">{eventDetail(event)}</div>
+                <div className="line-clamp-3 text-2xs text-muted-foreground mt-0.5">{eventDetail(event)}</div>
               ) : null}
             </div>
           </div>
@@ -245,7 +245,7 @@ function OutputSection() {
   const run = useRunContext();
   if (run.artifacts.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-1.5 px-3 py-6 text-center text-[11px] text-muted-foreground">
+      <div className="flex flex-col items-center gap-1.5 px-3 py-6 text-center text-2xs text-muted-foreground">
         <Icon name="layers" size={14} />
         {run.running ? (
           <div>Waiting for output…</div>
@@ -262,11 +262,11 @@ function OutputSection() {
           <header className="flex items-center gap-2 border-b border-border bg-panel-raised px-2.5 py-1.5">
             <Icon name="file-text" className="text-muted-foreground" size={12} />
             <span className="truncate text-xs font-medium text-foreground">{artifact.title}</span>
-            <span className="ml-auto rounded-full bg-panel px-1.5 py-0 text-[10px] uppercase tracking-wider text-muted-foreground">
+            <span className="ml-auto rounded-full bg-panel px-1.5 py-0 text-3xs uppercase tracking-wider text-muted-foreground">
                {artifact.type}
              </span>
           </header>
-          <pre className="max-h-72 overflow-auto whitespace-pre-wrap p-2.5 text-[11px] leading-relaxed text-foreground/90">
+          <pre className="max-h-72 overflow-auto whitespace-pre-wrap p-2.5 text-2xs leading-relaxed text-foreground/90">
             {artifact.body}
           </pre>
         </article>
@@ -305,7 +305,7 @@ export function RunDrawer() {
         <Icon name={ENTITY_ICONS.run} size={14} className="text-muted-foreground" />
         <div className="flex flex-col leading-tight min-w-0 flex-1">
           <span className="text-xs font-medium text-foreground">Run inspector</span>
-          <span className="text-[10px] text-muted-foreground truncate">
+          <span className="text-3xs text-muted-foreground truncate">
             {run.running ? (run.activity ?? "Streaming...") : run.runTitle}
           </span>
         </div>
@@ -355,7 +355,7 @@ export function RunDrawer() {
         {section === "output" ? <OutputSection /> : null}
       </div>
 
-      <footer className="shrink-0 border-t border-border bg-panel-raised px-3 py-1.5 text-[10px] text-muted-foreground">
+      <footer className="shrink-0 border-t border-border bg-panel-raised px-3 py-1.5 text-3xs text-muted-foreground">
         <div className="flex items-center justify-between">
           <span>{totalContext} attached · {totalEvents} events · {totalArtifacts} artifacts</span>
         </div>

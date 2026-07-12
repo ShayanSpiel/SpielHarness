@@ -1,6 +1,9 @@
-import { errorResponse, getOrg, HttpError, requireSupabase } from "../../../../../lib/server";
-import { envModelProvider, resolveExecution, type ExecuteBody } from "../../../../../lib/execution-service";
+import { errorResponse, getOrg, HttpError, requireOrgWrite, requireSupabase } from "../../../../../lib/server";
+import { resolveExecution, resolveModelProvider, type ExecuteBody } from "../../../../../lib/execution-service";
 import { streamRun } from "@spielos/graph";
+import { recordRunUsage } from "../../../../../lib/usage";
+import { createRunEventBuffer } from "../../../../../lib/run-event-buffer";
+import { persistRunArtifact } from "../../../../../lib/workspace-artifact";
 
 type ReplyBody = {
   requestId: string;
@@ -11,7 +14,7 @@ function frame(data: unknown) {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
-function runEvent(orgId: string, runId: string, type: "run_completed" | "run_failed", message: string, payload?: Record<string, unknown>) {
+function runEvent(orgId: string, runId: string, type: "run_completed" | "run_failed" | "run_cancelled", message: string, payload?: Record<string, unknown>) {
   return {
     id: `evt_${crypto.randomUUID()}`,
     orgId,
@@ -26,6 +29,7 @@ function runEvent(orgId: string, runId: string, type: "run_completed" | "run_fai
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const org = await getOrg();
+    requireOrgWrite(org);
     const supabase = requireSupabase(org);
     const { id: runId } = await params;
     const body = (await request.json()) as ReplyBody;
@@ -40,6 +44,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       .eq("org_id", org.orgId)
       .single();
     if (runErr || !run) throw new HttpError(404, "Run not found");
+    if (run.status !== "waiting_human") throw new HttpError(409, "Run is not waiting for human input");
+    const savedCheckpoint = (run.checkpoint as Record<string, unknown>) ?? {};
+    const pendingRequest = savedCheckpoint.humanInputRequest as { id?: string } | undefined;
+    if (!pendingRequest?.id || pendingRequest.id !== body.requestId) {
+      throw new HttpError(409, "This human-input request is stale or does not belong to the run");
+    }
 
     const previousInputs = (run.inputs as Record<string, unknown>) ?? {};
     const executeBody: ExecuteBody = {
@@ -50,7 +60,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       runId
     };
     const resolved = await resolveExecution(supabase, org.orgId, executeBody);
-    const { provider, model } = envModelProvider(org.orgId);
+    const preferredModelId = resolved.nodes.map((node) => resolved.rolesById[node.roleId]?.modelId).find(Boolean);
+    const { provider, model } = await resolveModelProvider(supabase, org.orgId, preferredModelId);
 
     const humanInputs = (run.human_inputs as Record<string, unknown>) ?? {};
     const updatedHumanInputs = { ...humanInputs, [body.requestId]: body.answers };
@@ -77,6 +88,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       async start(controller) {
         let outputText = "";
         const artifactIds: string[] = [];
+        let checkpoint: Record<string, unknown> = savedCheckpoint;
+        const eventBuffer = createRunEventBuffer(supabase, org.orgId, runId);
         controller.enqueue(encoder.encode(frame({
           kind: "run",
           runId,
@@ -99,8 +112,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             model,
             knowledgeFiles: resolved.knowledgeFiles,
             workstreamId: resolved.workstreamId,
-            resume: body.answers
-          })) {
+            resume: body.answers,
+            checkpoint: savedCheckpoint
+          }, request.signal)) {
             if (item.kind === "event") {
               if (item.event.type === "run_completed" || item.event.type === "run_failed" || item.event.type === "run_cancelled") {
                 terminalSent = true;
@@ -109,36 +123,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                   item.event.type === "run_cancelled" ? "cancelled" :
                   "completed";
               }
-              await supabase.from("run_events").insert({
-                org_id: org.orgId,
-                run_id: runId,
-                event_type: item.event.type,
-                node: item.event.node ?? null,
-                skill: item.event.skill ?? null,
-                message: item.event.message,
-                payload: item.event.payload
-              });
+              await eventBuffer.push(item.event);
               controller.enqueue(encoder.encode(frame({ kind: "event", event: item.event })));
             } else if (item.kind === "artifact") {
-              const { data: createdFile, error: fileError } = await supabase.from("files").insert({
-                org_id: org.orgId,
-                file_type: item.artifact.type,
-                title: item.artifact.title,
-                body: item.artifact.body,
-                metadata: {
-                  ...item.artifact.metadata,
-                  sourceRunId: runId,
-                  selectedContext: resolved.selectedContext
-                },
-                status: "active"
-              }).select("id").single();
-              if (fileError) throw fileError;
-              if (createdFile?.id) {
-                artifactIds.push(createdFile.id);
+              const created = await persistRunArtifact(supabase, org.orgId, runId, item.artifact, resolved.selectedContext);
+              if (created.fileId) {
+                artifactIds.push(created.fileId);
                 await supabase.from("generated_files").insert({
                   org_id: org.orgId,
                   run_id: runId,
-                  file_id: createdFile.id,
+                  file_id: created.fileId,
                   relationship: "output"
                 });
               }
@@ -156,10 +150,39 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               controller.enqueue(encoder.encode(frame({ kind: "text", text: item.text })));
             } else if (item.kind === "status") {
               controller.enqueue(encoder.encode(frame({ kind: "status", status: item.status })));
+            } else if (item.kind === "values") {
+              checkpoint = {
+                cursor: item.state.cursor,
+                humanInputs: item.state.humanInputs,
+                humanInputRequest: item.state.humanInputRequest,
+                outputsByNode: item.state.outputsByNode,
+                evalAttempts: item.state.evalAttempts,
+                output: item.state.output
+              };
             }
           }
 
-          if (!waitingForHuman) {
+
+          await eventBuffer.flush();
+
+          if (waitingForHuman) {
+            await supabase
+              .from("runs")
+              .update({ checkpoint, status: "waiting_human", updated_at: new Date().toISOString() })
+              .eq("id", runId)
+              .eq("org_id", org.orgId);
+          } else {
+            await recordRunUsage({ supabase, orgId: org.orgId, runId, provider, model, input: String(run.prompt ?? ""), output: outputText });
+            if (run.chat_id && outputText.trim()) {
+              const { error: messageError } = await supabase.from("chat_messages").insert({
+                org_id: org.orgId,
+                chat_id: run.chat_id,
+                role: "assistant",
+                body: outputText,
+                metadata: { runId, resumedFrom: body.requestId }
+              });
+              if (messageError) throw messageError;
+            }
             await supabase
               .from("runs")
               .update({
@@ -186,12 +209,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : "Unknown resume error";
+          const cancelled = request.signal.aborted || (err instanceof Error && err.name === "AbortError");
+          await eventBuffer.flush().catch(() => undefined);
           await supabase
             .from("runs")
-            .update({ status: "failed", completed_at: new Date().toISOString() })
+            .update({ status: cancelled ? "cancelled" : "failed", completed_at: new Date().toISOString() })
             .eq("id", runId)
             .eq("org_id", org.orgId);
-          const failedEvent = runEvent(org.orgId, runId, "run_failed", message, { target: resolved.target });
+          const failedEvent = runEvent(org.orgId, runId, cancelled ? "run_cancelled" : "run_failed", cancelled ? "Run cancelled." : message, { target: resolved.target });
+          await supabase.from("run_events").insert({
+            org_id: org.orgId, run_id: runId, event_type: failedEvent.type,
+            message: failedEvent.message, payload: failedEvent.payload
+          });
           controller.enqueue(encoder.encode(frame({ kind: "event", event: failedEvent })));
           controller.enqueue(encoder.encode(frame({
             kind: "error",

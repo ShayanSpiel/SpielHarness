@@ -68,7 +68,7 @@ function Section({
 }) {
   return (
     <section className="grid gap-1.5">
-      <header className="flex items-center gap-1.5 px-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+      <header className="flex items-center gap-1.5 px-2 text-3xs font-medium uppercase tracking-wider text-muted-foreground">
         {icon}
         <span>{title}</span>
       </header>
@@ -175,7 +175,7 @@ export function RunsModal({
     { href: "/", label: "Runs", icon: <Icon name={ENTITY_ICONS.run} size={14} /> },
     { href: "/roles", label: "Roles", icon: <Icon name={ENTITY_ICONS.role} size={14} /> },
     { href: "/workflows", label: "Workflows", icon: <Icon name={ENTITY_ICONS.workflow} size={14} /> },
-    { href: "/tools", label: "Skills", icon: <Icon name={ENTITY_ICONS.skill} size={14} /> },
+    { href: "/skills", label: "Skills", icon: <Icon name={ENTITY_ICONS.skill} size={14} /> },
     { href: "/evals", label: "Evals", icon: <Icon name={ENTITY_ICONS.eval} size={14} /> },
     { href: "/knowledge", label: "Knowledge", icon: <Icon name={ENTITY_ICONS.knowledge} size={14} /> },
     { href: "/settings", label: "Settings", icon: <Icon name={ENTITY_ICONS.settings} size={14} /> }
@@ -185,7 +185,7 @@ export function RunsModal({
     <Dialog onOpenChange={setOpen} open={open}>
       <DialogContent
         aria-describedby={undefined}
-        className="!top-[12vh] !translate-y-0 flex max-h-[calc(100vh-16vh)] h-[min(72vh,calc(100vh-16vh))] w-[min(720px,92vw)] flex-col overflow-hidden rounded-xl border border-border bg-panel p-0 shadow-[var(--shadow-popover)] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
+        className="!top-[12vh] !translate-y-0 flex max-h-[calc(100vh-16vh)] h-[min(72vh,calc(100vh-16vh))] w-[min(680px,92vw)] flex-col overflow-hidden rounded-xl border border-border bg-panel p-0 shadow-[var(--shadow-popover)] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
         hideClose
       >
         <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
@@ -198,7 +198,7 @@ export function RunsModal({
             value={query}
             variant="ghost"
           />
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          <div className="text-3xs uppercase tracking-wider text-muted-foreground">
             {loading ? "loading" : `${filteredRuns.length} runs`}
           </div>
         </div>
@@ -214,7 +214,7 @@ export function RunsModal({
                 <Icon name="plus" size={14} />
                 <div className="min-w-0 flex-1">
                   <div className="text-[13px] font-medium text-foreground">New Run</div>
-                  <div className="text-[11px] text-muted-foreground">Clear the workbench and start fresh.</div>
+                  <div className="text-2xs text-muted-foreground">Clear the workbench and start fresh.</div>
                 </div>
               </button>
             </Section>
@@ -262,8 +262,8 @@ export function RunsModal({
                           <div className="line-clamp-1 text-[13px] font-medium text-foreground">
                             {entry.prompt || "Untitled run"}
                           </div>
-                          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
-                            <Pill tone={entry.status === "completed" ? "success" : entry.status === "failed" ? "destructive" : "default"} className="text-[10px]">
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-3xs text-muted-foreground">
+                            <Pill tone={entry.status === "completed" ? "success" : entry.status === "failed" ? "destructive" : "default"} className="text-3xs">
                               {entry.status}
                             </Pill>
                             <span>{entry.inputs?.target?.type ?? entry.run_type}</span>
@@ -279,7 +279,7 @@ export function RunsModal({
           </div>
         </div>
 
-        <div className="flex items-center justify-between border-t border-border bg-panel-raised px-4 py-2 text-[11px] text-muted-foreground">
+        <div className="flex items-center justify-between border-t border-border bg-panel-raised px-4 py-2 text-2xs text-muted-foreground">
           <span>Persisted runs come from the database.</span>
           <Button onClick={newRun} size="sm" type="button" variant="primary">
             <Icon name="plus" size={14} />

@@ -1,9 +1,9 @@
 "use client";
 
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { X } from "lucide-react";
 import { forwardRef, type ComponentPropsWithoutRef, type ElementRef, type ReactNode } from "react";
 import { cn } from "../index";
+import { Icon } from "./icons";
 
 export const Dialog = DialogPrimitive.Root;
 export const DialogTrigger = DialogPrimitive.Trigger;
@@ -36,7 +36,7 @@ export const DialogContent = forwardRef<
       <DialogPrimitive.Content
         ref={ref}
         className={cn(
-          "fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-panel text-foreground shadow-popover focus:outline-none",
+          "fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 rounded-md border border-border bg-panel text-foreground shadow-popover focus:outline-none p-6",
           className
         )}
         {...props}
@@ -45,9 +45,9 @@ export const DialogContent = forwardRef<
         {!hideClose ? (
           <DialogPrimitive.Close
             aria-label="Close"
-            className="absolute right-3 top-3 rounded-sm text-muted-foreground transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="absolute right-3 top-3 rounded-sm text-muted-foreground transition-colors duration-[var(--duration)] hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
-            <X className="h-4 w-4" />
+            <Icon name="x" size={16} />
           </DialogPrimitive.Close>
         ) : null}
       </DialogPrimitive.Content>

@@ -35,4 +35,6 @@ export const THEME_REGISTRY: ThemeDescriptor[] = [
 
 export const DEFAULT_THEME: ThemeId = "gruvbox-dark";
 
+export { SIDEBAR } from "./layout-constants";
+
 export * from "./components/index";

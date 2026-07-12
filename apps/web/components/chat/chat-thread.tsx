@@ -18,6 +18,7 @@ import {
   useMemo,
   useState
 } from "react";
+import type { ThreadMessageLike } from "@assistant-ui/react";
 import ReactMarkdown from "react-markdown";
 import { Button, Tooltip, cn } from "@spielos/design-system";
 import remarkGfm from "remark-gfm";
@@ -337,7 +338,7 @@ function AssistantMessage() {
         <Icon name="bot" size={14} />
       </div>
       <div className="min-w-0 overflow-hidden leading-relaxed">
-        <div className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
+        <div className="flex items-center gap-2 text-2xs font-medium text-muted-foreground">
           <span>Assistant</span>
           {isRunning && run.activity ? (
             <span className="inline-flex min-w-0 items-center gap-1 rounded-full bg-panel-raised px-1.5 py-0.5 text-xs text-muted-foreground">
@@ -377,14 +378,53 @@ function HumanInputRequestMessage() {
     setAnswers((current) => ({ ...current, [id]: value }));
   }
 
-  function submit() {
+  async function submit() {
     if (!request) return;
     setSubmitted(true);
-    fetch(`/api/runs/${run.activeRunId}/reply`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ requestId: request.id, answers })
-    }).catch(() => setSubmitted(false));
+    try {
+      const response = await fetch(`/api/runs/${run.activeRunId}/reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId: request.id, answers })
+      });
+      if (!response.ok || !response.body) throw new Error(`Resume failed (${response.status})`);
+      run.setHumanInputRequest(null);
+      run.setRunning(true);
+      run.setActivity("Resuming run...");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          const line = frame.split("\n").find((entry) => entry.startsWith("data: "));
+          if (!line) continue;
+          const item = JSON.parse(line.slice(6)) as {
+            kind: string;
+            event?: import("@spielos/core").RunEvent;
+            artifact?: import("@spielos/core").Artifact;
+            request?: import("@spielos/core").HumanInputRequest;
+            status?: { message: string };
+            message?: string;
+          };
+          if (item.kind === "event" && item.event) run.appendEvent(item.event);
+          if (item.kind === "artifact" && item.artifact) run.appendArtifact(item.artifact);
+          if (item.kind === "human_input" && item.request) run.setHumanInputRequest(item.request);
+          if (item.kind === "status" && item.status) run.setActivity(item.status.message);
+          if (item.kind === "error") throw new Error(item.message ?? "Resume failed");
+        }
+      }
+      run.setActivity(null);
+      run.setRunning(false);
+    } catch {
+      setSubmitted(false);
+      run.setActivity(null);
+      run.setRunning(false);
+    }
   }
 
   const hasAnswers = request.questions.some((q) => q.kind !== "none");
@@ -457,7 +497,7 @@ function QuestionField({
           ))}
           {question.allowCustom ? (
             <textarea
-              className="min-h-16 resize-none rounded-md border border-border bg-background px-3 py-2 text-[12px] outline-none focus:border-ring focus:ring-2 focus:ring-ring/30"
+              className="min-h-16 resize-none rounded-md border border-border bg-background px-3 py-2 text-[12px] outline-none focus-visible:border-[var(--ring)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]/30"
               disabled={submitted}
               onChange={(e) => setAnswer(question.id, e.target.value || `custom:${question.id}`)}
               placeholder="Or write your own…"
@@ -503,7 +543,7 @@ function QuestionField({
       ) : null}
       {question.kind === "text" ? (
         <textarea
-          className="min-h-20 resize-none rounded-md border border-border bg-background px-3 py-2 text-[12px] outline-none focus:border-ring focus:ring-2 focus:ring-ring/30"
+          className="min-h-20 resize-none rounded-md border border-border bg-background px-3 py-2 text-[12px] outline-none focus-visible:border-[var(--ring)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]/30"
           disabled={submitted}
           onChange={(e) => setAnswer(question.id, e.target.value)}
           placeholder="Type your answer…"
@@ -511,7 +551,7 @@ function QuestionField({
         />
       ) : null}
       {question.kind === "none" ? (
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-2xs text-muted-foreground">
           No answer needed. Hit Continue to proceed.
         </p>
       ) : null}
@@ -539,17 +579,17 @@ function WelcomeScreen() {
         What should the marketing team do?
       </h1>
       <p className="mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
-        Press <kbd className="rounded border border-border bg-panel-raised px-1.5 py-0.5 font-mono text-[11px]">⌘K</kbd> for search, or{" "}
-        <kbd className="rounded border border-border bg-panel-raised px-1.5 py-0.5 font-mono text-[11px]">+</kbd> below
+        Press <kbd className="rounded border border-border bg-panel-raised px-1.5 py-0.5 font-mono text-2xs">⌘K</kbd> for search, or{" "}
+        <kbd className="rounded border border-border bg-panel-raised px-1.5 py-0.5 font-mono text-2xs">+</kbd> below
         to add roles, skills, library files, or workstreams to this run.
       </p>
       <div className="mt-6 max-w-md space-y-2">
         <p className="text-sm text-muted-foreground">
-          Select roles or a workstream from <kbd className="rounded border border-border bg-panel-raised px-1.5 py-0.5 font-mono text-[10px]">⌘K</kbd> to start.
+          Select roles or a workstream from <kbd className="rounded border border-border bg-panel-raised px-1.5 py-0.5 font-mono text-3xs">⌘K</kbd> to start.
         </p>
       </div>
       {store.roles.length === 0 ? (
-        <div className="mt-3 max-w-md rounded-lg border border-dashed border-border bg-panel-raised/40 px-3 py-2 text-[11px] text-muted-foreground">
+        <div className="mt-3 max-w-md rounded-lg border border-dashed border-border bg-panel-raised/40 px-3 py-2 text-2xs text-muted-foreground">
           No agents in the harness yet. Create one in <a className="underline" href="/roles">/roles</a>.
         </div>
       ) : null}
@@ -559,7 +599,17 @@ function WelcomeScreen() {
 
 function ChatRuntimeProvider({ children }: { children: ReactNode }) {
   const adapter = useSpielosChatAdapter();
-  const runtime = useLocalRuntime(adapter);
+  const store = useWorkspaceStore();
+  const initialMessages = useMemo<ThreadMessageLike[]>(() => {
+    if (!store.activeChatId) return [];
+    return (store.messages[store.activeChatId] ?? []).map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.body,
+      createdAt: new Date(message.createdAt)
+    }));
+  }, [store.activeChatId, store.messages]);
+  const runtime = useLocalRuntime(adapter, { initialMessages });
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
 }
 
@@ -600,7 +650,7 @@ function ChatThreadInner() {
       <div className="shrink-0 border-t border-border bg-panel-raised">
         <div className="mx-auto w-full max-w-3xl px-4 py-3">
           <Composer />
-          <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+          <div className="mt-2 flex items-center justify-between text-2xs text-muted-foreground">
             <div className="flex items-center gap-1.5">
               {run.contextItems.length > 0 ? (
                 <span>
@@ -611,10 +661,10 @@ function ChatThreadInner() {
               )}
             </div>
             <div className="flex items-center gap-1.5">
-              <kbd className="rounded border border-border bg-panel-raised px-1 py-0.5 font-mono text-[10px]">↵</kbd>
-              <span className="text-[10px]">send ·</span>
-              <kbd className="rounded border border-border bg-panel-raised px-1 py-0.5 font-mono text-[10px]">⇧↵</kbd>
-              <span className="text-[10px]">newline</span>
+              <kbd className="rounded border border-border bg-panel-raised px-1 py-0.5 font-mono text-3xs">↵</kbd>
+              <span className="text-3xs">send ·</span>
+              <kbd className="rounded border border-border bg-panel-raised px-1 py-0.5 font-mono text-3xs">⇧↵</kbd>
+              <span className="text-3xs">newline</span>
             </div>
           </div>
         </div>
@@ -625,8 +675,9 @@ function ChatThreadInner() {
 }
 
 export function ChatThread() {
+  const store = useWorkspaceStore();
   return (
-    <ChatRuntimeProvider>
+    <ChatRuntimeProvider key={store.activeChatId ?? "new-chat"}>
       <ChatThreadInner />
     </ChatRuntimeProvider>
   );

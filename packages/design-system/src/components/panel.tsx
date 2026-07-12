@@ -22,7 +22,7 @@ export function PanelHeader({ className, ...props }: HTMLAttributes<HTMLDivEleme
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-3 border-b border-border px-3 py-2 text-sm",
+        "flex h-10 shrink-0 items-center justify-between gap-3 border-b border-border px-4 text-sm",
         className
       )}
       {...props}
@@ -35,14 +35,14 @@ export function PanelTitle({ className, ...props }: HTMLAttributes<HTMLHeadingEl
 }
 
 export function PanelBody({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("p-3", className)} {...props} />;
+  return <div className={cn("px-4 py-3", className)} {...props} />;
 }
 
 export function PanelFooter({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-2 border-t border-border px-3 py-2 text-xs text-muted-foreground",
+        "flex items-center justify-between gap-3 border-t border-border px-4 py-2 text-sm text-muted-foreground",
         className
       )}
       {...props}

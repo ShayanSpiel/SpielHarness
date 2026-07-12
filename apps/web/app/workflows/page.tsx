@@ -1,18 +1,39 @@
 "use client";
 
 import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
-import { InspectorToggle } from "../../components/inspector-toggle";
 import { useMemo, useState, useRef, useEffect } from "react";
-import { Button, EmptyState, Field, Input, PageHeader, Pill, SearchInput, Switch, Tooltip, cn, toast } from "@spielos/design-system";
+import { Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, EmptyState, Field, Input, PageHeader, Pill, ToggleRow, Tooltip, cn, toast } from "@spielos/design-system";
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { AppShell } from "../../components/app-shell";
+import { SidebarListPanel } from "../../components/sidebar-list-panel";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
 import type { WorkstreamDefinition, WorkstreamNode } from "../../lib/workspace-data";
 import { GraphCanvas } from "./graph-canvas";
 import { NodeInspector, roleContractName } from "./node-inspector";
+import { CANVAS_CONFIG, NODE_DIMENSIONS } from "./workflow-canvas-config";
 
-function blankWorkstream(): Omit<WorkstreamDefinition, "id" | "updatedAt"> {
-  return { title: "New Workflow", description: "Custom role-based workflow.", status: "draft", nodes: [], edges: [] };
+function blankWorkstream(): WorkstreamDefinition {
+  return {
+    id: `wf_${crypto.randomUUID()}`,
+    title: "New Workflow",
+    description: "Custom role-based workflow.",
+    status: "draft",
+    nodes: [],
+    edges: [],
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function computeNextPosition(nodes: WorkstreamNode[]): { x: number; y: number } {
+  if (nodes.length === 0) return { x: 40, y: 40 };
+  const last = nodes[nodes.length - 1];
+  let nextX = last.x + NODE_DIMENSIONS.width + CANVAS_CONFIG.nodeGap;
+  let nextY = last.y;
+  if (nextX + NODE_DIMENSIONS.width > 1200) {
+    nextX = 40;
+    nextY = last.y + NODE_DIMENSIONS.height + CANVAS_CONFIG.nodeGap;
+  }
+  return { x: nextX, y: nextY };
 }
 
 export default function WorkflowsPage() {
@@ -28,6 +49,7 @@ export default function WorkflowsPage() {
   const [runLog, setRunLog] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const undoStack = useRef<string[]>([]);
   const redoStack = useRef<string[]>([]);
   const isNew = selectedId === null;
@@ -92,9 +114,9 @@ export default function WorkflowsPage() {
   }
 
   function createWorkstream() {
-    const next = blankWorkstream();
-    setSelectedId(null);
-    reset(next);
+    const created = store.addWorkstream(blankWorkstream());
+    setSelectedId(created.id);
+    reset(created);
     setSelectedNodeId(null);
     setRunLog([]);
   }
@@ -102,25 +124,19 @@ export default function WorkflowsPage() {
   async function save() {
     setSaving(true);
     try {
-      if (isNew) {
-        const created = store.addWorkstream(draft as Omit<WorkstreamDefinition, "id" | "updatedAt">);
-        setSelectedId(created.id);
-        reset(created);
-        toast.success("Workflow created");
-      } else {
-        store.updateWorkstream((draft as WorkstreamDefinition).id, draft as Partial<WorkstreamDefinition>);
-        markSaved();
-        toast.success("Workflow saved");
-      }
+      await store.updateWorkstream((draft as WorkstreamDefinition).id, draft as Partial<WorkstreamDefinition>);
+      markSaved();
+      toast.success("Workflow saved");
+      return true;
     } catch {
       toast.error("Failed to save workflow");
+      return false;
     } finally {
       setSaving(false);
     }
   }
 
   function remove() {
-    if (isNew) return;
     store.deleteWorkstream((draft as WorkstreamDefinition).id);
     createWorkstream();
   }
@@ -129,13 +145,14 @@ export default function WorkflowsPage() {
     const role = store.roles.find((entry) => entry.id === roleId);
     if (!role || role.status !== "active") return;
     pushUndo();
+    const pos = x !== undefined && y !== undefined ? { x, y } : computeNextPosition(draft.nodes);
     const node: WorkstreamNode = {
       id: `node_${crypto.randomUUID()}`,
       nodeType: "role",
       roleId,
       title: role.name,
-      x: x ?? 0,
-      y: y ?? 0,
+      x: pos.x,
+      y: pos.y,
       prompt: "",
       skillIds: [],
       fileIds: [],
@@ -151,13 +168,14 @@ export default function WorkflowsPage() {
     const evalFile = store.evalFiles.find((entry) => entry.id === evalId);
     if (!evalFile || evalFile.status !== "active") return;
     pushUndo();
+    const pos = x !== undefined && y !== undefined ? { x, y } : computeNextPosition(draft.nodes);
     const node: WorkstreamNode = {
       id: `node_${crypto.randomUUID()}`,
       nodeType: "eval",
       roleId: "runtime.eval",
       title: `QA: ${evalFile.name}`,
-      x: x ?? 0,
-      y: y ?? 0,
+      x: pos.x,
+      y: pos.y,
       prompt: "",
       skillIds: [evalFile.id],
       fileIds: [],
@@ -236,68 +254,23 @@ export default function WorkflowsPage() {
     } as Partial<WorkstreamNode>);
   }
 
-  function getTopologicalOrder(): WorkstreamNode[] {
-    const nodeMap = new Map(draft.nodes.map((n) => [n.id, n]));
-    const inDegree = new Map<string, number>();
-    const adjacency = new Map<string, string[]>();
-    for (const node of draft.nodes) {
-      inDegree.set(node.id, 0);
-      adjacency.set(node.id, []);
-    }
-    for (const edge of draft.edges) {
-      inDegree.set(edge.target, (inDegree.get(edge.target) ?? 0) + 1);
-      adjacency.get(edge.source)?.push(edge.target);
-    }
-    const queue: string[] = [];
-    for (const [id, degree] of inDegree) {
-      if (degree === 0) queue.push(id);
-    }
-    const sorted: WorkstreamNode[] = [];
-    while (queue.length > 0) {
-      const id = queue.shift()!;
-      const node = nodeMap.get(id);
-      if (node) sorted.push(node);
-      for (const neighbor of adjacency.get(id) ?? []) {
-        const newDegree = (inDegree.get(neighbor) ?? 1) - 1;
-        inDegree.set(neighbor, newDegree);
-        if (newDegree === 0) queue.push(neighbor);
-      }
-    }
-    for (const node of draft.nodes) {
-      if (!sorted.some((n) => n.id === node.id)) sorted.push(node);
-    }
-    return sorted;
-  }
-
   async function runWorkflow() {
     if (draft.nodes.length === 0 || draft.status !== "active" || running) return;
+    if (dirty && !(await save())) return;
     setRunning(true);
     setRunLog(["Starting workflow execution..."]);
     try {
-      const ordered = getTopologicalOrder();
       const allFileIds = new Set<string>();
-      const nodesPayload = ordered.map((node) => {
+      for (const node of draft.nodes) {
         for (const id of node.fileIds) allFileIds.add(id);
-        return {
-          id: node.id,
-          nodeType: node.nodeType ?? "role",
-          roleId: node.roleId,
-          title: node.title,
-          promptOverride: node.prompt || undefined,
-          skillIds: node.skillIds,
-          fileIds: node.fileIds,
-          loopConfig: node.loopConfig,
-          evalInput: node.evalInput
-        };
-      });
+      }
       const response = await fetch("/api/runs/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: `Execute workflow "${draft.title}": ${draft.description}`,
           contextRefs: Array.from(allFileIds).map((id) => ({ id, kind: "knowledge" })),
-          target: "id" in draft ? { type: "workflow", id: draft.id } : undefined,
-          nodes: nodesPayload
+          target: "id" in draft ? { type: "workflow", id: draft.id } : undefined
         })
       });
       if (!response.ok || !response.body) {
@@ -367,61 +340,45 @@ export default function WorkflowsPage() {
         <PageHeader
           icon={<Icon name={ENTITY_ICONS.workflow} size={14} />}
           title="Workflows"
-          actions={
-            <>
-              <div className="hidden w-80 md:block">
-                <SearchInput placeholder="Search workflows" value={query} onChange={setQuery} />
-              </div>
-              <InspectorToggle label="Open settings panel" />
-            </>
-          }
         />
+
         <div className="flex min-h-0 flex-1">
-          <aside className="flex w-80 shrink-0 flex-col border-r border-border bg-background">
-            <div className="border-b border-border p-3 md:hidden">
-              <SearchInput placeholder="Search workflows" value={query} onChange={setQuery} />
-            </div>
-            <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
-              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Workflows
-              </span>
-              <Pill className="ml-auto">{store.workstreams.length}</Pill>
-              <Tooltip content="New workflow" side="bottom">
-                <Button aria-label="New workflow" className="h-7 px-2" onClick={createWorkstream} size="sm" variant="ghost">
-                  <Icon name="plus" size={14} />
-                  <span className="ml-1 text-xs">New</span>
-                </Button>
-              </Tooltip>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-2">
-              {filtered.length === 0 ? (
-                <EmptyState className="py-10" description="No workflows match this search." title="No matches" />
-              ) : (
-                <ul className="grid gap-1">
-                  {filtered.map((workstream) => (
-                    <li key={workstream.id}>
-                      <button
-                        className={cn(
-                          "w-full rounded-md border px-2 py-2 text-left transition-colors",
-                          workstream.id === selectedId ? "border-border bg-selected" : "border-transparent hover:border-border hover:bg-hover"
-                        )}
-                        onClick={() => selectWorkstream(workstream)}
-                        type="button"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="truncate text-sm font-medium text-foreground">{workstream.title}</span>
-                          <Pill className="ml-auto">{workstream.nodes.length} steps</Pill>
-                        </div>
-                        <p className="line-clamp-2 text-[11px] text-muted-foreground">{workstream.description}</p>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </aside>
+          <SidebarListPanel
+            title="Workflows"
+            count={store.workstreams.length}
+            onNew={createWorkstream}
+            newTooltip="New workflow"
+            searchValue={query}
+            onSearchChange={setQuery}
+            searchPlaceholder="Search workflows"
+          >
+            {filtered.length === 0 ? (
+              <EmptyState className="py-10" description="No workflows match this search." title="No matches" />
+            ) : (
+              <ul className="grid gap-1">
+                {filtered.map((workstream) => (
+                  <li key={workstream.id}>
+                    <button
+                      className={cn(
+                        "w-full rounded-md border px-2 py-2 text-left transition-colors",
+                        workstream.id === selectedId ? "border-border bg-selected" : "border-transparent hover:border-border hover:bg-hover"
+                      )}
+                      onClick={() => selectWorkstream(workstream)}
+                      type="button"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium text-foreground">{workstream.title}</span>
+                        <Pill className="ml-auto">{workstream.nodes.length} steps</Pill>
+                      </div>
+                      <p className="line-clamp-2 text-2xs text-muted-foreground">{workstream.description}</p>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </SidebarListPanel>
           <main className="flex min-w-0 flex-1 flex-col bg-background">
-            <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-4">
+            <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
               <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                 <span>Workflows</span>
                 <Icon name="chevron-right" size={12} />
@@ -442,11 +399,25 @@ export default function WorkflowsPage() {
                 </Button>
                 {!isNew ? (
                   <Tooltip content="Delete workflow" side="bottom">
-                    <Button aria-label="Delete workflow" onClick={remove} size="icon" variant="ghost">
+                    <Button aria-label="Delete workflow" onClick={() => setConfirmDelete(true)} size="icon" variant="ghost">
                       <Icon name="trash" size={14} />
                     </Button>
                   </Tooltip>
                 ) : null}
+                <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+                  <DialogContent hideClose aria-describedby={undefined}>
+                    <DialogHeader>
+                      <DialogTitle>Delete workflow</DialogTitle>
+                      <DialogDescription>
+                        Are you sure you want to delete &ldquo;{draft.title}&rdquo;? This action cannot be undone.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter>
+                      <Button onClick={() => setConfirmDelete(false)} size="md" variant="ghost">Cancel</Button>
+                      <Button onClick={() => { setConfirmDelete(false); remove(); }} size="md" variant="primary">Delete</Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
                 <Button disabled={!dirty || saving} onClick={save} size="md" variant={dirty ? "primary" : "outline"}>
                   {saving ? <Icon name="loader" size={14} className="animate-spin" /> : <Icon name="save" size={14} />}
                   Save
@@ -464,17 +435,15 @@ export default function WorkflowsPage() {
                     />
                   </Field>
                   <Field label="Enabled">
-                    <label className="flex h-8 items-center gap-2 rounded-md border border-border bg-background px-2 text-xs text-muted-foreground">
-                      <Switch
-                        checked={draft.status === "active"}
-                        onCheckedChange={(checked) => setDraft((current) => ({ ...current, status: checked ? "active" : "draft" }))}
-                      />
-                      <span>{draft.status === "active" ? "Can run" : "Cannot run"}</span>
-                    </label>
+                    <ToggleRow
+                      checked={draft.status === "active"}
+                      description={draft.status === "active" ? "Can run" : "Cannot run"}
+                      onCheckedChange={(checked) => setDraft((current) => ({ ...current, status: checked ? "active" : "draft" }))}
+                    />
                   </Field>
                 </div>
-                <div className="flex h-11 w-full shrink-0 items-center gap-2 overflow-x-auto border-b border-border px-3">
-                  <span className="mr-2 shrink-0 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <div className="flex h-10 w-full shrink-0 items-center gap-2 overflow-x-auto border-b border-border px-3">
+                  <span className="mr-2 shrink-0 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
                     Steps
                   </span>
                   {store.roles.map((role) => {
@@ -537,7 +506,7 @@ export default function WorkflowsPage() {
                   addStep={addStep}
                 />
                 {runLog.length ? (
-                  <div className="border-t border-border bg-panel-raised px-4 py-2 text-[11px] text-muted-foreground">
+                  <div className="border-t border-border bg-panel-raised px-4 py-2 text-2xs text-muted-foreground">
                     {runLog.join("  ·  ")}
                   </div>
                 ) : null}

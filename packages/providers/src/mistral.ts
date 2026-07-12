@@ -1,4 +1,4 @@
-import type { ChatAdapter, ChatRequest, ChatResponse } from "./types";
+import type { ChatAdapter, ChatRequest, ChatResponse } from "./types.ts";
 
 function readSecret(envVar: string, secretRef?: string | null): string {
   if (secretRef) {

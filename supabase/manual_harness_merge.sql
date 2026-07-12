@@ -45,6 +45,36 @@ create table if not exists role_skills (
   primary key (role_id, skill_id)
 );
 
+create table if not exists connections (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  name text not null,
+  kind text not null check (kind in ('oauth', 'mcp', 'api', 'builtin')),
+  status text not null default 'configured' check (status in ('configured', 'needs_secret', 'disabled')),
+  base_url text,
+  secret_env_key text,
+  config jsonb not null default '{}'::jsonb,
+  operations jsonb not null default '[]'::jsonb,
+  enabled boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz,
+  unique (org_id, name)
+);
+
+create table if not exists workspace_variables (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references orgs(id) on delete cascade,
+  name text not null,
+  value text,
+  kind text not null default 'variable' check (kind in ('variable', 'secret_ref')),
+  description text not null default '',
+  enabled boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (org_id, name)
+);
+
 drop view if exists harness_files;
 create view harness_files as
 select
@@ -94,3 +124,54 @@ begin
   values (p_org_id, p_actor_id, p_action, p_entity_type, p_entity_id, p_before, p_after);
 end;
 $$;
+
+-- Production reconciliation (mirrors migration 0006 essentials).
+alter table roles add column if not exists status file_status not null default 'active';
+update roles set status = case when enabled then 'active'::file_status else 'archived'::file_status end;
+
+alter table runs
+  add column if not exists definition_snapshot jsonb not null default '{}'::jsonb,
+  add column if not exists idempotency_key text,
+  add column if not exists requested_by uuid references profiles(id) on delete set null;
+
+create unique index if not exists runs_org_idempotency_unique_idx
+  on runs (org_id, idempotency_key) where idempotency_key is not null;
+
+create table if not exists usage_ledger (
+  id uuid primary key default gen_random_uuid(), org_id uuid not null references orgs(id) on delete cascade,
+  run_id uuid references runs(id) on delete set null, provider text not null, model text not null,
+  input_tokens bigint not null default 0 check (input_tokens >= 0),
+  output_tokens bigint not null default 0 check (output_tokens >= 0),
+  cost_micros bigint not null default 0 check (cost_micros >= 0),
+  metadata jsonb not null default '{}'::jsonb, created_at timestamptz not null default now()
+);
+
+create table if not exists credit_ledger (
+  id uuid primary key default gen_random_uuid(), org_id uuid not null references orgs(id) on delete cascade,
+  run_id uuid references runs(id) on delete set null, amount_micros bigint not null,
+  entry_type text not null check (entry_type in ('grant','purchase','reserve','release','charge','refund','adjustment')),
+  idempotency_key text not null, metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(), unique (org_id, idempotency_key)
+);
+
+create table if not exists billing_customers (
+  org_id uuid primary key references orgs(id) on delete cascade, provider text not null,
+  external_customer_id text not null, subscription_status text not null default 'inactive',
+  plan_key text, metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  unique (provider, external_customer_id)
+);
+
+create table if not exists file_relations (
+  org_id uuid not null references orgs(id) on delete cascade,
+  source_file_id uuid not null references files(id) on delete cascade,
+  target_file_id uuid not null references files(id) on delete cascade,
+  relation_type text not null, position integer not null default 0,
+  metadata jsonb not null default '{}'::jsonb, created_at timestamptz not null default now(),
+  primary key (source_file_id, target_file_id, relation_type), check (source_file_id <> target_file_id)
+);
+
+-- Run packages/db/supabase/migrations/0006_production_foundation.sql in full
+-- to install relation-refresh triggers, Supabase Auth profile sync, RLS policies,
+-- and all production indexes. Those security statements are intentionally kept
+-- in the versioned migration as the authoritative deployment source.

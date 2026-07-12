@@ -1,11 +1,11 @@
 "use client";
 
 import { useMemo, useState, useEffect, type KeyboardEvent } from "react";
-import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, SearchInput, Switch, Textarea, Tooltip, cn, toast } from "@spielos/design-system";
+import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, ToggleRow, Textarea, Tooltip, cn, toast } from "@spielos/design-system";
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
-import { InspectorToggle } from "../../components/inspector-toggle";
 import { AppShell } from "../../components/app-shell";
+import { SidebarListPanel } from "../../components/sidebar-list-panel";
 import { MentionTextarea } from "../../components/mention-textarea";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
 
@@ -143,12 +143,12 @@ export default function EvalsPage() {
     setSaving(true);
     try {
       if (isNew) {
-        const created = store.addEvalFile(draft as Omit<import("../../lib/workspace-data").EvalFile, "id" | "updatedAt" | "results">);
+        const created = await store.addEvalFile(draft as Omit<import("../../lib/workspace-data").EvalFile, "id" | "updatedAt" | "results">);
         setSelectedId(created.id);
         reset(created);
         toast.success("Eval created");
       } else {
-        store.updateEvalFile((draft as import("../../lib/workspace-data").EvalFile).id, draft as Partial<import("../../lib/workspace-data").EvalFile>);
+        await store.updateEvalFile((draft as import("../../lib/workspace-data").EvalFile).id, draft as Partial<import("../../lib/workspace-data").EvalFile>);
         markSaved();
         toast.success("Eval saved");
       }
@@ -286,10 +286,10 @@ export default function EvalsPage() {
       const file = (e.target as HTMLInputElement).files?.[0];
       if (!file) return;
       const reader = new FileReader();
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         try {
           const data = JSON.parse(event.target?.result as string) as Omit<import("../../lib/workspace-data").EvalFile, "id" | "updatedAt" | "results">;
-          const created = store.addEvalFile({
+          const created = await store.addEvalFile({
             name: data.name,
             description: data.description,
             targetType: data.targetType,
@@ -320,84 +320,61 @@ export default function EvalsPage() {
         <PageHeader
           icon={<Icon name={ENTITY_ICONS.eval} size={14} />}
           title="Evals"
-          actions={
-            <>
-              <div className="hidden w-80 md:block">
-                <SearchInput placeholder="Search evals" value={query} onChange={setQuery} />
-              </div>
-              <InspectorToggle label="Open inspector" />
-            </>
-          }
         />
 
         <div className="flex min-h-0 flex-1">
-          <aside className="flex w-80 shrink-0 flex-col border-r border-border bg-background">
-            <div className="border-b border-border p-3 md:hidden">
-              <SearchInput placeholder="Search evals" value={query} onChange={setQuery} />
-            </div>
-            <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
-              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Eval Files
-              </span>
-              <Pill className="ml-auto">{store.evalFiles.length}</Pill>
-              <Tooltip content="New eval file" side="bottom">
-                <Button
-                  aria-label="New eval file"
-                  className="h-7 px-2"
-                  onClick={createFile}
-                  size="sm"
-                  variant="ghost"
-                >
-                  <Icon name="plus" size={14} />
-                  <span className="ml-1 text-xs">New</span>
-                </Button>
-              </Tooltip>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-2">
-              {filtered.length === 0 ? (
-                <EmptyState
-                  className="py-10"
-                  description="No eval files match this search."
-                  title="No matches"
-                />
-              ) : (
-                <ul className="grid gap-1">
-                  {filtered.map((ef) => (
-                    <li key={ef.id}>
-                      <button
-                        className={cn(
-                          "w-full rounded-md border px-2.5 py-2 text-left transition-colors",
-                          ef.id === selectedId
-                            ? "border-border bg-selected"
-                            : "border-transparent hover:border-border hover:bg-hover"
+          <SidebarListPanel
+            title="Eval Files"
+            count={store.evalFiles.length}
+            onNew={createFile}
+            newTooltip="New eval file"
+            searchValue={query}
+            onSearchChange={setQuery}
+            searchPlaceholder="Search evals"
+          >
+            {filtered.length === 0 ? (
+              <EmptyState
+                className="py-10"
+                description="No eval files match this search."
+                title="No matches"
+              />
+            ) : (
+              <ul className="grid gap-1">
+                {filtered.map((ef) => (
+                  <li key={ef.id}>
+                    <button
+                      className={cn(
+                        "w-full rounded-md border px-2.5 py-2 text-left transition-colors",
+                        ef.id === selectedId
+                          ? "border-border bg-selected"
+                          : "border-transparent hover:border-border hover:bg-hover"
                         )}
-                        onClick={() => selectFile(ef)}
-                        type="button"
-                      >
-                        <div className="flex items-center gap-2">
-                          <Icon className="text-muted-foreground" name="bar-chart" size={14} />
-                          <span className="truncate text-sm font-medium text-foreground">{ef.name}</span>
-                          <Pill tone={ef.status === "active" ? "success" : "default"} className="ml-auto text-[10px]">
-                            {ef.status === "active" ? "enabled" : "disabled"}
-                          </Pill>
-                        </div>
-                        <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
-                          <span>{ef.rubrics.length} criteria</span>
-                          <span className="text-border">·</span>
-                          <span>threshold {ef.overallThreshold}</span>
-                          <span className="text-border">·</span>
-                          <span>{ef.results.length} runs</span>
-                        </div>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </aside>
+                      onClick={() => selectFile(ef)}
+                      type="button"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Icon className="text-muted-foreground" name="bar-chart" size={14} />
+                        <span className="truncate text-sm font-medium text-foreground">{ef.name}</span>
+                        <Pill tone={ef.status === "active" ? "success" : "default"} className="ml-auto text-3xs">
+                          {ef.status === "active" ? "enabled" : "disabled"}
+                        </Pill>
+                      </div>
+                      <div className="mt-1 flex items-center gap-2 text-2xs text-muted-foreground">
+                        <span>{ef.rubrics.length} criteria</span>
+                        <span className="text-border">·</span>
+                        <span>threshold {ef.overallThreshold}</span>
+                        <span className="text-border">·</span>
+                        <span>{ef.results.length} runs</span>
+                      </div>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </SidebarListPanel>
 
           <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
-            <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-4">
+            <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
               <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                 <span>Evals</span>
                 <Icon name="chevron-right" size={12} />
@@ -475,52 +452,50 @@ export default function EvalsPage() {
                       value={draft.overallThreshold}
                     />
                   </div>
-                  <div className="grid gap-1.5">
-                    <InfoLabel label="Enabled" info="Enabled evals can run here and appear in workflow QA step pickers." />
-                    <label className="flex h-8 items-center gap-2 text-xs text-foreground">
-                      <Switch
-                        checked={draft.status === "active"}
-                        onCheckedChange={(checked) =>
-                          setDraft((current) => ({
-                            ...current,
-                            status: checked ? "active" : "draft"
-                          }))
-                        }
-                      />
-                      <span>{draft.status === "active" ? "On" : "Off"}</span>
-                    </label>
-                  </div>
+                  <Field label="Enabled">
+                    <ToggleRow
+                      checked={draft.status === "active"}
+                      description={draft.status === "active" ? "On" : "Off"}
+                      onCheckedChange={(checked) =>
+                        setDraft((current) => ({
+                          ...current,
+                          status: checked ? "active" : "draft"
+                        }))
+                      }
+                    />
+                  </Field>
                 </div>
 
                 <div className="grid gap-4 px-4 py-3">
                   <Field label="Description">
-                    <MentionTextarea
-                      className="min-h-9"
-                      onChange={(v) => setDraft((d) => ({ ...d, description: v }))}
-                      placeholder="Eval description (type @ to mention)"
-                      rows={1}
-                      value={draft.description}
-                    />
+                    <div className="overflow-hidden rounded-md border border-border bg-background">
+                      <MentionTextarea
+                        onChange={(v) => setDraft((d) => ({ ...d, description: v }))}
+                        placeholder="Eval description (type @ to mention)"
+                        rows={1}
+                        value={draft.description}
+                      />
+                    </div>
                   </Field>
 
-                  <div className="grid gap-1.5">
-                    <div className="flex items-center gap-2">
-                      <InfoLabel label="Test sample" info="Paste an output here to test the criteria before using the eval in a workflow." />
-                      <span className="ml-auto text-[10px] text-muted-foreground select-none">
-                        @ to mention
-                      </span>
+                  <Field label="Test sample">
+                    <div className="overflow-hidden rounded-md border border-border bg-background">
+                      <div className="flex h-8 items-center gap-2 border-b border-border bg-panel-raised px-2">
+                        <span className="text-2xs text-muted-foreground">Paste an output here to test the criteria before using the eval in a workflow.</span>
+                        <span className="ml-auto text-3xs text-muted-foreground select-none">@ to mention</span>
+                      </div>
+                      <MentionTextarea
+                        className="min-h-28"
+                        mono
+                        onChange={setSample}
+                        value={sample}
+                      />
                     </div>
-                    <MentionTextarea
-                      className="min-h-28"
-                      mono
-                      onChange={setSample}
-                      value={sample}
-                    />
-                  </div>
+                  </Field>
                 </div>
 
                 <div className="border-t border-border">
-                  <div className="flex h-9 items-center gap-2 border-b border-border px-4">
+                  <div className="flex h-10 items-center gap-2 border-b border-border px-4">
                     <Icon className="text-muted-foreground" name="list" size={14} />
                     <span className="text-xs font-medium text-foreground">Criteria</span>
                     <Pill className="ml-auto">{draft.rubrics.length}</Pill>
@@ -536,7 +511,7 @@ export default function EvalsPage() {
                       </div>
                     ) : (
                       <div>
-                        <div className="hidden border-b border-border bg-panel-raised px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:grid xl:grid-cols-[minmax(160px,1fr)_150px_minmax(180px,1.2fr)_70px_70px_72px] xl:items-center xl:gap-3">
+                        <div className="hidden border-b border-border bg-panel-raised px-4 py-2 text-3xs font-semibold uppercase tracking-wider text-muted-foreground xl:grid xl:grid-cols-[minmax(160px,1fr)_150px_minmax(180px,1.2fr)_70px_70px_72px] xl:items-center xl:gap-3">
                           <span>Criterion</span>
                           <span className="flex items-center gap-1">
                             Check
@@ -568,7 +543,7 @@ export default function EvalsPage() {
                 </div>
 
                 <div className="border-t border-border">
-                  <div className="flex h-9 items-center gap-2 border-b border-border px-4">
+                  <div className="flex h-10 items-center gap-2 border-b border-border px-4">
                     <Icon className="text-muted-foreground" name="repeat" size={14} />
                     <span className="text-xs font-medium text-foreground">Workflow Retry Policy</span>
                     <InfoTip content="When this eval is used as a workflow QA step, retry can send failed work back through the previous step before the workflow continues. Direct test runs on this page never retry." />
@@ -579,19 +554,17 @@ export default function EvalsPage() {
                   <div className="grid gap-3 px-4 py-3">
                     <div className="grid items-end gap-3 xl:grid-cols-[minmax(220px,1fr)_140px_180px_150px]">
                       <div className="grid gap-1.5">
-                        <InfoLabel label="Retry failed output" info="Use this when a workflow should automatically try the previous step again after failing this eval." />
-                        <label className="flex h-8 items-center gap-2 text-xs text-foreground">
-                          <Switch
-                            checked={draft.loopConfig.enabled}
-                            onCheckedChange={(checked) =>
-                              setDraft((current) => ({
-                                ...current,
-                                loopConfig: { ...current.loopConfig, enabled: checked }
-                              }))
-                            }
-                          />
-                          <span>{draft.loopConfig.enabled ? "Retry before continuing" : "Fail without retrying"}</span>
-                        </label>
+                        <span className="text-xs font-medium text-muted-foreground">Retry failed output</span>
+                        <ToggleRow
+                          checked={draft.loopConfig.enabled}
+                          description={draft.loopConfig.enabled ? "Retry before continuing" : "Fail without retrying"}
+                          onCheckedChange={(checked) =>
+                            setDraft((current) => ({
+                              ...current,
+                              loopConfig: { ...current.loopConfig, enabled: checked }
+                            }))
+                          }
+                        />
                       </div>
                       <div className="grid gap-1.5">
                         <InfoLabel label="Attempts" info="Total tries before the workflow stops retrying." />
@@ -711,11 +684,11 @@ function CriteriaRow({
   return (
     <div className="grid gap-3 bg-background px-4 py-2.5 xl:grid-cols-[minmax(160px,1fr)_150px_minmax(180px,1.2fr)_70px_70px_72px] xl:items-center">
       <div className="grid gap-1.5">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
           Criterion
         </span>
         <div className="flex items-center gap-2">
-          <span className="w-5 shrink-0 text-right text-[10px] font-mono text-muted-foreground">
+          <span className="w-5 shrink-0 text-right text-3xs font-mono text-muted-foreground">
             {index + 1}
           </span>
           <Input
@@ -728,7 +701,7 @@ function CriteriaRow({
       </div>
 
       <div className="grid gap-1.5">
-        <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+        <span className="flex items-center gap-1 text-3xs font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
           Check
           <InfoTip content={config.helper} />
         </span>
@@ -749,7 +722,7 @@ function CriteriaRow({
       </div>
 
       <div className="grid min-w-0 gap-1.5 overflow-hidden">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
           Condition
         </span>
         <CriterionValueEditor
@@ -760,7 +733,7 @@ function CriteriaRow({
       </div>
 
       <div className="grid gap-1.5">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
           Weight
         </span>
         <Input
@@ -773,7 +746,7 @@ function CriteriaRow({
       </div>
 
       <div className="grid gap-1.5">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
           Pass
         </span>
         <Input
@@ -787,7 +760,7 @@ function CriteriaRow({
       </div>
 
       <div className="grid gap-1.5">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
           Actions
         </span>
         <div className="flex items-center gap-0.5">
@@ -920,7 +893,7 @@ function EditableChips({
     <div className="flex h-8 min-w-0 items-center gap-1 overflow-hidden rounded-md border border-border bg-input px-1.5 py-1">
       {values.map((value) => (
         <span
-          className="inline-flex h-5 max-w-40 shrink-0 items-center gap-1 rounded-sm bg-panel-raised px-1.5 text-[11px] text-foreground"
+          className="inline-flex h-5 max-w-40 shrink-0 items-center gap-1 rounded-sm bg-panel-raised px-1.5 text-2xs text-foreground"
           key={value}
         >
           <span className="truncate">{value}</span>
@@ -955,7 +928,7 @@ function ResultInspector({
 }) {
   if (!result) {
     return (
-      <div className="flex flex-col items-center gap-2 px-3 py-8 text-center text-[11px] text-muted-foreground">
+      <div className="flex flex-col items-center gap-2 px-3 py-8 text-center text-2xs text-muted-foreground">
         <Icon name="bar-chart" size={16} />
         <div>No eval results yet.</div>
         <div>Run an eval to see results here.</div>
@@ -963,27 +936,39 @@ function ResultInspector({
     );
   }
 
+  const avgThreshold = rubrics.length > 0
+    ? Math.round(rubrics.reduce((sum, r) => sum + r.passThreshold, 0) / rubrics.length)
+    : 75;
+
   return (
     <div className="grid">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
+        <Icon name="bar-chart" className="text-muted-foreground" size={14} />
+        <span className="text-xs font-semibold text-foreground">Eval Results</span>
+        <Tooltip content="Per-criterion scores and overall pass/fail for the latest eval run." side="bottom">
+          <Button aria-label="About eval results" className="h-6 w-6 p-0" size="icon" variant="ghost">
+            <Icon name="info" size={12} />
+          </Button>
+        </Tooltip>
+      </div>
       <div className="border-b border-border p-3">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-foreground">Score</span>
+          <Tooltip content={`Overall threshold ${avgThreshold}%. ${result.passed ? "Passed" : "Failed"}.`} side="bottom">
+            <Button aria-label="Score info" className="h-5 w-5 p-0" size="icon" variant="ghost">
+              <Icon name="info" size={12} />
+            </Button>
+          </Tooltip>
           <Pill tone={result.passed ? "success" : "destructive"} className="ml-auto">
             {result.overallScore}/100
           </Pill>
         </div>
-        <div className="mt-1 text-[11px] text-muted-foreground">
-          {result.passed ? "Passed" : "Failed"} threshold at{" "}
-          {rubrics.length > 0
-            ? Math.round(rubrics.reduce((sum, r) => sum + r.passThreshold, 0) / rubrics.length)
-            : 75}
-        </div>
         <div className="mt-3 grid gap-2">
           {Object.entries(result.rubricScores).map(([label, score]) => (
             <div key={label}>
-              <div className="flex items-center justify-between text-[11px]">
+              <div className="flex items-center justify-between text-2xs">
                 <span className="text-foreground">{label}</span>
-                <Pill tone={score.passed ? "success" : "destructive"} className="text-[10px]">
+                <Pill tone={score.passed ? "success" : "destructive"} className="text-3xs">
                   {score.score}
                 </Pill>
               </div>
@@ -993,7 +978,7 @@ function ResultInspector({
                   style={{ width: `${Math.min(100, score.score)}%` }}
                 />
               </div>
-              <div className="mt-0.5 text-[10px] text-muted-foreground">{score.notes}</div>
+              <div className="mt-0.5 text-3xs text-muted-foreground">{score.notes}</div>
             </div>
           ))}
         </div>
@@ -1004,7 +989,7 @@ function ResultInspector({
           <span className="text-xs font-semibold text-foreground">Findings</span>
           <div className="mt-2 grid gap-1">
             {result.findings.map((finding) => (
-              <div className="text-[11px]" key={`${finding.label}-${finding.notes}`}>
+              <div className="text-2xs" key={`${finding.label}-${finding.notes}`}>
                 <span className="text-foreground">{finding.label}: </span>
                 <span className="text-muted-foreground">{finding.notes}</span>
               </div>
@@ -1018,7 +1003,7 @@ function ResultInspector({
           <span className="text-xs font-semibold text-foreground">Recommendations</span>
           <div className="mt-2 grid gap-1">
             {result.recommendations.map((rec, i) => (
-              <div className="text-[11px] text-muted-foreground" key={i}>
+              <div className="text-2xs text-muted-foreground" key={i}>
                 - {rec}
               </div>
             ))}

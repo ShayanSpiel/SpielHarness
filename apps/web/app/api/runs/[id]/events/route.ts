@@ -9,6 +9,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       .from("run_events")
       .select("*")
       .eq("run_id", id)
+      .eq("org_id", org.orgId)
       .order("created_at", { ascending: true });
     if (error) throw error;
     return Response.json({ events: data ?? [] });

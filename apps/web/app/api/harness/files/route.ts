@@ -1,4 +1,4 @@
-import { errorResponse, getOrg, requireSupabase } from "../../../../lib/server";
+import { errorResponse, getOrg, HttpError, requireOrgWrite, requireSupabase } from "../../../../lib/server";
 
 type FileType =
   | "knowledge"
@@ -38,6 +38,7 @@ const HARNESS_FILE_TYPES: FileType[] = [
 ];
 
 const HARNESS_KINDS = HARNESS_FILE_TYPES as string[];
+const FILE_STATUSES = new Set<FileStatus>(["draft", "active", "archived", "deleted"]);
 
 type FileRow = {
   id: string;
@@ -73,7 +74,7 @@ export async function GET() {
     const supabase = requireSupabase(org);
     const { data, error } = await supabase
       .from("files")
-      .select("*")
+      .select("id, org_id, folder_id, file_type, status, title, body, metadata, created_at, updated_at")
       .eq("org_id", org.orgId)
       .in("file_type", HARNESS_KINDS)
       .neq("status", "deleted")
@@ -88,6 +89,7 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const org = await getOrg();
+    requireOrgWrite(org);
     const supabase = requireSupabase(org);
     const body = (await request.json()) as {
       id?: string;
@@ -98,10 +100,16 @@ export async function POST(request: Request) {
       folderId?: string | null;
       metadata?: Record<string, unknown>;
     };
-    if (!body.title) throw new Error("title is required");
+    if (!body.title?.trim()) throw new HttpError(400, "title is required");
+    if (!HARNESS_KINDS.includes(body.fileType)) throw new HttpError(400, "invalid fileType");
+    if (body.status && !FILE_STATUSES.has(body.status as FileStatus)) throw new HttpError(400, "invalid status");
+    if (body.folderId) {
+      const { data: folder } = await supabase.from("folders").select("id").eq("id", body.folderId).eq("org_id", org.orgId).single();
+      if (!folder) throw new HttpError(400, "folder does not belong to this workspace");
+    }
     const insert: Record<string, unknown> = {
       org_id: org.orgId,
-      title: body.title,
+      title: body.title.trim(),
       body: body.body ?? "",
       file_type: body.fileType as FileType,
       status: (body.status as FileStatus) ?? "draft",
@@ -134,6 +142,7 @@ export async function POST(request: Request) {
 export async function PUT(request: Request) {
   try {
     const org = await getOrg();
+    requireOrgWrite(org);
     const supabase = requireSupabase(org);
     const body = (await request.json()) as {
       id: string;
@@ -144,12 +153,19 @@ export async function PUT(request: Request) {
       folderId?: string | null;
       metadata?: Record<string, unknown>;
     };
-    if (!body.id) throw new Error("id is required");
+    if (!body.id) throw new HttpError(400, "id is required");
+    if (body.fileType !== undefined && !HARNESS_KINDS.includes(body.fileType)) throw new HttpError(400, "invalid fileType");
+    if (body.status !== undefined && !FILE_STATUSES.has(body.status as FileStatus)) throw new HttpError(400, "invalid status");
+    if (body.folderId) {
+      const { data: folder } = await supabase.from("folders").select("id").eq("id", body.folderId).eq("org_id", org.orgId).single();
+      if (!folder) throw new HttpError(400, "folder does not belong to this workspace");
+    }
 
     const { data: before } = await supabase
       .from("files")
       .select("*")
       .eq("id", body.id)
+      .eq("org_id", org.orgId)
       .single();
 
     const patch: Record<string, unknown> = {};
@@ -164,6 +180,7 @@ export async function PUT(request: Request) {
       .from("files")
       .update(patch)
       .eq("id", body.id)
+      .eq("org_id", org.orgId)
       .select()
       .single();
     if (error) throw error;
@@ -186,19 +203,30 @@ export async function PUT(request: Request) {
 export async function DELETE(request: Request) {
   try {
     const org = await getOrg();
+    requireOrgWrite(org);
     const supabase = requireSupabase(org);
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
-    if (!id) throw new Error("id is required");
+    if (!id) throw new HttpError(400, "id is required");
+    const { data: references, error: referenceError } = await supabase
+      .from("file_relations")
+      .select("source_file_id")
+      .eq("org_id", org.orgId)
+      .eq("target_file_id", id)
+      .limit(1);
+    if (referenceError) throw referenceError;
+    if (references?.length) throw new HttpError(409, "This object is still referenced by another active harness object.");
     const { data: before } = await supabase
       .from("files")
       .select("*")
       .eq("id", id)
+      .eq("org_id", org.orgId)
       .single();
     const { data, error } = await supabase
       .from("files")
       .update({ status: "deleted" })
       .eq("id", id)
+      .eq("org_id", org.orgId)
       .select()
       .single();
     if (error) throw error;

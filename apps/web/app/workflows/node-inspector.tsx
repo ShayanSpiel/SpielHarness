@@ -30,15 +30,6 @@ export function roleContracts(
   );
 }
 
-function evalInputLabel(value: string, nodes: WorkstreamNode[]) {
-  if (value === "workflow_input") return "Workflow request";
-  if (value.startsWith("node:")) {
-    const node = nodes.find((entry) => entry.id === value.slice("node:".length));
-    return node ? `${node.title} output` : "Selected step output";
-  }
-  return "Previous step output";
-}
-
 export function NodeInspector({
   evals,
   files,
@@ -60,7 +51,7 @@ export function NodeInspector({
 }) {
   if (!node) {
     return (
-      <div className="flex flex-col items-center gap-2 px-3 py-8 text-center text-[11px] text-muted-foreground">
+      <div className="flex flex-col items-center gap-2 px-3 py-8 text-center text-2xs text-muted-foreground">
         <Icon name="workflow-alt" size={16} />
         <div>No step selected.</div>
         <div>Click a step on the canvas to edit it.</div>
@@ -107,18 +98,11 @@ export function NodeInspector({
       </div>
       <div className="border-b border-border p-3">
         <Field label="Step title">
-          <div className="flex items-center gap-2">
-            <Input
-              className="flex-1"
-              onChange={(event) => updateNode(node.id, { title: event.target.value })}
-              value={node.title}
-            />
-            {!isEvalNode && node.roleId && node.roleId !== "runtime.eval" && (
-              <a className="shrink-0 text-[10px] text-muted-foreground hover:text-foreground transition-colors" href="/roles">
-                Edit in role
-              </a>
-            )}
-          </div>
+          <Input
+            className="w-full"
+            onChange={(event) => updateNode(node.id, { title: event.target.value })}
+            value={node.title}
+          />
         </Field>
       </div>
       <div className="grid gap-3 p-3">
@@ -144,7 +128,7 @@ export function NodeInspector({
               />
             </Field>
             <Field label="Gate behavior">
-              <div className="rounded-md border border-border bg-panel-raised px-2 py-2 text-[11px] text-muted-foreground">
+              <div className="rounded-md border border-border bg-panel-raised px-2 py-2 text-2xs text-muted-foreground">
                 {(() => {
                   const evalFile = evals.find((entry) => entry.id === selectedEvalId);
                   const loopConfig = node.loopConfig ??
@@ -197,47 +181,22 @@ export function NodeInspector({
           </Field>
         )}
         <ContractFlow
-          input={
-            isEvalNode
-              ? evalInputLabel(evalInputValue, nodes)
-              : selectedRole
-                ? roleContractName(selectedRole, "inputs", node.input)
-                : node.input
+          inputLabel={node.input}
+          outputLabel={node.output}
+          inputDetail={
+            isEvalNode || !selectedRole ? "" : (roleContracts(selectedRole, "inputs")[0]?.body?.trim() ?? "")
           }
-          output={
-            isEvalNode
-              ? "Eval report"
-              : selectedRole
-                ? roleContractName(selectedRole, "outputs", node.output)
-                : node.output
+          outputDetail={
+            isEvalNode || !selectedRole ? "" : (roleContracts(selectedRole, "outputs")[0]?.body?.trim() ?? "")
           }
-          inputContracts={
-            isEvalNode ? [] : selectedRole ? roleContracts(selectedRole, "inputs") : []
-          }
-          outputContracts={
-            isEvalNode
-              ? [
-                  {
-                    name: "Eval report",
-                    format: "markdown" as const,
-                    body: "",
-                    required: true,
-                    multiple: false,
-                  },
-                ]
-              : selectedRole
-                ? roleContracts(selectedRole, "outputs")
-                : []
-          }
-          tone={isEvalNode ? "QA" : "Role"}
           roleId={isEvalNode ? undefined : node.roleId}
         />
         {!isEvalNode ? (
           <Field label="Prompt override">
             <div className="overflow-hidden rounded-md border border-border bg-background">
               <div className="flex h-8 items-center gap-2 border-b border-border bg-panel-raised px-2">
-                <span className="text-[11px] text-muted-foreground">Optional role prompt override</span>
-                <span className="ml-auto text-[10px] text-muted-foreground select-none">@ to mention</span>
+                <span className="text-2xs text-muted-foreground">Optional role prompt override</span>
+                <span className="ml-auto text-3xs text-muted-foreground select-none">@ to mention</span>
               </div>
               <MentionTextarea
                 className="min-h-36"
@@ -254,7 +213,6 @@ export function NodeInspector({
           items={files.map((file) => ({
             id: file.id,
             title: file.title,
-            subtitle: file.folder ?? file.kind,
           }))}
           iconName="file-text"
           label="Files"
@@ -269,10 +227,6 @@ export function NodeInspector({
               .map((skill) => ({
                 id: skill.id,
                 title: skill.name,
-                subtitle:
-                  skill.status === "active"
-                    ? skill.category
-                    : `${skill.category} - disabled`,
               }))}
             iconName="reading-glass"
             label="Skills"

@@ -2,6 +2,7 @@
 
 import { forwardRef, type SelectHTMLAttributes } from "react";
 import { cn } from "../index";
+import { Icon } from "./icons";
 
 export interface NativeSelectOption {
   label: string;
@@ -20,7 +21,7 @@ export const NativeSelect = forwardRef<HTMLSelectElement, NativeSelectProps>(
       <div className={cn("relative", className)}>
         <select
           aria-label={ariaLabel}
-          className="h-8 w-full appearance-none rounded-md border border-border bg-input px-2.5 pr-8 text-sm text-foreground outline-none transition-colors duration-[var(--duration)] focus:border-[var(--ring)] focus:ring-2 focus:ring-[var(--ring)]/30"
+          className="h-8 w-full appearance-none rounded-md border border-border bg-input px-2.5 pr-8 text-sm text-foreground outline-none transition-colors duration-[var(--duration)] focus-visible:border-[var(--ring)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]/30"
           onChange={(event) => onChange(event.target.value)}
           ref={ref}
           value={value}
@@ -32,15 +33,11 @@ export const NativeSelect = forwardRef<HTMLSelectElement, NativeSelectProps>(
             </option>
           ))}
         </select>
-        <svg
-          className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2}
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
+        <Icon
+          className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
+          name="chevron-down"
+          size={14}
+        />
       </div>
     );
   }

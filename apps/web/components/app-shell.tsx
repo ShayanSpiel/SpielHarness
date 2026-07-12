@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CommandPalette } from "./command-palette";
 import { NavRail } from "./nav-rail";
+import { InspectorToggle } from "./inspector-toggle";
 import { useWorkspaceStore } from "../lib/use-workspace-store";
 
 export function AppShell({
@@ -76,7 +77,7 @@ export function AppShell({
             <div className="h-8 w-0.5 rounded-full bg-border transition-colors group-hover:bg-muted-foreground" />
           </button>
           <div
-            className="flex h-full flex-col pl-2"
+            className="flex h-full flex-col"
             style={{
               visibility: store.inspectorOpen ? "visible" : "hidden",
               pointerEvents: store.inspectorOpen ? "auto" : "none"
@@ -88,6 +89,12 @@ export function AppShell({
       ) : null}
 
       <CommandPalette open={paletteOpen} setOpen={setPaletteOpen} />
+
+      {hasInspector ? (
+        <div className="fixed right-3 top-0 z-50 flex h-10 items-center">
+          <InspectorToggle label="Toggle inspector" />
+        </div>
+      ) : null}
     </div>
   );
 }

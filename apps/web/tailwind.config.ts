@@ -8,6 +8,7 @@ const config: Config = {
   content: [
     "./app/**/*.{ts,tsx}",
     "./components/**/*.{ts,tsx}",
+    "./lib/**/*.{ts,tsx}",
     "../../packages/design-system/src/**/*.{ts,tsx}"
   ],
   theme: {
@@ -57,6 +58,10 @@ const config: Config = {
       fontFamily: {
         sans: ["var(--font-sans)"],
         mono: ["var(--font-mono)"]
+      },
+      fontSize: {
+        "3xs": ["var(--font-size-3xs)", { lineHeight: "var(--leading-normal)" }],
+        "2xs": ["var(--font-size-2xs)", { lineHeight: "var(--leading-normal)" }]
       }
     }
   },

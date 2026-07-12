@@ -1,6 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { errorResponse, getOrg, requireSupabase } from "../../../../lib/server";
+import { errorResponse, getOrg, requireOrgRole, requireSupabase } from "../../../../lib/server";
 
 const SEED_ROOT = path.join(process.cwd(), "..", "..", "supabase", "seed");
 
@@ -9,6 +9,7 @@ type SeedFile = {
   title: string;
   body: string;
   fileType: string;
+  status?: "active" | "draft" | "archived";
   folder: string;
   metadata: Record<string, unknown>;
 };
@@ -74,29 +75,6 @@ function withoutUndefined(value: unknown): unknown {
   return value;
 }
 
-const EVAL_SKILL_CONFIG: Record<string, Pick<SeedFile, "metadata">["metadata"]> = {
-  "pipeline-gate-evaluator": {
-    kind: "eval",
-    overallThreshold: 75,
-    evalRubrics: [
-      { id: "rubric-em-dash", label: "No Em Dashes", type: "missing", value: "—", weight: 15, passThreshold: 100 },
-      { id: "rubric-banned-phrases", label: "No Banned Phrases", type: "missing", value: "Like if you agree,Share if this resonates,Follow for more,TOFU,MOFU,BOFU", weight: 25, passThreshold: 100 },
-      { id: "rubric-frontmatter", label: "Required Frontmatter", type: "contains", value: "title,platform,reader,pain,belief,point,meaning,proof,status,source", weight: 35, passThreshold: 80 },
-      { id: "rubric-char-count", label: "Char Count Limit", type: "max_words", value: "280", weight: 25, passThreshold: 90 }
-    ]
-  },
-  "grounding-evaluator": {
-    kind: "eval",
-    overallThreshold: 75,
-    evalRubrics: [
-      { id: "rubric-icp-markers", label: "ICP Markers Present", type: "contains", value: "session,traffic,engagement,attention,distribution,placement", weight: 30, passThreshold: 70 },
-      { id: "rubric-no-buildlog", label: "No Build-Log Language", type: "missing", value: "test,adapter,shim,IDE,git,doctor,pipeline,vault", weight: 25, passThreshold: 100 },
-      { id: "rubric-point-contradicts", label: "Point Contradicts Belief", type: "contains", value: "engineered,placed,not", weight: 25, passThreshold: 75 },
-      { id: "rubric-meaning-voice", label: "Meaning in ICP Voice", type: "contains", value: "I", weight: 20, passThreshold: 80 }
-    ]
-  }
-};
-
 function classify(relPath: string): { fileType: string; metadata: Record<string, unknown> } {
   const parts = relPath.split(path.sep);
   const folder = parts[0] ?? "";
@@ -104,43 +82,15 @@ function classify(relPath: string): { fileType: string; metadata: Record<string,
   const base = fileName.replace(/\.[^.]+$/, "");
 
   if (folder === "agents") {
-    const roleSkills: Record<string, string[]> = {
-      strategist: ["llm.generate", "knowledge.search", "icp-world-simulator"],
-      writer: ["llm.generate", "template.apply", "rag.file.read"],
-      editor: ["llm.generate", "pipeline-gate-evaluator", "grounding-evaluator", "rag.file.read"],
-      publisher: ["ask-the-user", "publish-package-builder"],
-      researcher: ["web.search", "knowledge.search", "rag.file.read"],
-      "ads-planner": ["llm.generate", "web.search"]
-    };
     return {
       fileType: "harness_role",
-      metadata: { role: true, slug: base, skillSlugs: roleSkills[base] ?? ["llm.generate"] }
+      metadata: { role: true, slug: base }
     };
   }
   if (folder === "skills") {
-    const skillKinds: Record<string, string> = {
-      "ask-the-user": "human_input",
-      "grounding-evaluator": "eval",
-      "pipeline-gate-evaluator": "eval",
-      "knowledge-search": "knowledge_search",
-      "rag-file-read": "knowledge_search",
-      "web-search": "http"
-    };
-    const skillSlugs: Record<string, string> = {
-      "ask-the-user": "ask-the-user",
-      "icp-world-simulator": "icp-world-simulator",
-      "grounding-evaluator": "grounding-evaluator",
-      "pipeline-gate-evaluator": "pipeline-gate-evaluator",
-      "knowledge-search": "knowledge.search",
-      "rag-file-read": "rag.file.read",
-      "web-search": "web.search",
-      "llm-generate": "llm.generate",
-      "template-apply": "template.apply",
-      "publish-package-builder": "publish-package-builder"
-    };
     return {
       fileType: "harness_skill",
-      metadata: { skill: true, slug: skillSlugs[base] ?? base, kind: skillKinds[base] ?? "llm_call" }
+      metadata: { skill: true, slug: base, kind: "llm_call" }
     };
   }
   if (folder === "workflows" || folder === "workstreams") {
@@ -156,10 +106,9 @@ function classify(relPath: string): { fileType: string; metadata: Record<string,
     };
   }
   if (folder === "system") {
-    const promptFiles = new Set(["orchestrator-prompt", "strategy-brief-prompt", "post-command"]);
     return {
-      fileType: promptFiles.has(base) ? "prompt" : "strategy",
-      metadata: { system: true, prompt: promptFiles.has(base), slug: base }
+      fileType: "strategy",
+      metadata: { system: true, slug: base }
     };
   }
   if (folder === "evals") {
@@ -171,7 +120,7 @@ function classify(relPath: string): { fileType: string; metadata: Record<string,
   return { fileType: "knowledge", metadata: {} };
 }
 
-async function walk(dir: string, base: string, out: SeedFile[]): Promise<void> {
+async function walk(dir: string, base: string, out: SeedFile[], manifest: Record<string, Record<string, unknown>>): Promise<void> {
   let entries: import("node:fs").Dirent[];
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -182,19 +131,26 @@ async function walk(dir: string, base: string, out: SeedFile[]): Promise<void> {
     const full = path.join(dir, entry.name);
     const rel = path.join(base, entry.name);
     if (entry.isDirectory()) {
-      await walk(full, rel, out);
+      if (!base && entry.name === "integrations") continue;
+      await walk(full, rel, out, manifest);
       continue;
     }
     if (!entry.isFile()) continue;
     if (entry.name.startsWith(".")) continue;
+    if (rel.replaceAll(path.sep, "/") === "harness-manifest.json") continue;
     if (!/\.(md|markdown|json|yaml|yml)$/i.test(entry.name)) continue;
     const fileName = entry.name;
     const body = await readFile(full, "utf8");
-    const { fileType, metadata: classifiedMetadata } = classify(rel);
+    const { fileType: classifiedFileType, metadata: classifiedMetadata } = classify(rel);
+    const { fileType: configuredFileType, status: configuredStatus, ...manifestMetadata } = manifest[rel.replaceAll(path.sep, "/")] ?? {};
+    const fileType = typeof configuredFileType === "string" ? configuredFileType : classifiedFileType;
+    const status = ["active", "draft", "archived"].includes(String(configuredStatus))
+      ? configuredStatus as SeedFile["status"]
+      : "active";
     const folderName = FOLDER_BY_SEED_DIR[rel.split(path.sep)[0] ?? ""] ?? "Knowledge";
     const metadata = withoutUndefined({
       ...classifiedMetadata,
-      ...(EVAL_SKILL_CONFIG[classifiedMetadata.slug as string] ?? {}),
+      ...manifestMetadata,
       seed: true,
       seedPath: rel,
       seedFolder: folderName
@@ -208,6 +164,7 @@ async function walk(dir: string, base: string, out: SeedFile[]): Promise<void> {
           title: seedTitle,
           body: body,
           fileType,
+          status,
           folder: folderName,
           metadata: withoutUndefined({
             ...metadata,
@@ -231,6 +188,7 @@ async function walk(dir: string, base: string, out: SeedFile[]): Promise<void> {
           title: parsed.title ?? parsed.name ?? fileName.replace(/\.[^.]+$/, ""),
           body: parsed.description ?? "",
           fileType,
+          status,
           folder: folderName,
           metadata: withoutUndefined({
             ...metadata,
@@ -245,13 +203,19 @@ async function walk(dir: string, base: string, out: SeedFile[]): Promise<void> {
       }
     }
     const title = titleFromFile(fileName, body);
-    out.push({ path: rel, title, body, fileType, folder: folderName, metadata });
+    out.push({ path: rel, title, body, fileType, status, folder: folderName, metadata });
   }
 }
 
 async function loadSeed(): Promise<SeedFile[]> {
   const out: SeedFile[] = [];
-  await walk(SEED_ROOT, "", out);
+  let manifest: Record<string, Record<string, unknown>> = {};
+  try {
+    manifest = JSON.parse(await readFile(path.join(SEED_ROOT, "harness-manifest.json"), "utf8"));
+  } catch {
+    // The manifest is optional for user-created seed directories.
+  }
+  await walk(SEED_ROOT, "", out, manifest);
   return out;
 }
 
@@ -273,6 +237,7 @@ export async function GET() {
 export async function POST() {
   try {
     const org = await getOrg();
+    requireOrgRole(org, ["owner", "admin"]);
     const supabase = requireSupabase(org);
     const seed = await loadSeed();
     const folderNames = Array.from(new Set(seed.map((file) => file.folder)));
@@ -315,7 +280,6 @@ export async function POST() {
     let seeded = 0;
     let updated = 0;
     for (const file of seed) {
-      try {
         const folderId = folderByName.get(file.folder) ?? null;
         const existingFile =
           bySeedPath.get(file.path) ??
@@ -325,7 +289,7 @@ export async function POST() {
           title: file.title,
           body: file.body,
           file_type: file.fileType,
-          status: "active",
+          status: file.status ?? "active",
           folder_id: folderId,
           metadata: withoutUndefined(file.metadata) as Record<string, unknown>,
           content_format: "markdown"
@@ -340,7 +304,7 @@ export async function POST() {
             existingFile.content_format !== payload.content_format ||
             stableJson(existingFile.metadata ?? {}) !== stableJson(payload.metadata);
           if (changed) {
-            const { error } = await supabase.from("files").update(payload).eq("id", existingFile.id);
+            const { error } = await supabase.from("files").update(payload).eq("id", existingFile.id).eq("org_id", org.orgId);
             if (error) throw error;
             updated++;
           }
@@ -349,10 +313,9 @@ export async function POST() {
           if (error) throw error;
           seeded++;
         }
-      } catch (err) {
-        console.warn(`[seed] failed to insert ${file.path}:`, err);
-      }
     }
+    const { error: relationError } = await supabase.rpc("rebuild_harness_file_relations", { target_org_id: org.orgId });
+    if (relationError) throw relationError;
     return Response.json({
       message: `Seed sync complete. Inserted ${seeded}, updated ${updated}.`,
       seeded,

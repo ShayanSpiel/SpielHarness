@@ -1,17 +1,20 @@
-import { errorResponse, getOrg, HttpError, requireSupabase } from "../../../../lib/server";
+import { errorResponse, getOrg, HttpError, requireOrgWrite, requireSupabase } from "../../../../lib/server";
 import {
-  envModelProvider,
+  resolveModelProvider,
   resolveExecution,
   streamPlainChat,
   type ExecuteBody
 } from "../../../../lib/execution-service";
 import { streamRun } from "@spielos/graph";
+import { recordRunUsage } from "../../../../lib/usage";
+import { createRunEventBuffer } from "../../../../lib/run-event-buffer";
+import { persistRunArtifact } from "../../../../lib/workspace-artifact";
 
 function frame(data: unknown) {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
-function runEvent(orgId: string, runId: string, type: "run_completed" | "run_failed", message: string, payload?: Record<string, unknown>) {
+function runEvent(orgId: string, runId: string, type: "run_completed" | "run_failed" | "run_cancelled", message: string, payload?: Record<string, unknown>) {
   return {
     id: `evt_${crypto.randomUUID()}`,
     orgId,
@@ -26,12 +29,37 @@ function runEvent(orgId: string, runId: string, type: "run_completed" | "run_fai
 export async function POST(request: Request) {
   try {
     const org = await getOrg();
+    requireOrgWrite(org);
     const supabase = requireSupabase(org);
     const body = (await request.json()) as ExecuteBody;
     if (!body.prompt?.trim()) throw new HttpError(400, "prompt is required");
+    const idempotencyKey = request.headers.get("idempotency-key") ?? body.idempotencyKey;
+    if (idempotencyKey) {
+      const { data: duplicate, error: duplicateError } = await supabase
+        .from("runs")
+        .select("id, status")
+        .eq("org_id", org.orgId)
+        .eq("idempotency_key", idempotencyKey)
+        .maybeSingle();
+      if (duplicateError) throw duplicateError;
+      if (duplicate) throw new HttpError(409, `Run already exists (${duplicate.id}, ${duplicate.status}).`);
+    }
 
     const resolved = await resolveExecution(supabase, org.orgId, body);
-    const { provider, model } = envModelProvider(org.orgId);
+    const preferredModelId = resolved.nodes.map((node) => resolved.rolesById[node.roleId]?.modelId).find(Boolean);
+    const { provider, model } = await resolveModelProvider(supabase, org.orgId, preferredModelId);
+
+    if (body.chatId) {
+      const { data: existingChat } = await supabase.from("chats").select("id").eq("id", body.chatId).eq("org_id", org.orgId).maybeSingle();
+      if (!existingChat) {
+        const { error: chatError } = await supabase.from("chats").insert({
+          id: body.chatId,
+          org_id: org.orgId,
+          title: body.prompt.trim().slice(0, 80) || "New chat"
+        });
+        if (chatError) throw new HttpError(400, "Invalid or unavailable chat id");
+      }
+    }
 
     let runId = body.runId;
     const inputs = {
@@ -44,21 +72,38 @@ export async function POST(request: Request) {
     };
 
     if (runId) {
-      await supabase
+      const { data: existingRun, error: existingRunError } = await supabase
+        .from("runs")
+        .select("id")
+        .eq("id", runId)
+        .eq("org_id", org.orgId)
+        .single();
+      if (existingRunError || !existingRun) throw new HttpError(404, "Run not found");
+      const { error: updateError } = await supabase
         .from("runs")
         .update({ status: "running", inputs, updated_at: new Date().toISOString() })
         .eq("id", runId)
         .eq("org_id", org.orgId);
+      if (updateError) throw updateError;
     } else {
       const { data: created, error } = await supabase
         .from("runs")
         .insert({
           org_id: org.orgId,
-          workstream_id: null,
+          chat_id: body.chatId ?? null,
+          workstream_id: resolved.workstreamId,
           run_type: resolved.target.type === "eval" ? "eval" : "custom",
           prompt: body.prompt,
           status: "running",
-          inputs
+          inputs,
+          idempotency_key: idempotencyKey ?? null,
+          requested_by: org.profileId,
+          definition_snapshot: {
+            target: resolved.target,
+            nodes: resolved.nodes,
+            selectedContext: resolved.selectedContext,
+            workstreamId: resolved.workstreamId
+          }
         })
         .select()
         .single();
@@ -75,6 +120,8 @@ export async function POST(request: Request) {
         let terminalStatus: "completed" | "failed" | "cancelled" | null = null;
         let outputText = "";
         const artifactIds: string[] = [];
+        let checkpoint: Record<string, unknown> = {};
+        const eventBuffer = createRunEventBuffer(supabase, org.orgId, runId!);
         controller.enqueue(encoder.encode(frame({
           kind: "run",
           runId,
@@ -89,9 +136,28 @@ export async function POST(request: Request) {
               kind: "status",
               status: { phase: "generating", message: "Director is generating." }
             })));
-            for await (const delta of streamPlainChat(org.orgId, body.prompt, resolved.selectedContext)) {
+            for await (const delta of streamPlainChat(
+              org.orgId,
+              body.prompt,
+              resolved.directorPrompt,
+              resolved.selectedContext,
+              resolved.knowledgeFiles,
+              body.messages ?? [],
+              provider,
+              model,
+              request.signal
+            )) {
               text += delta;
               controller.enqueue(encoder.encode(frame({ kind: "text", text: delta })));
+            }
+            if (body.chatId) {
+              const history = body.messages ?? [];
+              const lastUser = [...history].reverse().find((message) => message.role === "user")?.content ?? body.prompt;
+              const { error: messageError } = await supabase.from("chat_messages").insert([
+                { org_id: org.orgId, chat_id: body.chatId, role: "user", body: lastUser, metadata: { runId } },
+                { org_id: org.orgId, chat_id: body.chatId, role: "assistant", body: text, metadata: { runId } }
+              ]);
+              if (messageError) throw messageError;
             }
             await supabase.from("run_events").insert({
               org_id: org.orgId,
@@ -109,6 +175,7 @@ export async function POST(request: Request) {
               })
               .eq("id", runId)
               .eq("org_id", org.orgId);
+            await recordRunUsage({ supabase, orgId: org.orgId, runId: runId!, provider, model, input: body.prompt, output: text });
             controller.enqueue(encoder.encode(frame({
               kind: "event",
               event: runEvent(org.orgId, runId!, "run_completed", "Chat completed.", { target: resolved.target })
@@ -127,7 +194,7 @@ export async function POST(request: Request) {
             model,
             knowledgeFiles: resolved.knowledgeFiles,
             workstreamId: resolved.workstreamId
-          })) {
+          }, request.signal)) {
             if (item.kind === "event") {
               if (item.event.type === "run_completed" || item.event.type === "run_failed" || item.event.type === "run_cancelled") {
                 terminalSent = true;
@@ -136,36 +203,16 @@ export async function POST(request: Request) {
                   item.event.type === "run_cancelled" ? "cancelled" :
                   "completed";
               }
-              await supabase.from("run_events").insert({
-                org_id: org.orgId,
-                run_id: runId,
-                event_type: item.event.type,
-                node: item.event.node ?? null,
-                skill: item.event.skill ?? null,
-                message: item.event.message,
-                payload: item.event.payload
-              });
+              await eventBuffer.push(item.event);
               controller.enqueue(encoder.encode(frame({ kind: "event", event: item.event })));
             } else if (item.kind === "artifact") {
-              const { data: createdFile, error: fileError } = await supabase.from("files").insert({
-                org_id: org.orgId,
-                file_type: item.artifact.type,
-                title: item.artifact.title,
-                body: item.artifact.body,
-                metadata: {
-                  ...item.artifact.metadata,
-                  sourceRunId: runId,
-                  selectedContext: resolved.selectedContext
-                },
-                status: "active"
-              }).select("id").single();
-              if (fileError) throw fileError;
-              if (createdFile?.id) {
-                artifactIds.push(createdFile.id);
+              const created = await persistRunArtifact(supabase, org.orgId, runId!, item.artifact, resolved.selectedContext);
+              if (created.fileId) {
+                artifactIds.push(created.fileId);
                 await supabase.from("generated_files").insert({
                   org_id: org.orgId,
                   run_id: runId,
-                  file_id: createdFile.id,
+                  file_id: created.fileId,
                   relationship: "output"
                 });
               }
@@ -183,10 +230,28 @@ export async function POST(request: Request) {
               controller.enqueue(encoder.encode(frame({ kind: "text", text: item.text })));
             } else if (item.kind === "status") {
               controller.enqueue(encoder.encode(frame({ kind: "status", status: item.status })));
+            } else if (item.kind === "values") {
+              checkpoint = {
+                cursor: item.state.cursor,
+                humanInputs: item.state.humanInputs,
+                humanInputRequest: item.state.humanInputRequest,
+                outputsByNode: item.state.outputsByNode,
+                evalAttempts: item.state.evalAttempts,
+                output: item.state.output
+              };
             }
           }
 
-          if (!waitingForHuman) {
+          await eventBuffer.flush();
+
+          if (waitingForHuman) {
+            await supabase
+              .from("runs")
+              .update({ checkpoint, status: "waiting_human", updated_at: new Date().toISOString() })
+              .eq("id", runId)
+              .eq("org_id", org.orgId);
+          } else {
+            await recordRunUsage({ supabase, orgId: org.orgId, runId: runId!, provider, model, input: body.prompt, output: outputText });
             await supabase
               .from("runs")
               .update({
@@ -214,12 +279,18 @@ export async function POST(request: Request) {
         } catch (err) {
           console.error("[runs/execute] stream error:", err);
           const message = err instanceof Error ? err.message : "Unknown run error";
+          const cancelled = request.signal.aborted || (err instanceof Error && err.name === "AbortError");
+          await eventBuffer.flush().catch(() => undefined);
           await supabase
             .from("runs")
-            .update({ status: "failed", completed_at: new Date().toISOString() })
+            .update({ status: cancelled ? "cancelled" : "failed", completed_at: new Date().toISOString() })
             .eq("id", runId)
             .eq("org_id", org.orgId);
-          const failedEvent = runEvent(org.orgId, runId!, "run_failed", message, { target: resolved.target });
+          const failedEvent = runEvent(org.orgId, runId!, cancelled ? "run_cancelled" : "run_failed", cancelled ? "Run cancelled." : message, { target: resolved.target });
+          await supabase.from("run_events").insert({
+            org_id: org.orgId, run_id: runId, event_type: failedEvent.type,
+            message: failedEvent.message, payload: failedEvent.payload
+          });
           controller.enqueue(encoder.encode(frame({ kind: "event", event: failedEvent })));
           controller.enqueue(encoder.encode(frame({
             kind: "error",

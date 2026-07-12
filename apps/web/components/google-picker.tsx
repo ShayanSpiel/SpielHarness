@@ -70,7 +70,7 @@ function waitForGapi(): Promise<void> {
 
 export function GooglePicker({
   accessToken,
-  appId = "447259138795",
+  appId = process.env.NEXT_PUBLIC_GOOGLE_APP_ID ?? "",
   onSelect,
   onError,
   disabled
@@ -81,8 +81,8 @@ export function GooglePicker({
   useEffect(() => {
     waitForGapi()
       .then(() => setReady(true))
-      .catch(() => {});
-  }, []);
+      .catch((error) => onError?.(error instanceof Error ? error : new Error("Google Picker failed to load")));
+  }, [onError]);
 
   const openPicker = useCallback(() => {
     const google = window.google;

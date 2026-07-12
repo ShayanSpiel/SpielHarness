@@ -1,4 +1,4 @@
-import type { Edge, ConnectionLineType } from "@xyflow/react";
+import { MarkerType, type Edge, type ConnectionLineType } from "@xyflow/react";
 
 export const CANVAS_CONFIG = {
   minZoom: 0.15,
@@ -11,6 +11,7 @@ export const CANVAS_CONFIG = {
   defaultEdgeOptions: {
     type: "workflow-edge",
     animated: false,
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--foreground-muted)", width: 14, height: 14 },
   } satisfies Partial<Edge>,
   nodeGap: 80,
 };

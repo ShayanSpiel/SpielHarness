@@ -1,4 +1,5 @@
 import type { Artifact, Role, RunEvent } from "@spielos/core";
+import { SIDEBAR } from "./layout-constants";
 
 export type { Role };
 
@@ -8,7 +9,7 @@ export type WorkspaceKind =
   | "roles"
   | "workstreams"
   | "library"
-  | "tools"
+  | "skills"
   | "prompts";
 
 export type SkillDefinition = {
@@ -16,16 +17,24 @@ export type SkillDefinition = {
   name: string;
   slug: string;
   description: string;
-  category: "search" | "retrieval" | "generation" | "evaluation" | "publishing" | "custom";
+  kind: "llm_call" | "human_input" | "eval" | "code" | "http" | "mcp_call" | "knowledge_search";
   status: "active" | "draft" | "archived";
   auth: "none" | "api_key" | "oauth";
   sideEffect: "none" | "read" | "write" | "external";
   inputSchema: string;
   outputSchema: string;
   implementation: string;
+  bindings: SkillToolBinding[];
   evalRubrics?: EvalRubric[];
   overallThreshold?: number;
   updatedAt: string;
+};
+
+export type SkillToolBinding = {
+  connectionId: string;
+  operation: string;
+  enabled: boolean;
+  confirmation: "never" | "on_write" | "always";
 };
 
 export type RoleContractFormat = "markdown" | "json" | "file";
@@ -227,15 +236,7 @@ export const initialWorkspaceState: WorkspaceState = {
   workstreams: [],
   evalSuites: [],
   evalFiles: [],
-  models: [
-    {
-      id: "mistral-large",
-      provider: "Mistral",
-      label: "Mistral Large",
-      model: "mistral-large-latest",
-      enabled: true
-    }
-  ],
+  models: [],
   items: [],
   libraryFolders: DEFAULT_LIBRARY_FOLDERS,
   chats: [],
@@ -244,5 +245,5 @@ export const initialWorkspaceState: WorkspaceState = {
   events: {},
   activeChatId: null,
   inspectorOpen: false,
-  inspectorWidth: 360
+  inspectorWidth: SIDEBAR.INSPECTOR.DEFAULT
 };

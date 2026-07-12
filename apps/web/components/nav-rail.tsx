@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { Button, Tooltip, cn } from "@spielos/design-system";
 import { ThemeToggle } from "@spielos/design-system/components/theme-toggle";
 import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
+import { SIDEBAR } from "../lib/layout-constants";
 
 type NavEntry = {
   href: string;
@@ -20,14 +21,14 @@ const sections: NavEntry[] = [
   { href: "/roles", label: "Roles", icon: ENTITY_ICONS.role, match: (p) => p.startsWith("/roles") },
   { href: "/workflows", label: "Workflows", icon: ENTITY_ICONS.workflow, match: (p) => p.startsWith("/workflows") },
   { href: "/evals", label: "Evals", icon: ENTITY_ICONS.eval, match: (p) => p.startsWith("/evals") },
-  { href: "/tools", label: "Skills", icon: ENTITY_ICONS.skill, match: (p) => p.startsWith("/tools") }
+  { href: "/skills", label: "Skills", icon: ENTITY_ICONS.skill, match: (p) => p.startsWith("/skills") }
 ];
 
 export function NavRail({ onOpenSearch }: { onOpenSearch: () => void }) {
   const pathname = usePathname();
 
   return (
-    <aside className="flex h-full w-14 shrink-0 flex-col items-center gap-1 border-r border-border bg-background py-2">
+    <aside className={`flex h-full ${SIDEBAR.NAV_RAIL_WIDTH} shrink-0 flex-col items-center gap-1 border-r border-border bg-background py-2`}>
       <Tooltip content="SpielOS" side="right">
         <div className="mb-1 flex h-8 w-8 items-center justify-center rounded-md text-foreground-strong">
           <Icon name="box" size={16} />

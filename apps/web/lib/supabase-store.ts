@@ -73,7 +73,7 @@ function parseRoleFromHarnessFile(file: HarnessFileResponse): Role | null {
     memoryPolicy: (meta.memoryPolicy as string[]) ?? [],
     inputArtifactTypes: (meta.inputTypes as Role["inputArtifactTypes"]) ?? [],
     outputArtifactTypes: (meta.outputTypes as Role["outputArtifactTypes"]) ?? [],
-    modelId: (((meta.modelId as string | undefined) ?? (meta.model as string | undefined)) ?? "mistral-large-latest") as string | null,
+    modelId: ((meta.modelId as string | undefined) ?? null) as string | null,
     status: file.status === "active" ? "active" : file.status === "archived" ? "archived" : "draft",
     metadata: {
       contracts: meta.contracts
@@ -84,13 +84,7 @@ function parseRoleFromHarnessFile(file: HarnessFileResponse): Role | null {
 function parseSkillFromHarnessFile(file: HarnessFileResponse): SkillDefinition | null {
   const meta = file.metadata;
   if (!meta.skill) return null;
-  const kind = (meta.kind as string) ?? "llm_call";
-  const category =
-    kind === "knowledge_search" ? "retrieval" :
-    kind === "eval" ? "evaluation" :
-    kind === "http" || kind === "mcp_call" ? "search" :
-    kind === "human_input" ? "custom" :
-    "generation";
+  const kind = (meta.kind as SkillDefinition["kind"] | undefined) ?? "llm_call";
   const firstTextLine = file.body
     .split("\n")
     .map((line) => line.trim())
@@ -100,13 +94,14 @@ function parseSkillFromHarnessFile(file: HarnessFileResponse): SkillDefinition |
     name: file.title.replace(/\.\w+$/, ""),
     slug: (meta.slug as string) ?? file.title.toLowerCase().replace(/\s+/g, "."),
     description: (meta.description as string) ?? firstTextLine ?? "",
-    category: (meta.category as SkillDefinition["category"]) ?? category,
+    kind,
     status: file.status === "active" ? "active" : file.status === "archived" ? "archived" : "draft",
     auth: (meta.auth as SkillDefinition["auth"]) ?? "none",
     sideEffect: (meta.sideEffect as SkillDefinition["sideEffect"]) ?? "none",
     inputSchema: JSON.stringify(meta.inputSchema ?? { input: "string" }, null, 2),
     outputSchema: JSON.stringify(meta.outputSchema ?? { result: "string" }, null, 2),
     implementation: file.body,
+    bindings: (meta.bindings as SkillDefinition["bindings"] | undefined) ?? [],
     evalRubrics: (meta.evalRubrics as SkillDefinition["evalRubrics"]) ?? undefined,
     overallThreshold: (meta.overallThreshold as number | undefined) ?? undefined,
     updatedAt: file.updatedAt
@@ -186,13 +181,48 @@ function roleContractName(role: Role | undefined, direction: "inputs" | "outputs
 }
 
 export async function loadWorkspaceFromDb(): Promise<WorkspaceState> {
-  const res = await fetch("/api/harness/files", { cache: "no-store" });
+  const [res, chatsRes, modelsRes] = await Promise.all([
+    fetch("/api/harness/files", { cache: "no-store" }),
+    fetch("/api/chats", { cache: "no-store" }),
+    fetch("/api/models", { cache: "no-store" })
+  ]);
   if (!res.ok) {
     console.warn("Failed to load harness files, using defaults");
     return initialWorkspaceState;
   }
   const data = (await res.json()) as { files: HarnessFileResponse[] };
   const files = data.files ?? [];
+  const chatPayload = chatsRes.ok ? await chatsRes.json() as {
+    chats?: Array<{
+      id: string;
+      title: string;
+      created_at: string;
+      updated_at: string;
+      chat_messages?: Array<{ id: string; role: string; body: string; metadata?: Record<string, unknown>; created_at: string }>;
+    }>;
+  } : { chats: [] };
+  const chats = (chatPayload.chats ?? []).map((chat) => ({
+    id: chat.id,
+    title: chat.title,
+    createdAt: chat.created_at,
+    updatedAt: chat.updated_at,
+    messageIds: (chat.chat_messages ?? []).map((message) => message.id),
+    artifactIds: [],
+    activeRoleIds: [],
+    toolId: null
+  }));
+  const messages = Object.fromEntries((chatPayload.chats ?? []).map((chat) => [
+    chat.id,
+    (chat.chat_messages ?? []).filter((message) => ["user", "assistant", "system"].includes(message.role)).map((message) => ({
+      id: message.id,
+      chatId: chat.id,
+      role: message.role as "user" | "assistant" | "system",
+      body: message.body,
+      createdAt: message.created_at,
+      artifactRefs: (message.metadata?.artifactRefs as string[] | undefined) ?? []
+    }))
+  ]));
+  const modelPayload = modelsRes.ok ? await modelsRes.json() as { models?: WorkspaceState["models"] } : { models: [] };
 
   const roles: Role[] = [];
   const skills: SkillDefinition[] = [];
@@ -257,7 +287,11 @@ export async function loadWorkspaceFromDb(): Promise<WorkspaceState> {
     skills,
     evalFiles,
     workstreams: normalizedWorkstreams,
-    libraryFolders: Array.from(folderNames)
+    libraryFolders: Array.from(folderNames),
+    chats,
+    messages,
+    models: modelPayload.models ?? [],
+    activeChatId: chats[0]?.id ?? null
   };
 }
 
@@ -290,6 +324,7 @@ export async function deleteItemFromDb(id: string) {
 
 export type HarnessSavePayload = {
   id?: string;
+  create?: boolean;
   title: string;
   body: string;
   fileType: string;
@@ -298,7 +333,7 @@ export type HarnessSavePayload = {
 };
 
 export async function saveHarnessFile(payload: HarnessSavePayload) {
-  const method = payload.id ? "PUT" : "POST";
+  const method = payload.create || !payload.id ? "POST" : "PUT";
   const res = await fetch("/api/harness/files", {
     method,
     headers: { "Content-Type": "application/json" },

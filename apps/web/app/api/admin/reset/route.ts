@@ -1,4 +1,4 @@
-import { errorResponse, getOrg, HttpError, requireSupabase } from "../../../../lib/server";
+import { errorResponse, getOrg, HttpError, requireOrgRole, requireSupabase } from "../../../../lib/server";
 
 type ResetMode = "files" | "prompts" | "all" | "nuke";
 
@@ -15,6 +15,7 @@ const PROMPT_FILE_TYPES = [
 export async function POST(request: Request) {
   try {
     const org = await getOrg();
+    requireOrgRole(org, ["owner", "admin"]);
     const supabase = requireSupabase(org);
     const body = (await request.json().catch(() => ({}))) as { mode?: ResetMode; confirm?: string };
     const mode = (body.mode ?? "files") as ResetMode;

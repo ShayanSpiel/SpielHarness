@@ -36,7 +36,7 @@ export function buildObjectReferences(input: {
       .map((role): ObjectReference => ({ id: role.id, kind: "role", title: role.name, subtitle: role.description })),
     ...input.skills
       .filter((skill) => skill.status === "active")
-      .map((skill): ObjectReference => ({ id: skill.id, kind: "skill", title: skill.name, subtitle: skill.slug })),
+      .map((skill): ObjectReference => ({ id: skill.id, kind: "skill", title: skill.name, subtitle: skill.description })),
     ...input.evalFiles
       .filter((evalFile) => evalFile.status === "active")
       .map((evalFile): ObjectReference => ({ id: evalFile.id, kind: "eval", title: evalFile.name, subtitle: `${evalFile.rubrics.length} criteria` })),

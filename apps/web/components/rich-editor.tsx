@@ -97,7 +97,7 @@ function useMentionSuggestion() {
             if (props.clientRect) {
               const rect = props.clientRect();
               if (rect) {
-                component.element.style.position = "absolute";
+                component.element.style.position = "fixed";
                 component.element.style.left = `${rect.left}px`;
                 component.element.style.top = `${rect.top - 8}px`;
                 component.element.style.transform = "translateY(-100%)";
@@ -107,6 +107,13 @@ function useMentionSuggestion() {
           },
           onUpdate: (props: SuggestionProps<ObjectReference, MentionNodeAttrs>) => {
             component?.updateProps({ items: props.items });
+            if (component && props.clientRect) {
+              const rect = props.clientRect();
+              if (rect) {
+                component.element.style.left = `${rect.left}px`;
+                component.element.style.top = `${rect.top - 8}px`;
+              }
+            }
           },
           onKeyDown: (props: { event: KeyboardEvent }) => {
             if (props.event instanceof KeyboardEvent) {
@@ -119,8 +126,9 @@ function useMentionSuggestion() {
                 const dropdownEl = component?.element.querySelector("[role='listbox']");
                 if (dropdownEl) {
                   dropdownEl.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+                  return true;
                 }
-                return true;
+                return false;
               }
             }
             return false;

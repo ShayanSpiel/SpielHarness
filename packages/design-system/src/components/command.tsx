@@ -1,9 +1,9 @@
 "use client";
 
 import { Command as CommandPrimitive } from "cmdk";
-import { Search } from "lucide-react";
 import { type ComponentPropsWithoutRef, type ElementRef, forwardRef } from "react";
 import { cn } from "../index";
+import { Icon } from "./icons";
 
 export const Command = forwardRef<
   ElementRef<typeof CommandPrimitive>,
@@ -27,11 +27,11 @@ export const CommandInput = forwardRef<
 >(function CommandInput({ className, ...props }, ref) {
   return (
     <div className="flex items-center gap-2 border-b border-border px-3">
-      <Search className="h-3.5 w-3.5 text-muted-foreground" />
+      <Icon name="search" size={14} />
       <CommandPrimitive.Input
         ref={ref}
         className={cn(
-          "flex h-10 w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none",
+          "flex h-8 w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
           className
         )}
         {...props}
@@ -74,7 +74,7 @@ export const CommandGroup = forwardRef<
     <CommandPrimitive.Group
       ref={ref}
       className={cn(
-        "overflow-hidden p-1 text-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-muted-foreground",
+        "overflow-hidden p-1 text-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-muted-foreground",
         className
       )}
       {...props}
@@ -90,7 +90,7 @@ export const CommandItem = forwardRef<
     <CommandPrimitive.Item
       ref={ref}
       className={cn(
-        "relative flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-foreground outline-none transition-colors data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 data-[selected=true]:bg-selected data-[selected=true]:text-foreground-strong",
+        "relative flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-foreground outline-none transition-colors duration-[var(--duration)] data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 data-[selected=true]:bg-selected data-[selected=true]:text-foreground-strong",
         className
       )}
       {...props}

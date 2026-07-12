@@ -1,4 +1,4 @@
-import { errorResponse, getOrg, HttpError, requireSupabase } from "../../../lib/server";
+import { errorResponse, getOrg, HttpError, requireOrgWrite, requireSupabase } from "../../../lib/server";
 
 export async function GET() {
   try {
@@ -20,6 +20,7 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const org = await getOrg();
+    requireOrgWrite(org);
     const supabase = requireSupabase(org);
     const body = (await request.json()) as {
       prompt?: string;
@@ -32,7 +33,7 @@ export async function POST(request: Request) {
       .from("runs")
       .insert({
         org_id: org.orgId,
-        workstream_id: null,
+        workstream_id: body.workstreamId ?? null,
         run_type: body.runType ?? "custom",
         prompt: body.prompt,
         status: "draft",

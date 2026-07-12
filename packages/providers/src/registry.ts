@@ -1,15 +1,16 @@
 import type { Model, ModelProvider } from "@spielos/core";
-import { mistralAdapter } from "./mistral";
-import type { ChatAdapter, ChatRequest, ChatResponse } from "./types";
+import { mistralAdapter } from "./mistral.ts";
+import type { ChatAdapter, ChatRequest, ChatResponse } from "./types.ts";
 
 const REGISTRY: Record<string, ChatAdapter> = {
   mistral: mistralAdapter,
   openai: mistralAdapter,
-  anthropic: mistralAdapter
+  "openai-compatible": mistralAdapter
 };
 
 export function adapterForProvider(provider: ModelProvider): ChatAdapter {
-  const adapter = REGISTRY[provider.kind] ?? REGISTRY.mistral;
+  const adapter = REGISTRY[provider.kind.toLowerCase()];
+  if (!adapter) throw new Error(`No chat adapter is registered for provider kind "${provider.kind}".`);
   return adapter;
 }
 

@@ -1,6 +1,6 @@
 export const ENTITY_ICONS = {
   run: "play",
-  knowledge: "brain",
+  knowledge: "knowledge",
   skill: "reading-glass",
   role: "users",
   eval: "bar-chart",
@@ -47,7 +47,7 @@ export const EVENT_ICONS = {
 
 export const CONTEXT_KIND_ICONS: Record<string, string> = {
   role: ENTITY_ICONS.role,
-  tool: ENTITY_ICONS.skill,
+   skill: ENTITY_ICONS.skill,
   library: "archive",
   workstream: ENTITY_ICONS.workflow,
   strategy: "file-text",

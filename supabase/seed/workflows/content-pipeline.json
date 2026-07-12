@@ -9,7 +9,7 @@
       "skillSlugs": ["knowledge.search"],
       "prompt": "Gather only the evidence needed to write a grounded strategy brief.",
       "input": "user_request",
-      "output": "research_brief",
+      "output": "research_report",
       "x": 80,
       "y": 160
     },
@@ -19,8 +19,8 @@
       "roleSlug": "strategist",
       "skillSlugs": ["llm.generate", "icp-world-simulator"],
       "prompt": "Translate the research and request into the six-field strategy brief.",
-      "input": "research_brief",
-      "output": "strategy_brief",
+      "input": "research_report",
+      "output": "brief",
       "x": 340,
       "y": 160
     },
@@ -30,7 +30,7 @@
       "roleSlug": "writer",
       "skillSlugs": ["llm.generate", "template.apply"],
       "prompt": "Write X, LinkedIn, and blog drafts from the strategy brief.",
-      "input": "strategy_brief",
+      "input": "brief",
       "output": "drafts",
       "x": 600,
       "y": 160

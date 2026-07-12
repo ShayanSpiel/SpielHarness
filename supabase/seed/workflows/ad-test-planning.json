@@ -9,7 +9,7 @@
       "skillSlugs": ["knowledge.search"],
       "prompt": "Find public audience, competitor, and channel signals.",
       "input": "user_request",
-      "output": "research_brief",
+      "output": "research_report",
       "x": 120,
       "y": 180
     },
@@ -19,8 +19,8 @@
       "roleSlug": "strategist",
       "skillSlugs": ["llm.generate"],
       "prompt": "Pick one reader, one pain, one belief, and one testable point.",
-      "input": "research_brief",
-      "output": "strategy_brief",
+      "input": "research_report",
+      "output": "brief",
       "x": 400,
       "y": 180
     },
@@ -30,7 +30,7 @@
       "roleSlug": "ads-planner",
       "skillSlugs": ["llm.generate"],
       "prompt": "Create a no-frills campaign test plan that can be run manually.",
-      "input": "strategy_brief",
+      "input": "brief",
       "output": "test_plan",
       "x": 680,
       "y": 180

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useEffect } from "react";
+import { useCallback, useRef, useEffect, type MouseEvent as ReactMouseEvent } from "react";
 import {
   ReactFlow,
   Background,
@@ -15,6 +15,7 @@ import {
   type Edge,
   type OnConnect,
   type OnNodeDrag,
+  type Connection,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { RoleNode, type WorkflowNodeData } from "./nodes/role-node";
@@ -41,7 +42,10 @@ function buildNodes(
   connectNode: (id: string) => void,
   deleteNode: (id: string) => void,
   updateNode: (id: string, patch: Partial<WorkstreamNode>) => void,
+  edges: WorkstreamDefinition["edges"],
 ): Node<WorkflowNodeData>[] {
+  const incomingIds = new Set(edges.map((e) => e.target));
+  const outgoingIds = new Set(edges.map((e) => e.source));
   return draftNodes.map((n) => ({
     id: n.id,
     type: n.nodeType === "eval" ? "eval" : "role",
@@ -54,6 +58,8 @@ function buildNodes(
           : rolesById.get(n.roleId),
       isConnecting: fromNodeId === n.id,
       selected: false,
+      hasIncoming: incomingIds.has(n.id),
+      hasOutgoing: outgoingIds.has(n.id),
       onConnect: connectNode,
       onDelete: deleteNode,
       updateNode,
@@ -71,6 +77,7 @@ function buildEdges(
     source: e.source,
     target: e.target,
     type: "workflow-edge",
+    reconnectable: true,
     data: { onDelete: removeEdge },
   }));
 }
@@ -104,27 +111,32 @@ function FlowContent({
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<WorkflowNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const prevNodeCount = useRef(0);
+  const prevEdgeCount = useRef(0);
   const mounted = useRef(false);
 
-  useEffect(() => {
-    setNodes(buildNodes(draft.nodes, rolesById, evalsById, fromNodeId, connectNode, deleteNode, updateNode));
+  function syncGraph(doFit: boolean) {
+    setNodes(buildNodes(draft.nodes, rolesById, evalsById, fromNodeId, connectNode, deleteNode, updateNode, draft.edges));
     setEdges(buildEdges(draft.edges, removeEdge));
-    if (draft.nodes.length > 0) {
-      setTimeout(() => instance.fitView({ padding: CANVAS_CONFIG.fitViewPadding, duration: 200 }), 80);
+    if (doFit && draft.nodes.length > 0) {
+      setTimeout(() => instance.fitView({ padding: CANVAS_CONFIG.fitViewPadding, duration: 200 }), 50);
     }
+  }
+
+  useEffect(() => {
+    syncGraph(true);
     mounted.current = true;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!mounted.current) return;
-    const nodeCount = draft.nodes.length;
-    if (nodeCount !== prevNodeCount.current) {
-      prevNodeCount.current = nodeCount;
-      setNodes(buildNodes(draft.nodes, rolesById, evalsById, fromNodeId, connectNode, deleteNode, updateNode));
-      setEdges(buildEdges(draft.edges, removeEdge));
-      if (nodeCount > 0) {
-        setTimeout(() => instance.fitView({ padding: CANVAS_CONFIG.fitViewPadding, duration: 200 }), 50);
-      }
+    const nc = draft.nodes.length;
+    const ec = draft.edges.length;
+    const nodeChanged = nc !== prevNodeCount.current;
+    const edgeChanged = ec !== prevEdgeCount.current;
+    if (nodeChanged || edgeChanged) {
+      prevNodeCount.current = nc;
+      prevEdgeCount.current = ec;
+      syncGraph(nodeChanged);
     }
   }, [draft.nodes.length, draft.edges.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -145,6 +157,36 @@ function FlowContent({
       }
     },
     [addEdge],
+  );
+
+  const reconnectingEdgeRef = useRef<string | null>(null);
+
+  const onReconnect = useCallback(
+    (oldEdge: Edge, newConnection: Connection) => {
+      reconnectingEdgeRef.current = null;
+      removeEdge(oldEdge.id);
+      if (newConnection.source && newConnection.target) {
+        addEdge(newConnection.source, newConnection.target);
+      }
+    },
+    [removeEdge, addEdge],
+  );
+
+  const onReconnectStart = useCallback(
+    (_event: ReactMouseEvent, edge: Edge) => {
+      reconnectingEdgeRef.current = edge.id;
+    },
+    [],
+  );
+
+  const onReconnectEnd = useCallback(
+    (_event: globalThis.MouseEvent | TouchEvent, edge: Edge) => {
+      if (reconnectingEdgeRef.current === edge.id) {
+        reconnectingEdgeRef.current = null;
+        removeEdge(edge.id);
+      }
+    },
+    [removeEdge],
   );
 
   const handleDragOver = useCallback((event: React.DragEvent) => {
@@ -194,6 +236,9 @@ function FlowContent({
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
       onConnect={onConnect}
+      onReconnect={onReconnect}
+      onReconnectStart={onReconnectStart}
+      onReconnectEnd={onReconnectEnd}
       onNodeDragStop={onNodeDragStop}
       onNodeClick={(_, node) => onNodeSelect(node.id)}
       onPaneClick={() => onNodeSelect(null)}
@@ -205,6 +250,7 @@ function FlowContent({
       snapGrid={CANVAS_CONFIG.snapGrid}
       defaultEdgeOptions={CANVAS_CONFIG.defaultEdgeOptions}
       connectionLineStyle={CANVAS_CONFIG.connectionLineStyle}
+      connectionRadius={80}
       fitView={false}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
@@ -212,6 +258,7 @@ function FlowContent({
       multiSelectionKeyCode="Shift"
       panOnDrag={[0, 1, 2]}
       selectNodesOnDrag={false}
+      proOptions={{ hideAttribution: true }}
       className="bg-background"
     >
       <Background variant={BackgroundVariant.Lines} gap={32} size={0.5} color="var(--border)" style={{ opacity: 0.3 }} />

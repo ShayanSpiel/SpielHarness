@@ -4,7 +4,7 @@ SpielOS is a customizable, role-based marketing team harness. The UI manages har
 
 ## Source Of Truth
 
-- Configuration: roles, skills, evals, workflows, prompts/strategy records, models, and integration metadata are database records. The active harness UI uses file-backed rows in `files` for roles, skills, evals, workflows, templates, strategy, prompts, knowledge, and generated artifacts.
+- Configuration: file-backed rows in `files` are the canonical editable definitions for roles, skills, evals, workflows, templates, strategy, prompts, knowledge, and generated objects. Legacy harness tables are not active write sources.
 - Content: library, knowledge, drafts, evidence, assets, references, and generated artifacts are content files. They can be selected as execution context, but they are not executable targets.
 - Runtime: runs, run events, human inputs, outputs, generated file links, and evaluation artifacts are runtime records. Runtime state is not stored inside role, skill, or workflow definitions.
 - Secrets: credentials are resolved server-side from environment variables or secret refs. API responses expose only redacted status.
@@ -38,19 +38,21 @@ Chat / Role test / Skill test / Eval test / Workflow run
   -> server compatibility validation
   -> harness file resolution
   -> run row
-  -> chat response or LangGraph runtime
+  -> persisted chat response or data-driven DAG runtime
   -> run events, artifacts, generated file links
 ```
 
-`apps/web/lib/execution-service.ts` owns target inference, compatibility validation, file-backed role/skill/eval/workflow resolution, selected context tracing, and environment-backed provider selection.
+`apps/web/lib/execution-service.ts` owns target inference, compatibility validation, server-side DAG compilation, file-backed role/skill/eval/workflow resolution, selected context tracing, and stored provider/model resolution with environment fallback.
 
 ## LangGraph Ownership
 
 `packages/graph` owns orchestration for role, skill, evaluation, and workflow execution. The graph is shared and data-driven:
 
-- `resolve` picks the next role-bound node.
-- `execute` runs the active skill kind.
-- `advance` moves to the next node or pauses for human input.
+- `resolve` picks the next role-bound node and skill step.
+- `execute` runs the active skill kind with dependency outputs and selected marketing objects.
+- `advance` moves through the compiled DAG or persists a durable human-input checkpoint.
+
+Saved workflow edges are authoritative. The server rejects missing endpoints and cycles, computes dependency order, and ignores client-supplied node overrides for saved workflows. Multi-skill nodes are expanded into deterministic skill steps rather than silently dropping companion skills.
 
 Plain empty-context chat can complete through the same run API without building a graph when no executable target is selected.
 

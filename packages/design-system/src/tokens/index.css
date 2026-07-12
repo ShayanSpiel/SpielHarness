@@ -42,6 +42,14 @@
   --duration-slow: 240ms;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 
+  --font-size-3xs: 10px;
+  --font-size-2xs: 11px;
+
+  --leading-tight: 1.25;
+  --leading-snug: 1.375;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+
   --font-sans: var(--font-outfit), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, "Helvetica Neue", Arial, sans-serif;
   --font-mono: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
 }

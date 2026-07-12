@@ -22,7 +22,7 @@ type Section = {
 
 const SECTIONS: Section[] = [
   { id: "role", label: "Roles", icon: <Icon name={ENTITY_ICONS.role} size={14} />, blurb: "Agents that will collaborate" },
-  { id: "tool", label: "Skills", icon: <Icon name={ENTITY_ICONS.skill} size={14} />, blurb: "Callable capabilities the team can use" },
+  { id: "skill", label: "Skills", icon: <Icon name={ENTITY_ICONS.skill} size={14} />, blurb: "Callable capabilities the team can use" },
   { id: "workstream", label: "Workflows", icon: <Icon name={ENTITY_ICONS.workflow} size={14} />, blurb: "Multi-step graphs" },
   { id: "eval", label: "Evals", icon: <Icon name={ENTITY_ICONS.eval} size={14} />, blurb: "Rubrics for scoring content, prompts, and workflows" },
   { id: "prompt", label: "Prompts", icon: <Icon name={ENTITY_ICONS.prompt} size={14} />, blurb: "Reusable system and strategy instructions" },
@@ -63,14 +63,14 @@ export function ContextPicker() {
           subtitle: role.description?.slice(0, 80),
           body: role.prompt
         }));
-      case "tool":
+      case "skill":
         return store.skills.filter((skill) => skill.status === "active").map((skill) => ({
           id: skill.id,
-          kind: "tool" as const,
+          kind: "skill" as const,
           title: skill.name,
-          subtitle: `${skill.slug} · ${skill.sideEffect}`,
+          subtitle: `${skill.sideEffect}`,
           body: skill.description,
-          meta: { slug: skill.slug, category: skill.category }
+          meta: { slug: skill.slug, kind: skill.kind }
         }));
       case "eval":
         return store.evalFiles.filter((evalFile) => evalFile.status === "active").map((evalFile) => ({
@@ -129,9 +129,9 @@ export function ContextPicker() {
   const selectedIds = new Set(run.contextItems.map((entry) => entry.id));
 
   function conflictReason(candidate: Candidate) {
-    const normalizedKind = candidate.kind === "tool" ? "skill" : candidate.kind === "workstream" ? "workflow" : candidate.kind;
+    const normalizedKind = candidate.kind === "workstream" ? "workflow" : candidate.kind;
     const executable = run.contextItems.map((item) =>
-      item.kind === "tool" ? "skill" : item.kind === "workstream" ? "workflow" : item.kind
+      item.kind === "workstream" ? "workflow" : item.kind
     );
     const hasWorkflow = executable.includes("workflow");
     const hasRole = executable.includes("role");
@@ -200,7 +200,7 @@ export function ContextPicker() {
                 variant="ghost"
               />
             </form>
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            <div className="text-3xs uppercase tracking-wider text-muted-foreground">
               {run.contextItems.length} attached
             </div>
           </div>
@@ -225,7 +225,7 @@ export function ContextPicker() {
                     {icon}
                     <span className="flex-1">{section.label}</span>
                     {attachedCount > 0 ? (
-                      <span className="text-[10px] text-muted-foreground">{attachedCount} attached</span>
+                      <span className="text-3xs text-muted-foreground">{attachedCount} attached</span>
                     ) : null}
                   </button>
                 );
@@ -237,7 +237,7 @@ export function ContextPicker() {
                 <div className="text-xs text-foreground">
                   {SECTIONS.find((entry) => entry.id === active)?.label}
                 </div>
-                <div className="text-[11px] text-muted-foreground">
+                <div className="text-2xs text-muted-foreground">
                   {SECTIONS.find((entry) => entry.id === active)?.blurb}
                 </div>
               </div>
@@ -247,7 +247,7 @@ export function ContextPicker() {
                   <div className="flex h-full flex-col items-center justify-center gap-1.5 text-center text-muted-foreground">
                     <Icon name="boxes" size={16} />
                     <div className="text-xs">No matches</div>
-                    <div className="text-[11px]">
+                    <div className="text-2xs">
                       Add a {active} from the {SECTIONS.find((entry) => entry.id === active)?.label} page.
                     </div>
                   </div>
@@ -282,12 +282,12 @@ export function ContextPicker() {
                                 <span className="truncate text-[13px] text-foreground">{entry.title}</span>
                               </span>
                               {entry.subtitle ? (
-                                <span className="line-clamp-1 text-[11px] text-muted-foreground">
+                                <span className="line-clamp-1 text-2xs text-muted-foreground">
                                   {entry.subtitle}
                                 </span>
                               ) : null}
                             </span>
-                            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                            <span className="text-3xs uppercase tracking-wider text-muted-foreground">
                               {entry.kind}
                             </span>
                           </button>
@@ -300,7 +300,7 @@ export function ContextPicker() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between border-t border-border bg-panel-raised px-4 py-2 text-[11px] text-muted-foreground">
+          <div className="flex items-center justify-between border-t border-border bg-panel-raised px-4 py-2 text-2xs text-muted-foreground">
             <div className="flex items-center gap-3">
               <span>
                 <kbd className="rounded border border-border bg-panel px-1 font-mono">↑↓</kbd> navigate

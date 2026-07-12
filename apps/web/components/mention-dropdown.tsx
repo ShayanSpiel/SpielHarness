@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@spielos/design-system";
 import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import type { ObjectReference, ObjectReferenceKind } from "../lib/object-references";
+
+const KIND_ORDER: ObjectReferenceKind[] = ["role", "skill", "eval", "workflow", "file", "prompt"];
 
 const KIND_ICONS: Record<ObjectReferenceKind, string> = {
   role: ENTITY_ICONS.role,
@@ -26,11 +28,13 @@ const KIND_LABELS: Record<ObjectReferenceKind, string> = {
 export function MentionDropdown({
   items,
   onSelect,
-  className
+  className,
+  searchQuery
 }: {
   items: ObjectReference[];
   onSelect: (ref: ObjectReference) => void;
   className?: string;
+  searchQuery?: string;
 }) {
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -40,7 +44,8 @@ export function MentionDropdown({
   }, [items.length]);
 
   useEffect(() => {
-    const el = listRef.current?.children[highlightedIndex] as HTMLElement | undefined;
+    const options = listRef.current?.querySelectorAll('[role="option"]');
+    const el = options?.[highlightedIndex] as HTMLElement | undefined;
     el?.scrollIntoView({ block: "nearest" });
   }, [highlightedIndex]);
 
@@ -63,44 +68,84 @@ export function MentionDropdown({
     [items, highlightedIndex, onSelect]
   );
 
-  if (items.length === 0) return null;
+  const grouped = useMemo(() => {
+    const map = new Map<ObjectReferenceKind, ObjectReference[]>();
+    for (const ref of items) {
+      const list = map.get(ref.kind) ?? [];
+      list.push(ref);
+      map.set(ref.kind, list);
+    }
+    return KIND_ORDER
+      .map((kind) => ({ kind, label: KIND_LABELS[kind], items: map.get(kind) ?? [] }))
+      .filter((g) => g.items.length > 0);
+  }, [items]);
+
+  if (items.length === 0) {
+    return (
+      <div
+        className={cn(
+          "z-50 w-72 overflow-hidden rounded-lg border border-border bg-panel-raised shadow-[var(--shadow-panel)]",
+          className
+        )}
+      >
+        <div className="px-3 py-4 text-center text-xs text-muted-foreground">
+          {searchQuery
+            ? `No matches for "${searchQuery}"`
+            : "No roles, skills, or files yet"}
+        </div>
+      </div>
+    );
+  }
+
+  let flatIndex = 0;
 
   return (
     <div
       className={cn(
-        "z-50 max-h-64 w-72 overflow-hidden rounded-lg border border-border bg-panel-raised shadow-[var(--shadow-panel)]",
+        "z-50 max-h-64 w-72 overflow-y-auto rounded-lg border border-border bg-panel-raised shadow-[var(--shadow-panel)]",
         className
       )}
       onKeyDown={handleKeyDown}
       ref={listRef}
       role="listbox"
     >
-      {items.map((ref, index) => (
-        <button
-          aria-selected={index === highlightedIndex}
-          className={cn(
-            "flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors",
-            index === highlightedIndex ? "bg-selected text-foreground-strong" : "text-foreground hover:bg-hover"
-          )}
-          key={`${ref.kind}:${ref.id}`}
-          onClick={() => onSelect(ref)}
-          onMouseEnter={() => setHighlightedIndex(index)}
-          role="option"
-          type="button"
-        >
-          <Icon
-            className="shrink-0 text-muted-foreground"
-            name={KIND_ICONS[ref.kind]}
-            size={14}
-          />
-          <div className="min-w-0 flex-1">
-            <div className="truncate font-medium">{ref.title}</div>
-            <div className="truncate text-[11px] text-muted-foreground">
-              {KIND_LABELS[ref.kind]}
-              {ref.subtitle ? ` · ${ref.subtitle}` : ""}
-            </div>
+      {grouped.map((group) => (
+        <div key={group.kind}>
+          <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <Icon name={KIND_ICONS[group.kind]} size={12} />
+            {group.label}
           </div>
-        </button>
+          {group.items.map((ref) => {
+            const currentIndex = flatIndex++;
+            return (
+              <button
+                aria-selected={currentIndex === highlightedIndex}
+                className={cn(
+                  "flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors",
+                  currentIndex === highlightedIndex ? "bg-selected text-foreground-strong" : "text-foreground hover:bg-hover"
+                )}
+                key={`${ref.kind}:${ref.id}`}
+                onClick={() => onSelect(ref)}
+                onMouseEnter={() => setHighlightedIndex(currentIndex)}
+                role="option"
+                type="button"
+              >
+                <Icon
+                  className="shrink-0 text-muted-foreground"
+                  name={KIND_ICONS[ref.kind]}
+                  size={14}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-medium">{ref.title}</div>
+                  <div className="truncate text-2xs text-muted-foreground">
+                    {KIND_LABELS[ref.kind]}
+                    {ref.subtitle ? ` · ${ref.subtitle}` : ""}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
       ))}
     </div>
   );

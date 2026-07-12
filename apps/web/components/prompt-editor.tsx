@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { Button, Pill, Tooltip, cn } from "@spielos/design-system";
 import { Icon } from "@spielos/design-system/components";
+import { MentionTextarea } from "./mention-textarea";
 
 function parseJson(value: string): { valid: true; formatted: string } | { valid: false; error: string } {
   try {
@@ -98,12 +99,13 @@ export function PromptEditor({
           </Tooltip>
         ) : null}
       </div>
-      <textarea
+      <MentionTextarea
         aria-label={isJson ? "JSON prompt body" : "Markdown prompt body"}
-        className="min-h-0 flex-1 resize-none border-0 bg-background px-6 py-6 font-mono text-[13px] leading-6 text-foreground outline-none focus-visible:ring-0"
-        onChange={(event) => {
+        className="flex min-h-0 flex-1 flex-col"
+        mono
+        onChange={(newValue) => {
           setFormatMessage(null);
-          onChange(event.target.value);
+          onChange(newValue);
         }}
         placeholder={
           isJson

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "@spielos/design-system";
 import { buildObjectReferences, mentionText, type ObjectReference } from "../lib/object-references";
 import { useWorkspaceStore } from "../lib/use-workspace-store";
@@ -85,6 +86,7 @@ export function MentionTextarea({
   const store = useWorkspaceStore();
   const allItems = useMemo(() => buildObjectReferences(store), [store]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const portalRef = useRef<HTMLDivElement>(null);
   const [mentionState, setMentionState] = useState<{
     open: boolean;
     query: string;
@@ -101,7 +103,11 @@ export function MentionTextarea({
 
   const openMention = useCallback((textarea: HTMLTextAreaElement, cursorPos: number, query: string, atIndex: number) => {
     const coords = getCaretCoordinates(textarea, cursorPos);
-    setMentionState({ open: true, query, atIndex, top: coords.top, left: coords.left });
+    const rect = textarea.getBoundingClientRect();
+    const viewportTop = rect.top + coords.top;
+    const viewportLeft = rect.left + coords.left;
+    const clampedLeft = Math.min(viewportLeft, window.innerWidth - 288 - 16);
+    setMentionState({ open: true, query, atIndex, top: viewportTop, left: clampedLeft });
   }, []);
 
   const insertMention = useCallback(
@@ -144,6 +150,10 @@ export function MentionTextarea({
       if (mentionState.open) {
         if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === "Tab") {
           e.preventDefault();
+          const listbox = portalRef.current?.querySelector("[role='listbox']");
+          if (listbox) {
+            listbox.dispatchEvent(new KeyboardEvent("keydown", { key: e.key, bubbles: true }));
+          }
           return;
         }
         if (e.key === "Escape") {
@@ -173,7 +183,9 @@ export function MentionTextarea({
     if (!mentionState.open) return;
     function handle(e: MouseEvent) {
       const textarea = textareaRef.current;
-      if (textarea && !textarea.contains(e.target as Node)) {
+      const portal = portalRef.current;
+      const target = e.target as Node;
+      if (textarea && portal && !textarea.contains(target) && !portal.contains(target)) {
         closeMention();
       }
     }
@@ -198,16 +210,19 @@ export function MentionTextarea({
         value={value}
         {...rest}
       />
-      {mentionState.open && filteredItems.length > 0 && (
+      {mentionState.open && createPortal(
         <div
-          className="absolute z-50"
-          style={{ top: mentionState.top, left: Math.min(mentionState.left, (textareaRef.current?.clientWidth ?? 288) - 288) }}
+          ref={portalRef}
+          className="fixed z-50"
+          style={{ top: mentionState.top, left: mentionState.left }}
         >
           <MentionDropdown
             items={filteredItems}
             onSelect={insertMention}
+            searchQuery={mentionState.query}
           />
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

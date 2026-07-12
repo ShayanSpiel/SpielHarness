@@ -85,7 +85,7 @@ export function LibraryFilesSection() {
   if (connection === "disconnected") {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8">
-        <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-border bg-panel-raised">
+        <div className="flex h-16 w-16 items-center justify-center rounded-xl border border-border bg-panel-raised">
           <Icon name="cloud" size={32} />
         </div>
         <div className="text-center">
@@ -133,13 +133,13 @@ export function LibraryFilesSection() {
             />
           ) : null}
           <Button
-            className="h-7 px-2"
+            className="px-2"
+            icon="x"
             onClick={handleDisconnect}
             size="sm"
             variant="ghost"
           >
-            <Icon name="x" size={14} />
-            <span className="ml-1 text-xs">Disconnect</span>
+            Disconnect
           </Button>
         </div>
       </div>
@@ -166,7 +166,7 @@ export function LibraryFilesSection() {
                   <p className="truncate text-sm font-medium text-foreground">
                     {item.title}
                   </p>
-                  <p className="text-[11px] text-muted-foreground">
+                  <p className="text-2xs text-muted-foreground">
                     {item.metadata?.mimeType || "Unknown type"}
                     {item.metadata?.sizeBytes
                       ? ` · ${formatSize(Number(item.metadata.sizeBytes))}`

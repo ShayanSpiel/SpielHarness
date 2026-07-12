@@ -86,7 +86,7 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
 
       const contextRefs = contextItems.map((item) => ({
         id: item.id,
-        kind: item.kind === "tool" ? "skill" : item.kind === "workstream" ? "workflow" : item.kind
+        kind: item.kind === "workstream" ? "workflow" : item.kind
       }));
 
       const currentRun = runRef.current;
@@ -96,7 +96,15 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
       currentRun.setActivity("Starting run...");
       currentRun.setRunning(true);
 
-      const payload = { prompt: text, contextRefs };
+      const payload = {
+        prompt: text,
+        chatId: storeRef.current.activeChatId ?? undefined,
+        contextRefs,
+        messages: messages.map((message) => ({
+          role: message.role === "assistant" ? "assistant" as const : "user" as const,
+          content: getMessageText(message)
+        })).filter((message) => message.content.trim())
+      };
 
       const response = await fetch("/api/runs/execute", {
         method: "POST",
@@ -243,6 +251,11 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
           }
         }
       } finally {
+        if (abortSignal.aborted && runRef.current.activeRunId) {
+          fetch(`/api/runs/${runRef.current.activeRunId}/cancel`, { method: "POST" }).catch((error) => {
+            console.warn("Failed to persist run cancellation:", error);
+          });
+        }
         if (textBuffer) {
           narrative += textBuffer;
           textBuffer = "";

@@ -93,6 +93,7 @@ export const humanInputRequestSchema = z.object({
   skillId: z.string(),
   questions: z.array(humanInputQuestionSchema),
   header: z.string().optional(),
+  metadata: z.record(z.unknown()).optional(),
   createdAt: z.string()
 });
 export type HumanInputRequest = z.infer<typeof humanInputRequestSchema>;
@@ -111,6 +112,12 @@ export const skillSchema = z.object({
   inputSchema: z.string().default("{}"),
   outputSchema: z.string().default("{}"),
   implementation: z.string().default(""),
+  bindings: z.array(z.object({
+    connectionId: z.string(),
+    operation: z.string(),
+    enabled: z.boolean().default(true),
+    confirmation: z.enum(["never", "on_write", "always"]).default("on_write")
+  })).default([]),
   // For human_input skills
   humanQuestions: z.array(humanInputQuestionSchema).optional(),
   // For eval skills
@@ -133,26 +140,6 @@ export const skillSchema = z.object({
   updatedAt: z.string().optional()
 });
 export type Skill = z.infer<typeof skillSchema>;
-
-// ── Backwards-compat aliases (for the original UI that used toolIds / model / enabled) ──
-export type RoleWithCompat = Role & {
-  toolIds: string[];
-  model: string;
-  enabled: boolean;
-};
-
-// Normalize a role from the DB into the shape the original UI expects.
-// The DB stores `skillIds` (in `metadata.skillIds`), `modelId`, and `status`.
-// The original UI uses `toolIds`, `model`, and `enabled`.
-export function compatRole(role: Role | (Omit<Role, "id" | "orgId"> & Partial<Role>)): RoleWithCompat {
-  const r = role as Role;
-  return {
-    ...role,
-    toolIds: r.skillIds ?? ((r.metadata?.skillIds as string[] | undefined) ?? []),
-    model: (r.modelId as string | null) ?? "mistral-large-latest",
-    enabled: (r.status ?? "active") === "active"
-  } as RoleWithCompat;
-}
 
 // ── Role (agent) ───────────────────────────────────────────────
 export const artifactTypeSchema = z.enum([

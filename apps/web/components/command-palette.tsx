@@ -46,7 +46,7 @@ const NAV: { href: string; label: string; icon: ReactNode; keywords: string[] }[
   { href: "/knowledge", label: "Knowledge", icon: <Icon name={ENTITY_ICONS.knowledge} size={14} />, keywords: ["knowledge", "evidence", "library", "file"] },
   { href: "/roles", label: "Roles", icon: <Icon name={ENTITY_ICONS.role} size={14} />, keywords: ["role", "agent"] },
   { href: "/workflows", label: "Workflows", icon: <Icon name={ENTITY_ICONS.workflow} size={14} />, keywords: ["workflow", "workstream", "graph"] },
-  { href: "/tools", label: "Skills", icon: <Icon name={ENTITY_ICONS.skill} size={14} />, keywords: ["skill", "tool"] },
+  { href: "/skills", label: "Skills", icon: <Icon name={ENTITY_ICONS.skill} size={14} />, keywords: ["skill"] },
   { href: "/evals", label: "Evals", icon: <Icon name={ENTITY_ICONS.eval} size={14} />, keywords: ["eval", "rubric"] },
   { href: "/settings", label: "Settings", icon: <Icon name={ENTITY_ICONS.settings} size={14} />, keywords: ["settings", "integrations", "models"] }
 ];
@@ -228,7 +228,7 @@ export function CommandPalette({
             value={query}
             variant="ghost"
           />
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          <div className="text-3xs uppercase tracking-wider text-muted-foreground">
             {filtered.length} results
           </div>
         </div>
@@ -243,9 +243,9 @@ export function CommandPalette({
             <div className="flex flex-col gap-3">
               {groups.map(([group, list]) => (
                 <section className="flex flex-col gap-0.5" key={group}>
-                  <header className="flex items-center gap-1.5 px-2 pb-1 pt-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+                  <header className="flex items-center gap-1.5 px-2 pb-1 pt-1 text-3xs uppercase tracking-wider text-muted-foreground">
                     <span>{group}</span>
-                    {group === "Last Runs" ? <Pill className="ml-auto text-[10px]">{list.length}</Pill> : null}
+                    {group === "Last Runs" ? <Pill className="ml-auto text-3xs">{list.length}</Pill> : null}
                   </header>
                   <ul className="flex flex-col gap-0.5">
                     {list.map((entry) => {
@@ -265,7 +265,7 @@ export function CommandPalette({
                             <span className="text-muted-foreground">{entry.icon}</span>
                             <span className="flex-1 truncate text-[13px]">{entry.label}</span>
                             {entry.hint ? (
-                              <span className="shrink-0 text-[10px] text-muted-foreground">{entry.hint}</span>
+                              <span className="shrink-0 text-3xs text-muted-foreground">{entry.hint}</span>
                             ) : null}
                           </button>
                         </li>
@@ -278,7 +278,7 @@ export function CommandPalette({
           )}
         </div>
 
-        <div className="flex items-center justify-between border-t border-border bg-panel-raised px-4 py-2 text-[11px] text-muted-foreground">
+        <div className="flex items-center justify-between border-t border-border bg-panel-raised px-4 py-2 text-2xs text-muted-foreground">
           <span>
             <kbd className="rounded border border-border bg-panel px-1 font-mono">↑↓</kbd> navigate
             <span className="mx-2">·</span>

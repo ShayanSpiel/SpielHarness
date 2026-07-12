@@ -25,6 +25,7 @@ import {
   saveHarnessFile,
   workspaceKindToFileType
 } from "./supabase-store";
+import { SIDEBAR } from "./layout-constants";
 
 function createId(prefix: string) {
   return `${prefix}_${crypto.randomUUID()}`;
@@ -52,25 +53,25 @@ type Store = WorkspaceState & {
   addItem: (item: Omit<WorkspaceItem, "id" | "updatedAt">) => WorkspaceItem;
   updateItem: (id: string, patch: Partial<WorkspaceItem>) => void;
   deleteItem: (id: string) => void;
-  addRole: (role: Omit<Role, "id" | "orgId">) => Role;
-  updateRole: (id: string, patch: Partial<Role>) => void;
+  addRole: (role: Omit<Role, "id" | "orgId">) => Promise<Role>;
+  updateRole: (id: string, patch: Partial<Role>) => Promise<void>;
   deleteRole: (id: string) => void;
-  addSkill: (skill: Omit<SkillDefinition, "id" | "updatedAt">) => SkillDefinition;
-  updateSkill: (id: string, patch: Partial<SkillDefinition>) => void;
+  addSkill: (skill: Omit<SkillDefinition, "id" | "updatedAt">) => Promise<SkillDefinition>;
+  updateSkill: (id: string, patch: Partial<SkillDefinition>) => Promise<void>;
   deleteSkill: (id: string) => void;
   addWorkstream: (workstream: Omit<WorkstreamDefinition, "id" | "updatedAt">) => WorkstreamDefinition;
-  updateWorkstream: (id: string, patch: Partial<WorkstreamDefinition>) => void;
+  updateWorkstream: (id: string, patch: Partial<WorkstreamDefinition>) => Promise<void>;
   deleteWorkstream: (id: string) => void;
   addEvalSuite: (suite: Omit<EvalSuite, "id" | "updatedAt">) => EvalSuite;
   updateEvalSuite: (id: string, patch: Partial<EvalSuite>) => void;
   deleteEvalSuite: (id: string) => void;
-  addEvalFile: (evalFile: Omit<EvalFile, "id" | "updatedAt" | "results">) => EvalFile;
-  updateEvalFile: (id: string, patch: Partial<EvalFile>) => void;
+  addEvalFile: (evalFile: Omit<EvalFile, "id" | "updatedAt" | "results">) => Promise<EvalFile>;
+  updateEvalFile: (id: string, patch: Partial<EvalFile>) => Promise<void>;
   deleteEvalFile: (id: string) => void;
   appendEvalResult: (evalId: string, result: EvalFileResult) => void;
-  addModel: (model: Omit<ProviderModel, "id">) => string;
-  updateModel: (id: string, patch: Partial<ProviderModel>) => void;
-  deleteModel: (id: string) => void;
+  addModel: (model: Omit<ProviderModel, "id">) => Promise<string>;
+  updateModel: (id: string, patch: Partial<ProviderModel>) => Promise<void>;
+  deleteModel: (id: string) => Promise<void>;
   addLibraryFolder: (name: string) => void;
   renameLibraryFolder: (oldName: string, newName: string) => void;
   deleteLibraryFolder: (name: string, moveItemsTo?: string | null) => void;
@@ -87,7 +88,12 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
   const reloadWorkspace = useCallback(() => {
     loadWorkspaceFromDb()
       .then((loaded) => {
-        setState(loaded);
+        setState((current) => ({
+          ...loaded,
+          inspectorOpen: current.inspectorOpen,
+          inspectorWidth: current.inspectorWidth,
+          activeChatId: current.activeChatId ?? loaded.activeChatId
+        }));
         setReady(true);
       })
       .catch((err) => {
@@ -95,6 +101,10 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
         setReady(true);
       });
   }, []);
+  const reportPersistenceError = useCallback((error: unknown) => {
+    console.error("Workspace persistence failed:", error);
+    reloadWorkspace();
+  }, [reloadWorkspace]);
 
   useEffect(() => {
     reloadWorkspace();
@@ -147,7 +157,7 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
         setState((current) => ({ ...current, inspectorOpen: open }));
       },
       setInspectorWidth(width: number) {
-        const next = Math.min(640, Math.max(280, Math.round(width)));
+        const next = Math.min(SIDEBAR.INSPECTOR.MAX, Math.max(SIDEBAR.INSPECTOR.MIN, Math.round(width)));
         setState((current) => ({ ...current, inspectorWidth: next }));
       },
       toggleInspector() {
@@ -156,7 +166,7 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
 
       createChat(title = "New chat"): Chat {
         const chat: Chat = {
-          id: createId("chat"),
+          id: crypto.randomUUID(),
           title,
           createdAt: nowIso(),
           updatedAt: nowIso(),
@@ -165,6 +175,11 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
           activeRoleIds: [],
           toolId: null
         };
+        fetch("/api/chats", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: chat.id, title: chat.title })
+        }).catch((error) => console.warn("Failed to persist chat:", error));
         setState((current) => ({
           ...current,
           chats: [chat, ...current.chats],
@@ -176,6 +191,11 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
         return chat;
       },
       deleteChat(id: string) {
+        fetch("/api/chats", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, archived: true })
+        }).catch((error) => console.warn("Failed to archive chat:", error));
         setState((current) => {
           const messages: Record<string, ChatMessage[]> = {};
           const events: Record<string, RunEvent[]> = {};
@@ -195,6 +215,11 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
         });
       },
       renameChat(id: string, title: string) {
+        fetch("/api/chats", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, title })
+        }).catch((error) => console.warn("Failed to rename chat:", error));
         setState((current) => ({
           ...current,
           chats: current.chats.map((chat) =>
@@ -286,7 +311,7 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
             ...created.metadata,
             seedFolder: created.folder
           }
-        }).catch(() => {});
+        }).catch(reportPersistenceError);
         return created;
       },
       updateItem(id: string, patch: Partial<WorkspaceItem>) {
@@ -303,17 +328,17 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
           ...current,
           items: current.items.filter((item) => item.id !== id)
         }));
-        deleteItemFromDb(id).catch(() => {});
+        deleteItemFromDb(id).catch(reportPersistenceError);
       },
 
       addRole(role: Omit<Role, "id" | "orgId">) {
         const id = crypto.randomUUID();
-        const created = { ...role, id, orgId: "demo-org" };
+        const created = { ...role, id, orgId: "" };
         setState((current) => ({
           ...current,
           roles: [...current.roles, created]
         }));
-        saveHarnessFile({
+        return saveHarnessFile({
           id,
           title: role.name,
           body: role.prompt,
@@ -330,8 +355,10 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
             outputTypes: role.outputArtifactTypes,
             contracts: role.metadata?.contracts
           }
-        }).catch(() => {});
-        return created;
+        }).then(() => created).catch((error) => {
+          reportPersistenceError(error);
+          throw error;
+        });
       },
       updateRole(id: string, patch: Partial<Role>) {
         const existing = state.roles.find((role) => role.id === id);
@@ -340,7 +367,7 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
           ...current,
           roles: current.roles.map((role) => (role.id === id ? { ...role, ...patch } : role))
         }));
-        saveHarnessFile({
+        return saveHarnessFile({
           id,
           title: next.name ?? "Untitled role",
           body: next.prompt ?? "",
@@ -357,14 +384,17 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
             outputTypes: next.outputArtifactTypes ?? [],
             contracts: next.metadata?.contracts
           }
-        }).catch(() => {});
+        }).then(() => undefined).catch((error) => {
+          reportPersistenceError(error);
+          throw error;
+        });
       },
       deleteRole(id: string) {
         setState((current) => ({
           ...current,
           roles: current.roles.filter((role) => role.id !== id)
         }));
-        deleteItemFromDb(id).catch(() => {});
+        deleteItemFromDb(id).catch(reportPersistenceError);
       },
 
       addSkill(skill: Omit<SkillDefinition, "id" | "updatedAt">) {
@@ -374,8 +404,9 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
           ...current,
           skills: [...current.skills, created]
         }));
-        saveHarnessFile({
+        return saveHarnessFile({
           id,
+          create: true,
           title: skill.name,
           body: skill.implementation,
           fileType: "harness_skill",
@@ -383,21 +414,20 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
           metadata: {
             skill: true,
             slug: skill.slug,
-            kind: skill.category === "evaluation" ? "eval" :
-                  skill.category === "retrieval" ? "knowledge_search" :
-                  skill.category === "search" || skill.category === "publishing" ? "http" :
-                  skill.category === "custom" ? "human_input" : "llm_call",
+            kind: skill.kind,
             description: skill.description,
             auth: skill.auth,
             sideEffect: skill.sideEffect,
             inputSchema: skill.inputSchema,
             outputSchema: skill.outputSchema,
-            category: skill.category,
+            bindings: skill.bindings,
             evalRubrics: skill.evalRubrics,
             overallThreshold: skill.overallThreshold
           }
-        }).catch(() => {});
-        return created;
+        }).then(() => created).catch((error) => {
+          reportPersistenceError(error);
+          throw error;
+        });
       },
       updateSkill(id: string, patch: Partial<SkillDefinition>) {
         const existing = state.skills.find((skill) => skill.id === id);
@@ -408,7 +438,7 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
             skill.id === id ? { ...skill, ...patch, updatedAt: nowIso() } : skill
           )
         }));
-        saveHarnessFile({
+        return saveHarnessFile({
           id,
           title: next.name ?? "Untitled skill",
           body: next.implementation ?? "",
@@ -417,20 +447,20 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
           metadata: {
             skill: true,
             slug: next.slug,
-            kind: next.category === "evaluation" ? "eval" :
-                  next.category === "retrieval" ? "knowledge_search" :
-                  next.category === "search" || next.category === "publishing" ? "http" :
-                  next.category === "custom" ? "human_input" : "llm_call",
+            kind: next.kind ?? "llm_call",
             description: next.description ?? "",
             auth: next.auth ?? "none",
             sideEffect: next.sideEffect ?? "none",
             inputSchema: next.inputSchema ?? "{}",
             outputSchema: next.outputSchema ?? "{}",
-            category: next.category ?? "custom",
+            bindings: next.bindings ?? [],
             evalRubrics: next.evalRubrics,
             overallThreshold: next.overallThreshold
           }
-        }).catch(() => {});
+        }).then(() => undefined).catch((error) => {
+          reportPersistenceError(error);
+          throw error;
+        });
       },
       deleteSkill(id: string) {
         setState((current) => ({
@@ -448,7 +478,7 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
             }))
           }))
         }));
-        deleteItemFromDb(id).catch(() => {});
+        deleteItemFromDb(id).catch(reportPersistenceError);
       },
 
       addWorkstream(workstream: Omit<WorkstreamDefinition, "id" | "updatedAt">) {
@@ -470,7 +500,7 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
             nodes: workstream.nodes,
             edges: workstream.edges
           }
-        }).catch(() => {});
+        }).catch(reportPersistenceError);
         return created;
       },
       updateWorkstream(id: string, patch: Partial<WorkstreamDefinition>) {
@@ -482,7 +512,7 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
             ws.id === id ? { ...ws, ...patch, updatedAt: nowIso() } : ws
           )
         }));
-        saveHarnessFile({
+        return saveHarnessFile({
           id,
           title: next.title ?? "Untitled workflow",
           body: next.description ?? "",
@@ -494,14 +524,17 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
             nodes: next.nodes ?? [],
             edges: next.edges ?? []
           }
-        }).catch(() => {});
+        }).then(() => undefined).catch((error) => {
+          reportPersistenceError(error);
+          throw error;
+        });
       },
       deleteWorkstream(id: string) {
         setState((current) => ({
           ...current,
           workstreams: current.workstreams.filter((ws) => ws.id !== id)
         }));
-        deleteItemFromDb(id).catch(() => {});
+        deleteItemFromDb(id).catch(reportPersistenceError);
       },
 
       addEvalSuite(suite: Omit<EvalSuite, "id" | "updatedAt">) {
@@ -533,7 +566,7 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
           ...current,
           evalFiles: [...current.evalFiles, created]
         }));
-        saveHarnessFile({
+        return saveHarnessFile({
           id: created.id,
           title: created.name,
           body: created.description,
@@ -548,8 +581,10 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
             overallThreshold: created.overallThreshold,
             loopConfig: created.loopConfig
           }
-        }).catch(() => {});
-        return created;
+        }).then(() => created).catch((error) => {
+          reportPersistenceError(error);
+          throw error;
+        });
       },
       updateEvalFile(id: string, patch: Partial<EvalFile>) {
         const existing = state.evalFiles.find((evalFile) => evalFile.id === id);
@@ -560,7 +595,7 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
             ef.id === id ? { ...ef, ...patch, updatedAt: nowIso() } : ef
           )
         }));
-        saveHarnessFile({
+        return saveHarnessFile({
           id,
           title: next.name ?? "Untitled eval",
           body: next.description ?? "",
@@ -580,14 +615,17 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
               retryDelayMs: 0
             }
           }
-        }).catch(() => {});
+        }).then(() => undefined).catch((error) => {
+          reportPersistenceError(error);
+          throw error;
+        });
       },
       deleteEvalFile(id: string) {
         setState((current) => ({
           ...current,
           evalFiles: current.evalFiles.filter((ef) => ef.id !== id)
         }));
-        deleteItemFromDb(id).catch(() => {});
+        deleteItemFromDb(id).catch(reportPersistenceError);
       },
       appendEvalResult(evalId: string, result: EvalFileResult) {
         setState((current) => ({
@@ -600,27 +638,46 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
         }));
       },
 
-      addModel(model: Omit<ProviderModel, "id">) {
-        const id = createId("model");
+      async addModel(model: Omit<ProviderModel, "id">) {
+        const id = crypto.randomUUID();
         setState((current) => ({
           ...current,
           models: [...current.models, { ...model, id }]
         }));
+        const response = await fetch("/api/models", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...model, id })
+        });
+        if (!response.ok) {
+          reloadWorkspace();
+          throw new Error(`Model save failed (${response.status})`);
+        }
         return id;
       },
-      updateModel(id: string, patch: Partial<ProviderModel>) {
+      async updateModel(id: string, patch: Partial<ProviderModel>) {
         setState((current) => ({
           ...current,
           models: current.models.map((model) =>
             model.id === id ? { ...model, ...patch } : model
           )
         }));
+        const response = await fetch("/api/models", {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...patch, id })
+        });
+        if (!response.ok) {
+          reloadWorkspace();
+          throw new Error(`Model update failed (${response.status})`);
+        }
       },
-      deleteModel(id: string) {
+      async deleteModel(id: string) {
         setState((current) => ({
           ...current,
           models: current.models.filter((model) => model.id !== id)
         }));
+        const response = await fetch(`/api/models?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (!response.ok) {
+          reloadWorkspace();
+          throw new Error(`Model delete failed (${response.status})`);
+        }
       },
 
       addLibraryFolder(name: string) {
@@ -665,7 +722,7 @@ export function WorkspaceStoreProvider({ children }: { children: ReactNode }) {
       }
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state, debouncedSaveItem]
+    [state, debouncedSaveItem, reportPersistenceError, reloadWorkspace]
   );
 
   return createElement(WorkspaceStoreContext.Provider, { value: store }, children);

@@ -7,7 +7,7 @@ import { useRunContext, type ContextItem, type ContextItemKind } from "../../lib
 
 const ICONS: Record<ContextItemKind, ReactNode> = {
   role: <Icon name={CONTEXT_KIND_ICONS.role} size={12} />,
-  tool: <Icon name={CONTEXT_KIND_ICONS.tool} size={12} />,
+  skill: <Icon name={CONTEXT_KIND_ICONS.skill} size={12} />,
   library: <Icon name={CONTEXT_KIND_ICONS.library} size={12} />,
   workstream: <Icon name={CONTEXT_KIND_ICONS.workstream} size={12} />,
   strategy: <Icon name={CONTEXT_KIND_ICONS.strategy} size={12} />,

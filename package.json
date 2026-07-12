@@ -12,7 +12,8 @@
     "dev": "npm run dev --workspace @spielos/web",
     "build": "npm run build --workspace @spielos/web",
     "lint": "npm run lint --workspace @spielos/web",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
   "devDependencies": {
     "typescript": "^6.0.0"

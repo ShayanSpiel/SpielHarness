@@ -8,6 +8,7 @@ import {
   EmptyState,
   Field,
   Input,
+  ListItem,
   Panel,
   Pill,
   Select,
@@ -21,7 +22,7 @@ import {
   Textarea,
   Tooltip
 } from "@spielos/design-system";
-import { cn } from "@spielos/design-system";
+import { SIDEBAR } from "../lib/layout-constants";
 import { useWorkspaceStore } from "../lib/use-workspace-store";
 import type {
   WorkspaceItem,
@@ -140,7 +141,7 @@ export function ResourcePage({
 
   return (
     <div className="flex h-full min-h-0">
-      <aside className="flex w-72 shrink-0 flex-col border-r border-border bg-background">
+      <aside className={`flex ${SIDEBAR.LIST_NARROW} shrink-0 flex-col border-r border-border bg-background`}>
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
           <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{title}</span>
           <Pill tone="default" className="ml-auto">
@@ -152,7 +153,7 @@ export function ResourcePage({
           <div className="relative">
             <Icon name="search" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" size={14} />
             <Input
-              className="h-7 pl-7 text-xs"
+              className="h-8 pl-7"
               onChange={(event) => setSearch(event.target.value)}
               placeholder={`Search ${title.toLowerCase()}`}
               value={search}
@@ -164,11 +165,11 @@ export function ResourcePage({
         <div className="flex-1 overflow-y-auto p-2">
           <Button
             className="mb-2 w-full"
+            icon="plus"
             onClick={() => selectItem(null)}
             size="md"
             variant="outline"
           >
-            <Icon name="plus" size={14} />
             New {newLabel ?? "item"}
           </Button>
 
@@ -176,58 +177,43 @@ export function ResourcePage({
             <p className="px-2 py-6 text-center text-xs text-muted-foreground">No items yet.</p>
           ) : (
             <ul className="space-y-1">
-              {visibleItems.map((item) => {
-                const active = item.id === selectedId;
-                return (
-                  <li key={item.id}>
-                    <button
-                      className={cn(
-                        "group flex w-full items-start gap-2 rounded-md border px-2 py-2 text-left transition-colors duration-[var(--duration)]",
-                        active
-                          ? "border-border-strong bg-selected"
-                          : "border-transparent hover:border-border hover:bg-hover"
-                      )}
-                      onClick={() => selectItem(item)}
-                      type="button"
+              {visibleItems.map((item) => (
+                <ListItem
+                  active={item.id === selectedId}
+                  description={item.body || "Empty"}
+                  footnotes={
+                    <>
+                      {item.folder ? <Pill>{item.folder}</Pill> : null}
+                      <span className="ml-auto">{relTime(item.updatedAt)}</span>
+                    </>
+                  }
+                  key={item.id}
+                  metadata={
+                    <Pill
+                      tone={
+                        item.status === "active"
+                          ? "success"
+                          : item.status === "archived"
+                            ? "warning"
+                            : "default"
+                      }
+                      className="shrink-0 text-3xs"
                     >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate text-sm font-medium text-foreground">
-                            {item.title}
-                          </span>
-                          <Pill
-                            tone={
-                              item.status === "active"
-                                ? "success"
-                                : item.status === "archived"
-                                  ? "warning"
-                                  : "default"
-                            }
-                            className="shrink-0 text-[10px]"
-                          >
-                            {item.status}
-                          </Pill>
-                        </div>
-                        <p className="mt-0.5 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
-                          {item.body || "Empty"}
-                        </p>
-                        <div className="mt-1.5 flex items-center gap-2 text-[10px] text-muted-foreground">
-                          {item.folder ? <Pill>{item.folder}</Pill> : null}
-                          <span className="ml-auto">{relTime(item.updatedAt)}</span>
-                        </div>
-                      </div>
-                    </button>
-                  </li>
-                );
-              })}
+                      {item.status}
+                    </Pill>
+                  }
+                  onClick={() => selectItem(item)}
+                  title={item.title}
+                />
+              ))}
             </ul>
           )}
         </div>
       </aside>
 
       <section className="min-w-0 flex-1 overflow-y-auto bg-background">
-        <div className="mx-auto w-full max-w-3xl px-6 py-6">
-          <Panel className="p-5">
+        <div className="mx-auto w-full max-w-3xl px-4 py-3">
+          <Panel>
             <div className="mb-4 flex items-center gap-2">
               <Link className="text-muted-foreground hover:text-foreground" href="/">
                 <Icon name="arrow-left" size={16} />
@@ -244,17 +230,15 @@ export function ResourcePage({
                   <Tooltip content="Delete" side="bottom">
                     <Button
                       aria-label="Delete"
+                      icon="trash"
                       onClick={remove}
-                      size="icon"
+                      size="icon-sm"
                       variant="ghost"
-                    >
-                       <Icon name="trash" size={14} />
-                    </Button>
+                    />
                   </Tooltip>
                 ) : null}
-                <Button onClick={save} size="md">
-                   <Icon name="save" size={14} />
-                   {isNew ? "Create" : "Save"}
+                <Button icon="save" onClick={save} size="md">
+                  {isNew ? "Create" : "Save"}
                 </Button>
               </div>
             </div>
@@ -317,7 +301,7 @@ export function ResourcePage({
         </div>
       </section>
 
-      {inspector ? <aside className="w-80 shrink-0 border-l border-border bg-panel">{inspector}</aside> : null}
+      {inspector ? <aside className={`${SIDEBAR.LIST_WIDTH} shrink-0 border-l border-border bg-panel`}>{inspector}</aside> : null}
     </div>
   );
 }

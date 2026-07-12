@@ -23,6 +23,7 @@ import {
 import { Icon } from "@spielos/design-system/components";
 import { useWorkspaceStore } from "../lib/use-workspace-store";
 import type { WorkspaceItem, WorkspaceKind } from "../lib/workspace-data";
+import { SIDEBAR } from "../lib/layout-constants";
 
 type FolderFileBrowserProps = {
   title: string;
@@ -280,7 +281,7 @@ export function FolderFileBrowser({
 
   return (
     <div className="flex min-h-0 flex-1">
-      <aside className="flex w-80 shrink-0 flex-col border-r border-border bg-background">
+      <aside className={`flex ${SIDEBAR.LIST_WIDTH} shrink-0 flex-col border-r border-border bg-background`}>
         <div className="border-b border-border p-3 md:hidden">
           <SearchInput placeholder={searchPlaceholder} query={query} setQuery={setQuery} />
         </div>
@@ -393,7 +394,7 @@ export function FolderFileBrowser({
                         ) : (
                           <span className="min-w-0 flex-1 truncate">{folder}</span>
                         )}
-                        <span className="text-[10px] tabular-nums text-muted-foreground">
+                        <span className="text-3xs tabular-nums text-muted-foreground">
                           {files.length}
                         </span>
                       </button>
@@ -406,7 +407,7 @@ export function FolderFileBrowser({
                     {expanded ? (
                       <ul className="ml-5 mt-0.5 grid gap-0.5 border-l border-border pl-2">
                         {files.length === 0 ? (
-                          <li className="px-2 py-1 text-[11px] text-muted-foreground">Empty</li>
+                          <li className="px-2 py-1 text-2xs text-muted-foreground">Empty</li>
                         ) : (
                           files.map((item) => (
                             <FileTreeRow
@@ -701,7 +702,7 @@ function NativeSelect({
     <div className={cn("relative", className)}>
       <select
         aria-label={ariaLabel}
-        className="h-8 w-full appearance-none rounded-md border border-border bg-input px-2.5 pr-8 text-sm text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/30"
+        className="h-8 w-full appearance-none rounded-md border border-border bg-input px-2.5 pr-8 text-sm text-foreground outline-none transition-colors focus-visible:border-[var(--ring)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]/30"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >

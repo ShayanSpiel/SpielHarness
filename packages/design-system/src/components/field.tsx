@@ -19,7 +19,7 @@ export function Kbd({ className, ...props }: HTMLAttributes<HTMLElement>) {
     <Slot>
       <kbd
         className={cn(
-          "inline-flex h-5 min-w-5 items-center justify-center rounded border border-border bg-panel-raised px-1 font-mono text-xs text-muted-foreground",
+          "inline-flex h-5 min-w-5 items-center justify-center rounded-sm border border-border bg-panel-raised px-1 font-mono text-xs text-muted-foreground",
           className
         )}
         {...props}
