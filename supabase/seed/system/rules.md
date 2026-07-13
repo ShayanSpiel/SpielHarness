@@ -1,22 +1,23 @@
 # Pipeline Rules
 
-## Draft platforms
+## Platform limits
 - x: max_chars 280
 - linkedin: max_chars 3000
 - blog: max_words 2500
+- email: max_chars 5000
 
 ## Banned phrases
 - "Like if you agree"
 - "Share if this resonates"
 - "Follow for more"
+- "Consistency is king"
 
 ## Banned patterns
-- em dashes, TOFU, MOFU, BOFU, S[0-9]+, ICP, core_insight
+- em dashes, TOFU, MOFU, BOFU, S[0-9]+, ICP (to label in post), core_insight
 
-## Required frontmatter (11 fields)
+## Required frontmatter
 title, created, platform, status, source, reader, pain, belief, point, meaning, proof
 
-## Grounding config
-- banned_words: test, tests, adapter, doctor, pipeline, shim, vault, IDE, git
-- icp_markers: session, min, avg, duration, visitor, traffic, conversion, engagement
-- point_offer_overlap_min: 0.15
+## Eval thresholds
+- Pipeline gates: 75% overall to pass
+- Grounding check: 75% overall to pass

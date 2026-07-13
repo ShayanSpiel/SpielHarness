@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
+import { upsertConnection } from "@spielos/db";
 import { encryptConnectionSecret } from "../../../../../lib/connection-secrets";
 import { loadIntegrationCatalog } from "../../../../../lib/integration-catalog";
-import { getOrg, requireSupabase } from "../../../../../lib/server";
+import { getOrg } from "../../../../../lib/server";
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
@@ -57,21 +58,17 @@ export async function GET(request: Request) {
     const preset = (await loadIntegrationCatalog()).find((item) => item.id === integration);
     if (!preset) throw new Error("Unknown Google integration preset.");
     const org = await getOrg();
-    const supabase = requireSupabase(org);
     const account = profile.email ?? "Google account";
     const credential = encryptConnectionSecret({ provider: "google", accessToken: tokens.access_token, refreshToken: tokens.refresh_token, expiresAt: Date.now() + (tokens.expires_in ?? 3600) * 1000, scope: tokens.scope });
     const connectionName = `${preset.name} — ${account}`;
-    const { error: connectionError } = await supabase.from("connections").upsert({
-      org_id: org.orgId,
+    await upsertConnection(org.sql, org.orgId, {
       name: connectionName,
       kind: "oauth",
       status: "configured",
       config: { presetId: preset.id, icon: preset.icon, logo: preset.logo, description: preset.description, account, oauthCredential: credential },
-      operations: preset.operations,
-      enabled: true,
-      deleted_at: null
-    }, { onConflict: "org_id,name" });
-    if (connectionError) throw connectionError;
+      operations: preset.operations as unknown as Array<Record<string, unknown>>,
+      enabled: true
+    });
 
     const response = NextResponse.redirect(`${getBaseUrl()}/settings?tab=connections&connected=${encodeURIComponent(preset.name)}`);
     response.cookies.delete("google_oauth_state");

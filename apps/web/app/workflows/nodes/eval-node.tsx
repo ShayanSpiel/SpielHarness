@@ -11,7 +11,7 @@ function EvalNodeComponent({ data }: NodeProps<Node<WorkflowNodeData>>) {
   return (
     <div
       className={cn(
-        "w-52 rounded-md border bg-panel shadow-sm",
+        "w-52 rounded-md border bg-panel shadow-panel",
         selected
           ? "border-[var(--ring)] border-2 shadow-[var(--shadow-popover)]"
           : "border-border",
@@ -30,8 +30,8 @@ function EvalNodeComponent({ data }: NodeProps<Node<WorkflowNodeData>>) {
         <Pill>QA</Pill>
       </div>
       <div className="space-y-1 px-2 py-2 text-2xs text-muted-foreground select-none">
-        <div className="truncate">in: {node.input}</div>
-        <div className="truncate">out: {node.output}</div>
+        <div className="truncate">in: {node.inputContract}</div>
+        <div className="truncate">out: {node.outputContract}</div>
         <div>
           {role ?? "Eval"} - {node.fileIds.length} files
         </div>
@@ -45,9 +45,7 @@ function EvalNodeComponent({ data }: NodeProps<Node<WorkflowNodeData>>) {
           <Icon name="workflow-alt" size={12} />
           Connect
         </button>
-        <Button aria-label="Delete step" className="h-6 w-6" onClick={(e) => { e.stopPropagation(); onDelete(node.id); }} size="icon" variant="ghost">
-          <Icon name="trash" size={12} />
-        </Button>
+        <Button aria-label="Delete step" className="h-6 w-6" icon="trash" onClick={(e) => { e.stopPropagation(); onDelete(node.id); }} size="icon" variant="ghost" />
       </div>
       <Handle type="source" position={Position.Right} className="!h-5 !w-5 !border-2 !border-border !bg-panel-strong !flex !items-center !justify-center">
         {hasOutgoing ? <Icon name="chevron-right" size={10} /> : null}

@@ -7,7 +7,7 @@ import { buildObjectReferences, mentionText, type ObjectReference } from "../lib
 import { useWorkspaceStore } from "../lib/use-workspace-store";
 import { MentionDropdown } from "./mention-dropdown";
 
-function getTextAroundCursor(value: string, cursorPos: number) {
+export function getTextAroundCursor(value: string, cursorPos: number) {
   const before = value.slice(0, cursorPos);
   const atIndex = before.lastIndexOf("@");
   if (atIndex === -1) return null;
@@ -68,6 +68,7 @@ export function MentionTextarea({
   placeholder,
   className,
   disabled,
+  density = "editor",
   mono,
   rows,
   onKeyDown,
@@ -78,13 +79,23 @@ export function MentionTextarea({
   placeholder?: string;
   className?: string;
   disabled?: boolean;
+  density?: "editor" | "field";
   mono?: boolean;
   rows?: number;
   onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   [key: string]: unknown;
 }) {
   const store = useWorkspaceStore();
-  const allItems = useMemo(() => buildObjectReferences(store), [store]);
+  const allItems = useMemo(
+    () => buildObjectReferences({
+      items: store.items,
+      roles: store.roles,
+      skills: store.skills,
+      evalFiles: store.evalFiles,
+      workstreams: store.workflows
+    }),
+    [store.items, store.roles, store.skills, store.evalFiles, store.workflows]
+  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const portalRef = useRef<HTMLDivElement>(null);
   const [mentionState, setMentionState] = useState<{
@@ -198,7 +209,10 @@ export function MentionTextarea({
       <textarea
         ref={textareaRef}
         className={cn(
-          "h-full w-full resize-none border-0 bg-background px-6 py-6 text-[13px] leading-6 text-foreground outline-none focus-visible:ring-0",
+          "h-full w-full resize-none border-0 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-0 disabled:pointer-events-none disabled:bg-[var(--disabled-surface)] disabled:text-[var(--disabled-foreground)]",
+          density === "editor"
+            ? "bg-background px-6 py-6 leading-6"
+            : "min-h-8 bg-transparent px-3 py-2 leading-relaxed",
           mono && "font-mono"
         )}
         disabled={disabled}

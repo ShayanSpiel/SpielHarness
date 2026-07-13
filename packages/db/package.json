@@ -7,9 +7,15 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./migrations/*": "./supabase/migrations/*"
+    "./migrations/*": "./migrations/*"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.45.4"
+    "@supabase/ssr": "^0.6.1",
+    "@supabase/supabase-js": "^2.110.2",
+    "pg": "^8.22.0",
+    "postgres": "^3.4.5"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.20.0"
   }
 }

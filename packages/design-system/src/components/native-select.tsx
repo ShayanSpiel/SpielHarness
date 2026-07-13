@@ -21,7 +21,7 @@ export const NativeSelect = forwardRef<HTMLSelectElement, NativeSelectProps>(
       <div className={cn("relative", className)}>
         <select
           aria-label={ariaLabel}
-          className="h-8 w-full appearance-none rounded-md border border-border bg-input px-2.5 pr-8 text-sm text-foreground outline-none transition-colors duration-[var(--duration)] focus-visible:border-[var(--ring)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]/30"
+          className="h-8 w-full appearance-none rounded-md border border-border bg-input px-2.5 pr-8 text-sm text-foreground outline-none transition-colors duration-[var(--duration)] focus-visible:border-[var(--focus-border)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:pointer-events-none disabled:border-[var(--disabled-border)] disabled:bg-[var(--disabled-surface)] disabled:text-[var(--disabled-foreground)]"
           onChange={(event) => onChange(event.target.value)}
           ref={ref}
           value={value}

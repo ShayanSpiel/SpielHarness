@@ -1,0 +1,77 @@
+{
+  "title": "Gmail Newsletter Draft",
+  "description": "Reads email threads from Gmail as source material, researches the topic, drafts a newsletter, and sends it after approval. Exercises Gmail read/draft/send and DuckDuckGo search.",
+  "nodes": [
+    {
+      "id": "ask-source",
+      "title": "Select Email Threads",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Ask the user: which Gmail threads should we use as source material? Suggest: (A) Search for recent customer emails, (B) Look for specific topic threads, (C) Let me scan your inbox for content signals. Also ask: how many threads to review?",
+      "input": "user_request",
+      "output": "search_params",
+      "x": 80,
+      "y": 200
+    },
+    {
+      "id": "gmail-read",
+      "title": "Read Email Threads",
+      "roleSlug": "gmail-agent",
+      "skillSlugs": ["gmail.search", "gmail.read"],
+      "prompt": "Search Gmail for the relevant threads. Read the full content of each thread. Extract: topics discussed, pain points mentioned, questions asked, and content opportunities.",
+      "input": "search_params",
+      "output": "email_signals",
+      "x": 340,
+      "y": 200
+    },
+    {
+      "id": "research",
+      "title": "Research Topic",
+      "roleSlug": "researcher",
+      "skillSlugs": ["duckduckgo.search", "knowledge.search"],
+      "prompt": "Research the topic signals from the email threads. Find current trends, data points, and relevant context to enrich the newsletter.",
+      "input": "email_signals",
+      "output": "research_output",
+      "x": 600,
+      "y": 200
+    },
+    {
+      "id": "write",
+      "title": "Write Newsletter",
+      "roleSlug": "writer",
+      "skillSlugs": ["llm.generate", "template.apply", "voice.match"],
+      "prompt": "Write a newsletter using the email-newsletter template. The hook comes from the email thread signals. Use research for proof. Apply voice match.",
+      "input": "research_output",
+      "output": "newsletter_draft",
+      "x": 860,
+      "y": 200
+    },
+    {
+      "id": "ask-approve",
+      "title": "Approve Newsletter",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Show the newsletter draft. Ask: (A) Send via Gmail now, (B) Save as draft in Gmail for manual review, (C) Edit and resend, (D) Reject.",
+      "input": "newsletter_draft",
+      "output": "approval",
+      "x": 1120,
+      "y": 200
+    },
+    {
+      "id": "gmail-send",
+      "title": "Send or Draft",
+      "roleSlug": "gmail-agent",
+      "skillSlugs": ["gmail.draft", "gmail.send"],
+      "prompt": "If approved to send: create the draft and send. If approved as draft: create the draft only and mark it for manual review. Return status.",
+      "input": "approval",
+      "output": "send_status",
+      "x": 1380,
+      "y": 200
+    }
+  ],
+  "edges": [
+    { "id": "ask-gmail", "source": "ask-source", "target": "gmail-read" },
+    { "id": "gmail-research", "source": "gmail-read", "target": "research" },
+    { "id": "research-write", "source": "research", "target": "write" },
+    { "id": "write-approve", "source": "write", "target": "ask-approve" },
+    { "id": "approve-send", "source": "ask-approve", "target": "gmail-send" }
+  ]
+}

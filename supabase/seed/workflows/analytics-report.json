@@ -1,0 +1,64 @@
+{
+  "title": "Analytics Report",
+  "description": "Reads Google Analytics data and creates a structured report with insights and recommendations.",
+  "nodes": [
+    {
+      "id": "ask-report",
+      "title": "Report Details",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Ask the user: what report do they need? Suggest: (A) Monthly traffic and engagement report, (B) Content performance (top posts), (C) Traffic source analysis, (D) Custom (let them describe). Also ask for the date range.",
+      "input": "user_request",
+      "output": "report_params",
+      "x": 80,
+      "y": 200
+    },
+    {
+      "id": "analytics",
+      "title": "Read Analytics",
+      "roleSlug": "analyst",
+      "skillSlugs": ["analytics.report", "knowledge.search"],
+      "prompt": "Read GA4 data for the requested report type and date range. Get traffic, engagement, source, and conversion metrics. Cross-reference with past reports.",
+      "input": "report_params",
+      "output": "analytics_data",
+      "x": 340,
+      "y": 200
+    },
+    {
+      "id": "analyze",
+      "title": "Analyze & Report",
+      "roleSlug": "analyst",
+      "skillSlugs": ["llm.generate"],
+      "prompt": "Write a structured report: summary, traffic analysis, content performance, recommendations, open questions. Use the analytics data. Label all metrics with source and date range.",
+      "input": "analytics_data",
+      "output": "report_draft",
+      "x": 600,
+      "y": 200
+    },
+    {
+      "id": "ask-review",
+      "title": "Review Report",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Show the report draft to the user. Ask: (A) Approve and save as file, (B) Request revisions (let them specify), (C) Export differently.",
+      "input": "report_draft",
+      "output": "review_decision",
+      "x": 860,
+      "y": 200
+    },
+    {
+      "id": "save",
+      "title": "Save Report",
+      "skillSlugs": ["llm.generate"],
+      "prompt": "Save the approved report as a structured file with metadata. Include date range, report type, and key findings summary.",
+      "input": "review_decision",
+      "output": "saved_report",
+      "x": 1120,
+      "y": 200
+    }
+  ],
+  "edges": [
+    { "id": "ask-analytics", "source": "ask-report", "target": "analytics" },
+    { "id": "analytics-report", "source": "analytics", "target": "analyze" },
+    { "id": "report-review", "source": "analyze", "target": "ask-review" },
+    { "id": "review-save", "source": "ask-review", "target": "save" }
+  ]
+}

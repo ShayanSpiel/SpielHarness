@@ -1,0 +1,100 @@
+{
+  "title": "Weekly Content Calendar",
+  "description": "Plan 5+ posts for the week across X, LinkedIn, and Blog with human review at topic selection and final approval.",
+  "nodes": [
+    {
+      "id": "ask-plan",
+      "title": "Weekly Goals",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Ask the user: what are the themes and goals for this week's content? Suggest: (A) Promote a specific offer or launch, (B) Build authority on a topic, (C) Engage with a trending conversation, (D) Mix of all. Also ask how many posts per platform.",
+      "input": "user_request",
+      "output": "plan_params",
+      "x": 80,
+      "y": 200
+    },
+    {
+      "id": "research",
+      "title": "Weekly Research",
+      "roleSlug": "researcher",
+      "skillSlugs": ["duckduckgo.search", "knowledge.search"],
+      "prompt": "Research trending topics, audience conversations, and competitor posts for the week's themes. Find 3-5 angles per platform.",
+      "input": "plan_params",
+      "output": "research_output",
+      "x": 340,
+      "y": 200
+    },
+    {
+      "id": "strategy",
+      "title": "Draft Calendar",
+      "roleSlug": "strategist",
+      "skillSlugs": ["llm.generate", "content-calendar"],
+      "prompt": "Build a weekly content calendar with 5+ posts across platforms. Each post needs: platform, topic, hook angle, brief 1-liner. Space same-platform posts 48h apart. Mix formats (hook, narrative, proof, CTA).",
+      "input": "research_output",
+      "output": "calendar_draft",
+      "x": 600,
+      "y": 200
+    },
+    {
+      "id": "ask-approve",
+      "title": "Approve Calendar",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Show the weekly calendar to the user. List each planned post with platform and topic. Ask: (A) Approve all and proceed to writing, (B) Edit specific posts, (C) Reject and restart planning.",
+      "input": "calendar_draft",
+      "output": "approval",
+      "x": 860,
+      "y": 200
+    },
+    {
+      "id": "write",
+      "title": "Write All Posts",
+      "roleSlug": "writer",
+      "skillSlugs": ["llm.generate", "template.apply", "voice.match"],
+      "prompt": "Write each approved post using the appropriate platform template. Run voice match first. Apply full frontmatter.",
+      "input": "approval",
+      "output": "all_drafts",
+      "x": 1120,
+      "y": 200
+    },
+    {
+      "id": "edit",
+      "title": "Edit All Drafts",
+      "roleSlug": "editor",
+      "skillSlugs": ["llm.generate", "pipeline-gate-evaluator"],
+      "prompt": "Run pipeline gates on every draft. Flag any that fail and return fix notes. Pass the rest as ready.",
+      "input": "all_drafts",
+      "output": "ready_drafts",
+      "x": 1380,
+      "y": 200
+    },
+    {
+      "id": "ask-publish",
+      "title": "Schedule or Publish",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Show all ready drafts grouped by platform. Ask: (A) Publish all now to their platforms, (B) Schedule throughout the week, (C) Publish some now, hold others, (D) Hold all for manual review.",
+      "input": "ready_drafts",
+      "output": "final_decision",
+      "x": 1640,
+      "y": 200
+    },
+    {
+      "id": "publish",
+      "title": "Dispatch",
+      "roleSlug": "publisher",
+      "skillSlugs": ["publish-package-builder"],
+      "prompt": "Build publish packages for approved drafts and dispatch.",
+      "input": "final_decision",
+      "output": "publish_package",
+      "x": 1900,
+      "y": 200
+    }
+  ],
+  "edges": [
+    { "id": "goals-research", "source": "ask-plan", "target": "research" },
+    { "id": "research-strategy", "source": "research", "target": "strategy" },
+    { "id": "strategy-approve", "source": "strategy", "target": "ask-approve" },
+    { "id": "approve-write", "source": "ask-approve", "target": "write" },
+    { "id": "write-edit", "source": "write", "target": "edit" },
+    { "id": "edit-publishask", "source": "edit", "target": "ask-publish" },
+    { "id": "publishask-dispatch", "source": "ask-publish", "target": "publish" }
+  ]
+}

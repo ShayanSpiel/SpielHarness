@@ -1,39 +1,76 @@
 "use client";
 
-import { useMemo, useState, useEffect, type KeyboardEvent } from "react";
-import { Button, EmptyState, Field, Input, NativeSelect, PageHeader, Pill, ToggleRow, Textarea, Tooltip, cn, toast } from "@spielos/design-system";
+import { useMemo, useState, useEffect, useCallback, type KeyboardEvent } from "react";
+import { Button, ConfirmDialog, EmptyState, Field, Input, Inspector, InspectorBody, InspectorEmptyState, InspectorHeader, InspectorSection, ListItem, NativeSelect, PageHeader, Pill, ToggleRow, Textarea, Tooltip, cn, toast } from "@spielos/design-system";
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { AppShell } from "../../components/app-shell";
 import { SidebarListPanel } from "../../components/sidebar-list-panel";
 import { MentionTextarea } from "../../components/mention-textarea";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
+import type { EvalRule } from "@spielos/core";
 
-type Rubric = {
+type EvalFileResult = {
   id: string;
-  label: string;
+  evalId: string;
+  runAt: string;
+  targetContent: string;
+  rubricScores: Record<string, { score: number; passed: boolean; notes: string }>;
+  overallScore: number;
+  passed: boolean;
+  findings: Array<{ label: string; score: number; notes: string }>;
+  recommendations: string[];
+};
+
+type Rubric = EvalRule & {
   description: string;
-  type: "contains" | "missing" | "min_words" | "max_words" | "regex" | "llm_judge";
-  value: string;
-  weight: number;
   passThreshold: number;
 };
 
-function blankEvalFile(): Omit<import("../../lib/workspace-data").EvalFile, "id" | "updatedAt" | "results"> {
+type DraftEval = {
+  name: string;
+  description: string;
+  rules: Rubric[];
+  overallThreshold: number;
+  loopConfig: {
+    enabled: boolean;
+    maxAttempts: number;
+    breakCondition: "on_pass" | "on_fail";
+    retryDelayMs: number;
+    evalId: string | null;
+  };
+  status: "draft" | "active" | "archived" | "deleted";
+};
+
+function toRubric(rule: EvalRule): Rubric {
+  return { ...rule, description: "", passThreshold: 75 };
+}
+
+function fromStore(ef: import("../../lib/workspace-data").EvalFile): DraftEval {
+  return {
+    name: ef.name,
+    description: ef.description,
+    rules: ef.rules.map(toRubric),
+    overallThreshold: ef.overallThreshold,
+    loopConfig: ef.loopConfig,
+    status: ef.status
+  };
+}
+
+function blankEvalFile(): DraftEval {
   return {
     name: "New Eval",
     description: "Describe what this eval checks for.",
-    targetType: "draft",
-    targetId: "",
-    rubrics: [],
+    rules: [] as Rubric[],
     overallThreshold: 70,
     loopConfig: {
       enabled: false,
       maxAttempts: 3,
-      breakCondition: "on_pass",
-      retryDelayMs: 0
+      breakCondition: "on_pass" as const,
+      retryDelayMs: 0,
+      evalId: null as string | null
     },
-    status: "draft"
+    status: "draft" as const
   };
 }
 
@@ -98,20 +135,23 @@ const RUBRIC_TYPES = (Object.keys(CHECK_TYPES) as Rubric["type"][]).filter((type
 export default function EvalsPage() {
   const store = useWorkspaceStore();
   const [selectedId, setSelectedId] = useState<string | null>(store.evalFiles[0]?.id ?? null);
-  const selected = store.evalFiles.find((ef) => ef.id === selectedId) ?? null;
-  const { draft, setDraft, dirty, reset, markSaved } = useDirty<Omit<import("../../lib/workspace-data").EvalFile, "id" | "updatedAt" | "results"> | import("../../lib/workspace-data").EvalFile>(
-    selected ?? blankEvalFile()
+  const selected = store.evalFiles.find((ef) => ef.id === selectedId);
+  const { draft, setDraft, dirty, reset, markSaved } = useDirty<DraftEval>(
+    selected ? fromStore(selected) : blankEvalFile()
   );
   const [query, setQuery] = useState("");
   const [sample, setSample] = useState("Paste content here to test the criteria against.");
   const [running, setRunning] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [evalResults, setEvalResults] = useState<Record<string, EvalFileResult[]>>({});
   const isNew = selectedId === null;
 
   useEffect(() => {
     if (!selectedId) return;
     const found = store.evalFiles.find((ef) => ef.id === selectedId);
-    if (found) reset(found);
+    if (found) reset(fromStore(found));
   }, [selectedId, store.evalFiles, reset]);
 
   const filtered = useMemo(() => {
@@ -124,17 +164,19 @@ export default function EvalsPage() {
 
   const latestResult = useMemo(() => {
     if (!selectedId) return null;
-    const ef = store.evalFiles.find((e) => e.id === selectedId);
-    if (!ef || ef.results.length === 0) return null;
-    return ef.results[ef.results.length - 1];
-  }, [selectedId, store.evalFiles]);
+    const results = evalResults[selectedId];
+    if (!results || results.length === 0) return null;
+    return results[results.length - 1];
+  }, [selectedId, evalResults]);
 
   function selectFile(ef: import("../../lib/workspace-data").EvalFile) {
+    setCreating(false);
     setSelectedId(ef.id);
-    reset(ef);
+    reset(fromStore(ef));
   }
 
   function createFile() {
+    setCreating(true);
     setSelectedId(null);
     reset(blankEvalFile());
   }
@@ -143,12 +185,20 @@ export default function EvalsPage() {
     setSaving(true);
     try {
       if (isNew) {
-        const created = await store.addEvalFile(draft as Omit<import("../../lib/workspace-data").EvalFile, "id" | "updatedAt" | "results">);
+        const created = await store.addEvalFile({
+          name: draft.name,
+          description: draft.description,
+          rules: draft.rules,
+          overallThreshold: draft.overallThreshold,
+          loopConfig: draft.loopConfig,
+          status: draft.status
+        });
         setSelectedId(created.id);
-        reset(created);
+        reset(fromStore(created));
+        setCreating(false);
         toast.success("Eval created");
       } else {
-        await store.updateEvalFile((draft as import("../../lib/workspace-data").EvalFile).id, draft as Partial<import("../../lib/workspace-data").EvalFile>);
+        await store.updateEvalFile(selectedId!, draft);
         markSaved();
         toast.success("Eval saved");
       }
@@ -159,41 +209,60 @@ export default function EvalsPage() {
     }
   }
 
-  function remove() {
+  async function remove() {
     if (isNew) return;
-    store.deleteEvalFile((draft as import("../../lib/workspace-data").EvalFile).id);
-    createFile();
+    const id = selectedId!;
+    try {
+      await store.deleteEvalFile(id);
+      const next = store.evalFiles.find((evalFile) => evalFile.id !== id);
+      setCreating(false);
+      if (next) selectFile(next);
+      else {
+        setSelectedId(null);
+        reset(blankEvalFile());
+      }
+      toast.success("Eval deleted");
+    } catch {
+      toast.error("Failed to delete eval");
+    }
   }
 
   function addRubric() {
-    setDraft((current) => ({ ...current, rubrics: [...current.rubrics, blankRubric()] }));
+    setDraft((current) => ({ ...current, rules: [...current.rules, blankRubric()] }));
   }
 
   function updateRubric(id: string, patch: Partial<Rubric>) {
     setDraft((current) => ({
       ...current,
-      rubrics: current.rubrics.map((r) => (r.id === id ? { ...r, ...patch } : r))
+      rules: current.rules.map((r) => (r.id === id ? { ...r, ...patch } : r))
     }));
   }
 
   function deleteRubric(id: string) {
-    setDraft((current) => ({ ...current, rubrics: current.rubrics.filter((r) => r.id !== id) }));
+    setDraft((current) => ({ ...current, rules: current.rules.filter((r) => r.id !== id) }));
   }
 
   function moveRubric(id: string, direction: "up" | "down") {
     setDraft((current) => {
-      const idx = current.rubrics.findIndex((r) => r.id === id);
+      const idx = current.rules.findIndex((r) => r.id === id);
       if (idx === -1) return current;
       const newIdx = direction === "up" ? idx - 1 : idx + 1;
-      if (newIdx < 0 || newIdx >= current.rubrics.length) return current;
-      const newRubrics = [...current.rubrics];
+      if (newIdx < 0 || newIdx >= current.rules.length) return current;
+      const newRubrics = [...current.rules];
       [newRubrics[idx], newRubrics[newIdx]] = [newRubrics[newIdx], newRubrics[idx]];
-      return { ...current, rubrics: newRubrics };
+      return { ...current, rules: newRubrics };
     });
   }
 
+  const appendEvalResult = useCallback((evalId: string, result: EvalFileResult) => {
+    setEvalResults((prev) => ({
+      ...prev,
+      [evalId]: [...(prev[evalId] ?? []), result]
+    }));
+  }, []);
+
   async function runEval() {
-    if (isNew || draft.rubrics.length === 0 || draft.status !== "active") return;
+    if (isNew || draft.rules.length === 0 || draft.status !== "active") return;
 
     setRunning(true);
     try {
@@ -202,8 +271,9 @@ export default function EvalsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: sample,
-          target: { type: "eval", id: (draft as import("../../lib/workspace-data").EvalFile).id },
-          contextRefs: [{ id: (draft as import("../../lib/workspace-data").EvalFile).id, kind: "eval" }]
+          type: "eval",
+          targetId: selectedId,
+          contextFileIds: []
         })
       });
       if (!response.ok || !response.body) throw new Error(`Eval run failed: HTTP ${response.status}`);
@@ -234,9 +304,9 @@ export default function EvalsPage() {
           };
           const evalResult = item.artifact?.metadata?.result;
           if (item.kind === "artifact" && evalResult) {
-            const rubricScores: import("../../lib/workspace-data").EvalFileResult["rubricScores"] = {};
+            const rubricScores: Record<string, { score: number; passed: boolean; notes: string }> = {};
             for (const finding of evalResult.findings) {
-              const rubric = draft.rubrics.find((r) => r.label === finding.label);
+              const rubric = draft.rules.find((r) => r.label === finding.label);
               const threshold = rubric?.passThreshold ?? 75;
               rubricScores[finding.label] = {
                 score: finding.score,
@@ -244,9 +314,9 @@ export default function EvalsPage() {
                 notes: finding.notes
               };
             }
-            store.appendEvalResult((draft as import("../../lib/workspace-data").EvalFile).id, {
+            appendEvalResult(selectedId!, {
               id: `result_${crypto.randomUUID()}`,
-              evalId: (draft as import("../../lib/workspace-data").EvalFile).id,
+              evalId: selectedId!,
               runAt: new Date().toISOString(),
               targetContent: sample,
               rubricScores,
@@ -258,7 +328,6 @@ export default function EvalsPage() {
           }
         }
       }
-      store.setInspectorOpen(true);
     } catch (error) {
       console.warn("Eval run failed:", error);
     } finally {
@@ -273,7 +342,7 @@ export default function EvalsPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${(draft as import("../../lib/workspace-data").EvalFile).name.replace(/\s+/g, "-").toLowerCase()}.json`;
+    a.download = `${draft.name.replace(/\s+/g, "-").toLowerCase()}.json`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -288,21 +357,19 @@ export default function EvalsPage() {
       const reader = new FileReader();
       reader.onload = async (event) => {
         try {
-          const data = JSON.parse(event.target?.result as string) as Omit<import("../../lib/workspace-data").EvalFile, "id" | "updatedAt" | "results">;
+          const data = JSON.parse(event.target?.result as string) as DraftEval;
           const created = await store.addEvalFile({
             name: data.name,
             description: data.description,
-            targetType: data.targetType,
-            targetId: data.targetId,
-            rubrics: data.rubrics,
+            rules: data.rules,
             overallThreshold: data.overallThreshold,
             loopConfig: data.loopConfig,
             status: data.status
           });
           setSelectedId(created.id);
-          setDraft(created);
+          reset(fromStore(created));
         } catch {
-          alert("Invalid JSON file");
+          toast.error("That file is not a valid SpielOS eval JSON export.");
         }
       };
       reader.readAsText(file);
@@ -313,7 +380,7 @@ export default function EvalsPage() {
   return (
     <AppShell
       inspector={
-        <ResultInspector result={latestResult} rubrics={draft.rubrics} />
+        <ResultInspector result={latestResult} rules={draft.rules} />
       }
     >
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
@@ -325,14 +392,14 @@ export default function EvalsPage() {
         <div className="flex min-h-0 flex-1">
           <SidebarListPanel
             title="Eval Files"
-            count={store.evalFiles.length}
+            count={store.evalFiles.length + (creating ? 1 : 0)}
             onNew={createFile}
             newTooltip="New eval file"
             searchValue={query}
             onSearchChange={setQuery}
             searchPlaceholder="Search evals"
           >
-            {filtered.length === 0 ? (
+            {filtered.length === 0 && !creating ? (
               <EmptyState
                 className="py-10"
                 description="No eval files match this search."
@@ -340,35 +407,25 @@ export default function EvalsPage() {
               />
             ) : (
               <ul className="grid gap-1">
-                {filtered.map((ef) => (
-                  <li key={ef.id}>
-                    <button
-                      className={cn(
-                        "w-full rounded-md border px-2.5 py-2 text-left transition-colors",
-                        ef.id === selectedId
-                          ? "border-border bg-selected"
-                          : "border-transparent hover:border-border hover:bg-hover"
-                        )}
-                      onClick={() => selectFile(ef)}
-                      type="button"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Icon className="text-muted-foreground" name="bar-chart" size={14} />
-                        <span className="truncate text-sm font-medium text-foreground">{ef.name}</span>
-                        <Pill tone={ef.status === "active" ? "success" : "default"} className="ml-auto text-3xs">
-                          {ef.status === "active" ? "enabled" : "disabled"}
-                        </Pill>
-                      </div>
-                      <div className="mt-1 flex items-center gap-2 text-2xs text-muted-foreground">
-                        <span>{ef.rubrics.length} criteria</span>
-                        <span className="text-border">·</span>
-                        <span>threshold {ef.overallThreshold}</span>
-                        <span className="text-border">·</span>
-                        <span>{ef.results.length} runs</span>
-                      </div>
-                    </button>
-                  </li>
-                ))}
+                {creating ? (
+                  <ListItem
+                    active
+                    description={draft.description}
+                    icon={ENTITY_ICONS.eval}
+                    metadata={<Pill tone="info">New</Pill>}
+                    onClick={() => undefined}
+                    title={draft.name}
+                  />
+                ) : null}
+                {filtered.map((ef) => <ListItem
+                  active={ef.id === selectedId}
+                  footnotes={<>{ef.rules.length} criteria · threshold {ef.overallThreshold} · {(evalResults[ef.id] ?? []).length} runs</>}
+                  icon={ENTITY_ICONS.eval}
+                  key={ef.id}
+                  metadata={<Pill tone={ef.status === "active" ? "success" : "default"}>{ef.status === "active" ? "On" : "Off"}</Pill>}
+                  onClick={() => selectFile(ef)}
+                  title={ef.name}
+                />)}
               </ul>
             )}
           </SidebarListPanel>
@@ -380,53 +437,39 @@ export default function EvalsPage() {
                 <Icon name="chevron-right" size={12} />
                 <span className="max-w-72 truncate text-foreground">{draft.name}</span>
                 <Pill tone={draft.status === "active" ? "success" : "default"}>
-                  {draft.status === "active" ? "enabled" : "disabled"}
+                  {draft.status === "active" ? "Enabled" : "Disabled"}
                 </Pill>
               </div>
               <div className="ml-auto flex items-center gap-1.5">
                 <Tooltip content="Export as JSON" side="bottom">
                   <Button
                     aria-label="Export"
-                    onClick={exportJson}
-                    size="icon"
-                    variant="ghost"
                     disabled={isNew}
-                  >
-                    <Icon name="download" size={14} />
-                  </Button>
+                    icon="download"
+                    onClick={exportJson}
+                    size="icon-xs"
+                    variant="ghost"
+                  />
                 </Tooltip>
                 <Tooltip content="Import from JSON" side="bottom">
-                  <Button aria-label="Import" onClick={importJson} size="icon" variant="ghost">
-                    <Icon name="upload" size={14} />
-                  </Button>
+                  <Button aria-label="Import" icon="upload" onClick={importJson} size="icon-xs" variant="ghost" />
                 </Tooltip>
                 <Button
+                  icon="bar-chart"
+                  loading={running}
                   onClick={runEval}
                   size="md"
                   variant="outline"
-                  disabled={isNew || draft.rubrics.length === 0 || draft.status !== "active" || running}
+                  disabled={isNew || draft.rules.length === 0 || draft.status !== "active"}
                 >
-                  {running ? (
-                    <Icon name="loader" size={14} className="animate-spin" />
-                  ) : (
-                    <Icon name="bar-chart" size={14} />
-                  )}
                   Test
                 </Button>
                 {!isNew ? (
                   <Tooltip content="Delete eval" side="bottom">
-                    <Button
-                      aria-label="Delete eval"
-                      onClick={remove}
-                      size="icon"
-                      variant="ghost"
-                    >
-                      <Icon name="trash" size={14} />
-                    </Button>
+                    <Button aria-label="Delete eval" icon="trash" onClick={() => setConfirmDelete(true)} size="icon-xs" variant="ghost" />
                   </Tooltip>
                 ) : null}
-                <Button disabled={!dirty || saving} onClick={save} size="md" variant={dirty ? "primary" : "outline"}>
-                   {saving ? <Icon name="loader" size={14} className="animate-spin" /> : <Icon name="save" size={14} />}
+                <Button disabled={!dirty} icon="save" loading={saving} onClick={save} size="md" variant={dirty ? "primary" : "outline"}>
                    Save
                  </Button>
               </div>
@@ -434,7 +477,7 @@ export default function EvalsPage() {
 
             <section className="flex min-h-0 flex-1">
               <div className="min-h-0 flex-1 overflow-y-auto">
-                <div className="grid items-end gap-3 border-b border-border bg-panel-raised px-4 py-3 xl:grid-cols-[minmax(0,1fr)_160px_132px]">
+                <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,var(--editor-field-min)),1fr))] items-end gap-3 border-b border-border bg-panel-raised px-4 py-3">
                   <div className="grid gap-1.5">
                     <InfoLabel label="Eval name" info="Name this QA check so it is easy to select from workflow steps." />
                     <Input
@@ -468,8 +511,9 @@ export default function EvalsPage() {
 
                 <div className="grid gap-4 px-4 py-3">
                   <Field label="Description">
-                    <div className="overflow-hidden rounded-md border border-border bg-background">
+                    <div className="overflow-hidden rounded-md border border-border bg-input transition-colors focus-within:border-[var(--focus-border)] focus-within:ring-2 focus-within:ring-[var(--focus-ring)]">
                       <MentionTextarea
+                        density="field"
                         onChange={(v) => setDraft((d) => ({ ...d, description: v }))}
                         placeholder="Eval description (type @ to mention)"
                         rows={1}
@@ -479,13 +523,14 @@ export default function EvalsPage() {
                   </Field>
 
                   <Field label="Test sample">
-                    <div className="overflow-hidden rounded-md border border-border bg-background">
+                    <div className="overflow-hidden rounded-md border border-border bg-input transition-colors focus-within:border-[var(--focus-border)] focus-within:ring-2 focus-within:ring-[var(--focus-ring)]">
                       <div className="flex h-8 items-center gap-2 border-b border-border bg-panel-raised px-2">
                         <span className="text-2xs text-muted-foreground">Paste an output here to test the criteria before using the eval in a workflow.</span>
                         <span className="ml-auto text-3xs text-muted-foreground select-none">@ to mention</span>
                       </div>
                       <MentionTextarea
                         className="min-h-28"
+                        density="field"
                         mono
                         onChange={setSample}
                         value={sample}
@@ -498,34 +543,23 @@ export default function EvalsPage() {
                   <div className="flex h-10 items-center gap-2 border-b border-border px-4">
                     <Icon className="text-muted-foreground" name="list" size={14} />
                     <span className="text-xs font-medium text-foreground">Criteria</span>
-                    <Pill className="ml-auto">{draft.rubrics.length}</Pill>
+                    <Pill className="ml-auto">{draft.rules.length}</Pill>
                     <Button className="ml-1 h-7" onClick={addRubric} size="sm" variant="outline">
                       <Icon name="plus" size={14} />
                       Criterion
                     </Button>
                   </div>
                   <div>
-                    {draft.rubrics.length === 0 ? (
+                    {draft.rules.length === 0 ? (
                       <div className="m-4 rounded-md border border-dashed border-border py-8 text-center text-xs text-muted-foreground">
                         No criteria yet. Add one to start scoring.
                       </div>
                     ) : (
                       <div>
-                        <div className="hidden border-b border-border bg-panel-raised px-4 py-2 text-3xs font-semibold uppercase tracking-wider text-muted-foreground xl:grid xl:grid-cols-[minmax(160px,1fr)_150px_minmax(180px,1.2fr)_70px_70px_72px] xl:items-center xl:gap-3">
-                          <span>Criterion</span>
-                          <span className="flex items-center gap-1">
-                            Check
-                            <InfoTip content="Choose how this criterion is scored. Phrase checks use editable chips; word count and pattern checks use direct inputs." />
-                          </span>
-                          <span>Condition</span>
-                          <span>Weight</span>
-                          <span>Pass</span>
-                          <span>Actions</span>
-                        </div>
-                        <div className="divide-y divide-border">
-                          {draft.rubrics.map((rubric, idx) => (
+                        <div className="grid gap-1 p-1">
+                          {draft.rules.map((rubric, idx) => (
                             <CriteriaRow
-                              canMoveDown={idx < draft.rubrics.length - 1}
+                              canMoveDown={idx < draft.rules.length - 1}
                               canMoveUp={idx > 0}
                               index={idx}
                               key={rubric.id}
@@ -548,11 +582,11 @@ export default function EvalsPage() {
                     <span className="text-xs font-medium text-foreground">Workflow Retry Policy</span>
                     <InfoTip content="When this eval is used as a workflow QA step, retry can send failed work back through the previous step before the workflow continues. Direct test runs on this page never retry." />
                     <Pill tone={draft.loopConfig.enabled ? "success" : "default"} className="ml-auto">
-                      {draft.loopConfig.enabled ? "retry enabled" : "no retry"}
+                      {draft.loopConfig.enabled ? "Retry enabled" : "No retry"}
                     </Pill>
                   </div>
                   <div className="grid gap-3 px-4 py-3">
-                    <div className="grid items-end gap-3 xl:grid-cols-[minmax(220px,1fr)_140px_180px_150px]">
+                    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,var(--editor-field-min)),1fr))] items-end gap-3">
                       <div className="grid gap-1.5">
                         <span className="text-xs font-medium text-muted-foreground">Retry failed output</span>
                         <ToggleRow
@@ -621,6 +655,17 @@ export default function EvalsPage() {
             </section>
           </main>
         </div>
+        <ConfirmDialog
+          confirmLabel="Delete eval"
+          description={`Workflow QA steps using ${draft.name} will no longer be executable.`}
+          onConfirm={async () => {
+            setConfirmDelete(false);
+            await remove();
+          }}
+          onOpenChange={setConfirmDelete}
+          open={confirmDelete}
+          title={`Delete ${draft.name}?`}
+        />
       </div>
     </AppShell>
   );
@@ -682,9 +727,9 @@ function CriteriaRow({
   const config = CHECK_TYPES[rubric.type];
 
   return (
-    <div className="grid gap-3 bg-background px-4 py-2.5 xl:grid-cols-[minmax(160px,1fr)_150px_minmax(180px,1.2fr)_70px_70px_72px] xl:items-center">
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,var(--editor-field-min-compact)),1fr))] items-end gap-3 rounded-md bg-background px-3 py-3 transition-colors hover:bg-panel-raised">
       <div className="grid gap-1.5">
-        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
           Criterion
         </span>
         <div className="flex items-center gap-2">
@@ -701,7 +746,7 @@ function CriteriaRow({
       </div>
 
       <div className="grid gap-1.5">
-        <span className="flex items-center gap-1 text-3xs font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+        <span className="flex items-center gap-1 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
           Check
           <InfoTip content={config.helper} />
         </span>
@@ -722,7 +767,7 @@ function CriteriaRow({
       </div>
 
       <div className="grid min-w-0 gap-1.5 overflow-hidden">
-        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
           Condition
         </span>
         <CriterionValueEditor
@@ -733,7 +778,7 @@ function CriteriaRow({
       </div>
 
       <div className="grid gap-1.5">
-        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
           Weight
         </span>
         <Input
@@ -746,7 +791,7 @@ function CriteriaRow({
       </div>
 
       <div className="grid gap-1.5">
-        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
           Pass
         </span>
         <Input
@@ -760,41 +805,40 @@ function CriteriaRow({
       </div>
 
       <div className="grid gap-1.5">
-        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground xl:hidden">
+        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
           Actions
         </span>
         <div className="flex items-center gap-0.5">
           <Tooltip content="Move up" side="bottom">
-            <button
+            <Button
               aria-label="Move criterion up"
-              className="rounded p-1 text-muted-foreground hover:bg-hover hover:text-foreground disabled:opacity-30"
               disabled={!canMoveUp}
+              icon="chevron-right"
               onClick={onMoveUp}
-              type="button"
-            >
-              <Icon name="chevron-right" size={12} className="-rotate-90" />
-            </button>
+              className="-rotate-90"
+              size="icon-xs"
+              variant="ghost"
+            />
           </Tooltip>
           <Tooltip content="Move down" side="bottom">
-            <button
+            <Button
               aria-label="Move criterion down"
-              className="rounded p-1 text-muted-foreground hover:bg-hover hover:text-foreground disabled:opacity-30"
               disabled={!canMoveDown}
+              icon="chevron-right"
               onClick={onMoveDown}
-              type="button"
-            >
-              <Icon name="chevron-right" size={12} className="rotate-90" />
-            </button>
+              className="rotate-90"
+              size="icon-xs"
+              variant="ghost"
+            />
           </Tooltip>
           <Tooltip content="Delete criterion" side="bottom">
-            <button
+            <Button
               aria-label="Delete criterion"
-              className="rounded p-1 text-muted-foreground hover:bg-hover hover:text-foreground"
+              icon="trash"
               onClick={onDelete}
-              type="button"
-            >
-              <Icon name="trash" size={12} />
-            </button>
+              size="icon-xs"
+              variant="ghost"
+            />
           </Tooltip>
         </div>
       </div>
@@ -890,7 +934,7 @@ function EditableChips({
   }
 
   return (
-    <div className="flex h-8 min-w-0 items-center gap-1 overflow-hidden rounded-md border border-border bg-input px-1.5 py-1">
+    <div className="flex min-h-8 min-w-0 flex-wrap items-center gap-1 rounded-md border border-border bg-input px-1.5 py-1 transition-colors focus-within:border-[var(--focus-border)] focus-within:ring-2 focus-within:ring-[var(--focus-ring)]">
       {values.map((value) => (
         <span
           className="inline-flex h-5 max-w-40 shrink-0 items-center gap-1 rounded-sm bg-panel-raised px-1.5 text-2xs text-foreground"
@@ -908,7 +952,7 @@ function EditableChips({
         </span>
       ))}
       <input
-        className="h-5 min-w-0 flex-1 bg-transparent px-1 text-xs text-foreground outline-none placeholder:text-muted-foreground"
+        className="h-5 min-w-24 flex-1 bg-transparent px-1 text-xs text-foreground outline-none placeholder:text-muted-foreground"
         onBlur={addValue}
         onChange={(event) => setDraftValue(event.target.value)}
         onKeyDown={onKeyDown}
@@ -921,43 +965,39 @@ function EditableChips({
 
 function ResultInspector({
   result,
-  rubrics
+  rules
 }: {
-  result: import("../../lib/workspace-data").EvalFileResult | null;
-  rubrics: Rubric[];
+  result: EvalFileResult | null;
+  rules: Rubric[];
 }) {
   if (!result) {
     return (
-      <div className="flex flex-col items-center gap-2 px-3 py-8 text-center text-2xs text-muted-foreground">
-        <Icon name="bar-chart" size={16} />
-        <div>No eval results yet.</div>
-        <div>Run an eval to see results here.</div>
-      </div>
+      <Inspector>
+        <InspectorHeader icon="bar-chart" title="Eval results" />
+        <InspectorBody>
+          <InspectorEmptyState description="Test this eval to inspect its latest criterion scores and recommendations." icon="bar-chart" title="No results yet" />
+        </InspectorBody>
+      </Inspector>
     );
   }
 
-  const avgThreshold = rubrics.length > 0
-    ? Math.round(rubrics.reduce((sum, r) => sum + r.passThreshold, 0) / rubrics.length)
+  const avgThreshold = rules.length > 0
+    ? Math.round(rules.reduce((sum, r) => sum + r.passThreshold, 0) / rules.length)
     : 75;
 
   return (
-    <div className="grid">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
-        <Icon name="bar-chart" className="text-muted-foreground" size={14} />
-        <span className="text-xs font-semibold text-foreground">Eval Results</span>
-        <Tooltip content="Per-criterion scores and overall pass/fail for the latest eval run." side="bottom">
-          <Button aria-label="About eval results" className="h-6 w-6 p-0" size="icon" variant="ghost">
-            <Icon name="info" size={12} />
-          </Button>
-        </Tooltip>
-      </div>
-      <div className="border-b border-border p-3">
+    <Inspector>
+      <InspectorHeader
+        actions={<Tooltip content="Per-criterion scores and overall pass/fail for the latest eval run." side="bottom"><Button aria-label="About eval results" icon="info" size="icon-xs" variant="ghost" /></Tooltip>}
+        icon="bar-chart"
+        title="Eval results"
+      />
+      <InspectorBody>
+      <InspectorSection>
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-foreground">Score</span>
           <Tooltip content={`Overall threshold ${avgThreshold}%. ${result.passed ? "Passed" : "Failed"}.`} side="bottom">
-            <Button aria-label="Score info" className="h-5 w-5 p-0" size="icon" variant="ghost">
-              <Icon name="info" size={12} />
-            </Button>
+            <Button aria-label="Score info" size="icon-xs" variant="ghost" icon="info" />
           </Tooltip>
           <Pill tone={result.passed ? "success" : "destructive"} className="ml-auto">
             {result.overallScore}/100
@@ -982,10 +1022,10 @@ function ResultInspector({
             </div>
           ))}
         </div>
-      </div>
+      </InspectorSection>
 
       {result.findings.length > 0 && (
-        <div className="border-b border-border p-3">
+        <InspectorSection>
           <span className="text-xs font-semibold text-foreground">Findings</span>
           <div className="mt-2 grid gap-1">
             {result.findings.map((finding) => (
@@ -995,11 +1035,11 @@ function ResultInspector({
               </div>
             ))}
           </div>
-        </div>
+        </InspectorSection>
       )}
 
       {result.recommendations.length > 0 && (
-        <div className="border-b border-border p-3">
+        <InspectorSection>
           <span className="text-xs font-semibold text-foreground">Recommendations</span>
           <div className="mt-2 grid gap-1">
             {result.recommendations.map((rec, i) => (
@@ -1008,8 +1048,9 @@ function ResultInspector({
               </div>
             ))}
           </div>
-        </div>
+        </InspectorSection>
       )}
-    </div>
+      </InspectorBody>
+    </Inspector>
   );
 }

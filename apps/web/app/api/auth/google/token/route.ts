@@ -10,10 +10,9 @@ export async function GET() {
   const refreshToken = cookieStore.get("google_refresh_token")?.value;
 
   if (accessToken) {
-    return NextResponse.json({ accessToken });
+    return NextResponse.json({ authenticated: true });
   }
 
-  // Try refreshing if we have a refresh token
   if (refreshToken) {
     try {
       const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
@@ -29,9 +28,7 @@ export async function GET() {
 
       if (tokenResponse.ok) {
         const tokens = await tokenResponse.json();
-        const response = NextResponse.json({
-          accessToken: tokens.access_token
-        });
+        const response = NextResponse.json({ authenticated: true });
 
         response.cookies.set("google_access_token", tokens.access_token, {
           httpOnly: true,

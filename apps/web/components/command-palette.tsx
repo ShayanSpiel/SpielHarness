@@ -2,7 +2,7 @@
 
 import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Dialog, DialogContent, Input, Pill, cn } from "@spielos/design-system";
+import { ActionRow, Dialog, DialogContent, EmptyState, Input, Pill } from "@spielos/design-system";
 import { useWorkspaceStore } from "../lib/use-workspace-store";
 import { useRunContext } from "../lib/run-context";
 import type { Artifact, RunEvent } from "@spielos/core";
@@ -44,6 +44,7 @@ type Entry = {
 const NAV: { href: string; label: string; icon: ReactNode; keywords: string[] }[] = [
   { href: "/", label: "Runs", icon: <Icon name={ENTITY_ICONS.run} size={14} />, keywords: ["run", "chat", "home"] },
   { href: "/knowledge", label: "Knowledge", icon: <Icon name={ENTITY_ICONS.knowledge} size={14} />, keywords: ["knowledge", "evidence", "library", "file"] },
+  { href: "/strategy", label: "Strategy", icon: <Icon name={ENTITY_ICONS.strategy} size={14} />, keywords: ["strategy", "prompt", "positioning"] },
   { href: "/roles", label: "Roles", icon: <Icon name={ENTITY_ICONS.role} size={14} />, keywords: ["role", "agent"] },
   { href: "/workflows", label: "Workflows", icon: <Icon name={ENTITY_ICONS.workflow} size={14} />, keywords: ["workflow", "workstream", "graph"] },
   { href: "/skills", label: "Skills", icon: <Icon name={ENTITY_ICONS.skill} size={14} />, keywords: ["skill"] },
@@ -57,8 +58,9 @@ function eventFromDb(row: DbRunEvent): RunEvent {
     orgId: row.org_id,
     runId: row.run_id,
     type: row.event_type,
-    node: row.node ?? undefined,
-    skill: row.skill ?? undefined,
+    sequence: 0,
+    nodeId: row.node ?? undefined,
+    skillName: row.skill ?? undefined,
     message: row.message,
     payload: row.payload ?? {},
     createdAt: row.created_at
@@ -99,7 +101,6 @@ export function CommandPalette({
   function newRun() {
     store.createChat("New run");
     run.setActiveRunId(null);
-    run.setRunTitle("New run");
     run.clearContext();
     run.clearEvents();
     run.clearArtifacts();
@@ -110,20 +111,25 @@ export function CommandPalette({
 
   async function openRun(entry: DbRun) {
     run.setActiveRunId(entry.id);
-    run.setRunTitle(entry.prompt.slice(0, 80) || "Run");
     run.clearArtifacts();
     run.setHumanInputRequest(null);
     const response = await fetch(`/api/runs/${entry.id}/events`, { cache: "no-store" });
     if (response.ok) {
       const data = (await response.json()) as { events?: DbRunEvent[] };
-      run.replaceEvents((data.events ?? []).map(eventFromDb));
+      run.clearEvents();
+      for (const evt of data.events ?? []) {
+        run.appendEvent(eventFromDb(evt));
+      }
     } else {
       run.clearEvents();
     }
     const artifactResponse = await fetch(`/api/runs/${entry.id}/artifacts`, { cache: "no-store" });
     if (artifactResponse.ok) {
       const data = (await artifactResponse.json()) as { artifacts?: Artifact[] };
-      run.replaceArtifacts(data.artifacts ?? []);
+      run.clearArtifacts();
+      for (const a of data.artifacts ?? []) {
+        run.appendArtifact(a);
+      }
     }
     window.location.href = "/";
     setOpen(false);
@@ -171,7 +177,7 @@ export function CommandPalette({
 
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runs, setOpen]);
+  }, [runs]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -214,8 +220,8 @@ export function CommandPalette({
     <Dialog onOpenChange={setOpen} open={open}>
       <DialogContent
         aria-describedby={undefined}
-        className="!top-[12vh] !translate-y-0 flex max-h-[calc(100vh-16vh)] h-[min(72vh,calc(100vh-16vh))] w-[min(680px,92vw)] flex-col overflow-hidden rounded-xl border border-border bg-panel p-0 shadow-[var(--shadow-popover)] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
         hideClose
+        layout="command"
         onKeyDown={onKeyDown}
       >
         <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
@@ -235,10 +241,7 @@ export function CommandPalette({
 
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {filtered.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center gap-1.5 text-center text-muted-foreground">
-              <Icon name="search" size={16} />
-              <div className="text-xs">No matches</div>
-            </div>
+            <EmptyState icon={<Icon name="search" size={16} />} title="No matches" />
           ) : (
             <div className="flex flex-col gap-3">
               {groups.map(([group, list]) => (
@@ -253,21 +256,14 @@ export function CommandPalette({
                       const selected = idx === active;
                       return (
                         <li key={entry.id}>
-                          <button
-                            className={cn(
-                              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
-                              selected ? "bg-selected text-foreground" : "text-foreground hover:bg-hover"
-                            )}
+                          <ActionRow
+                            active={selected}
+                            leading={entry.icon}
                             onClick={() => entry.onSelect()}
                             onMouseEnter={() => setActive(idx)}
-                            type="button"
-                          >
-                            <span className="text-muted-foreground">{entry.icon}</span>
-                            <span className="flex-1 truncate text-[13px]">{entry.label}</span>
-                            {entry.hint ? (
-                              <span className="shrink-0 text-3xs text-muted-foreground">{entry.hint}</span>
-                            ) : null}
-                          </button>
+                            title={entry.label}
+                            trailing={entry.hint ? <span className="text-3xs text-muted-foreground">{entry.hint}</span> : null}
+                          />
                         </li>
                       );
                     })}

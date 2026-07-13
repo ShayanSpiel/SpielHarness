@@ -6,12 +6,12 @@ import { cn } from "../index";
 import { Icon } from "./icons";
 
 const listItemStyles = cva(
-  "group flex w-full items-start gap-2 rounded-md border px-2 py-2 text-left transition-colors duration-[var(--duration)]",
+  "group flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors duration-[var(--duration)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]",
   {
     variants: {
       active: {
-        true: "border-border-strong bg-selected",
-        false: "border-transparent hover:border-border hover:bg-hover",
+        true: "bg-selected text-foreground-strong",
+        false: "hover:bg-hover",
       },
     },
     defaultVariants: { active: false },
@@ -56,7 +56,7 @@ export function ListItem({
         ) : null}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-medium text-foreground">
+            <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
               {title}
             </span>
             {subtitle ? (
@@ -65,7 +65,7 @@ export function ListItem({
               </span>
             ) : null}
             {metadata ? (
-              <span className="shrink-0">{metadata}</span>
+              <span className="ml-auto shrink-0">{metadata}</span>
             ) : null}
           </div>
           {description ? (

@@ -9,6 +9,7 @@
   "dependencies": {
     "@langchain/langgraph": "^0.2.74",
     "@spielos/core": "file:../core",
+    "@spielos/db": "file:../db",
     "@spielos/evals": "file:../evals",
     "@spielos/providers": "file:../providers"
   }

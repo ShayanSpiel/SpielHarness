@@ -1,44 +1,38 @@
-# Data Model
+# Data model
 
-SpielOS is marketing-object first and tenant-scoped. Every durable domain row carries `org_id`; API queries scope privileged access by that id and the database enforces membership with RLS.
+The canonical schema is plain PostgreSQL 14+ in `packages/db/migrations`. Supabase can host it, but application code connects through `DATABASE_URL` with `postgres`; it does not use the Supabase client, `auth.users`, PostgREST, or Supabase RLS today.
 
-## Canonical marketing objects
+## Workspace ownership
 
-`files` is the single editable source of truth for strategy, prompts, knowledge, assets, drafts, evidence, templates, roles, skills, evaluations, workflows, chat exports, and generated deliverables. `marketing_objects` is the RLS-safe semantic view over those rows.
+`orgs`, `profiles`, and `org_memberships` exist. Every durable harness, chat, run, model, connection, variable, usage, and audit row carries `org_id`. Server queries scope reads and writes with `org_id`.
 
-- `file_type` describes storage/runtime behavior.
-- `metadata.objectType` optionally supplies a more specific marketing object type.
-- `metadata.structuredData` optionally supplies a structured representation while `body` remains portable and human-editable.
-- `file_versions` stores immutable object revisions. Triggers advance `current_version` when editable content changes.
-- `file_relations` is the queryable integrity/index layer for role-skill and workflow-object references.
-- `file_lineage` records derivation between generated and source objects.
+`0002_tenant_integrity.sql` adds same-workspace composite foreign keys. They are created `NOT VALID` for deployability on existing databases, which protects new writes immediately. Existing data must be checked and the constraints validated before production launch.
 
-Legacy `roles`, `tools`, and `graph_templates` tables remain migration-compatible storage only. Active application writes and execution resolve file-backed harness definitions; their duplicate API write paths have been removed.
+There is no authenticated request identity yet. `apps/web/lib/server.ts` resolves every request to the demo organization and grants it full write access. The membership schema is a foundation, not active authorization.
 
-## Runtime
+## File-backed harness
 
-`runs` stores lifecycle state, the immutable `definition_snapshot`, idempotency key, inputs, outputs, durable human checkpoint, and requesting profile. Related records are:
+`files` is the editable source of truth for knowledge, strategy, prompts, artifacts, roles, skills, workflows, evals, and templates. Harness behavior lives in file bodies and metadata; seed content lives under `supabase/seed`.
 
-- `run_events`: append-only execution timeline.
-- `run_input_files`: explicit input objects.
-- `generated_files`: run outputs linked back to canonical files.
-- `eval_reports`: structured evaluation results.
-- `usage_ledger`: provider/model token and cost attribution.
+- `file_versions` snapshots title/body/metadata changes.
+- `file_relations` indexes role-skill and workflow-file references.
+- `folders` provides organization within a workspace.
+- `run_input_files` and `run_output_files` link run inputs and generated files.
 
-Composite tenant foreign keys prevent a child row from referencing a parent in another organization.
+There are no `marketing_objects`, `file_lineage`, `generated_files`, or `eval_reports` tables in the current schema.
 
-## Conversations
+## Runs and conversations
 
-`chats` and `chat_messages` are the canonical conversation history. Runs link to their originating chat. Chat context is represented by explicit selected references and snapshotted into the run.
+`chats` and `chat_messages` store conversation history. `runs` stores the typed target, input references, definition snapshot, status, output text, human answers, and serialized runtime checkpoint. `run_events` is the durable execution timeline. Generated eval/artifact outputs are persisted back to `files` and linked through `run_output_files`.
 
-## Identity and authorization
+The current request handler executes runs in-process. Events are streamed immediately to the connected client but persisted in a batch when the request pauses or terminates. A production worker/queue is still required for lease-based execution, reconnectable live streams, retries, and cancellation independent of the browser connection.
 
-Supabase `auth.users.id` is mirrored to `profiles.id`. `org_memberships` supplies owner/admin/editor/viewer authorization. Server routes validate bearer sessions and memberships before using privileged database credentials. Anonymous access is restricted to the development demo organization; production mutations require a membership role.
+## Models, connections, and secrets
 
-## Connections and secrets
+`models` stores provider/model configuration and server-side environment-key references. `connections` stores operation declarations and encrypted OAuth configuration. `workspace_variables` stores ordinary values or environment-secret references.
 
-`connections` stores redacted connector configuration and declared operations. `workspace_variables` stores ordinary values or environment-secret references. Credential material is resolved only on the server and is never stored in harness files.
+Production requires `CONNECTION_ENCRYPTION_KEY`. Google/Notion integration OAuth currently also uses browser cookies and must be moved to user/workspace-scoped server credentials when application auth is introduced.
 
-## Billing readiness
+## Usage, billing, and credits
 
-`billing_customers` maps organizations to an external billing provider. `credit_ledger` is an idempotent signed ledger; service-role-only reservation and settlement functions serialize balance changes. Usage and credit ledgers are separate so provider usage can be reconciled independently from pricing and grants.
+`usage_ledger` exists, but current token counts are character-based estimates and `cost_micros` is written as zero. There are no customer, subscription, entitlement, credit balance, reservation, settlement, invoice, or webhook-idempotency tables yet. The app must not enforce paid limits from `usage_ledger` in its current form.

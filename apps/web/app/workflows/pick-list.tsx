@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Icon } from "@spielos/design-system/components";
-import { Input, Pill, cn } from "@spielos/design-system";
+import { ChoiceButton, Pill, SearchInput } from "@spielos/design-system";
 
 export function PickList({
   activeIds,
@@ -39,20 +39,8 @@ export function PickList({
         <span>{label}</span>
         {activeIds.length > 0 ? <Pill className="ml-auto">{activeIds.length} selected</Pill> : null}
       </div>
-      <div className="relative mb-1">
-        <Icon
-          name="search"
-          className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground"
-          size={12}
-        />
-        <Input
-          className="h-7 pl-7 text-xs"
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder={searchPlaceholder}
-          value={query}
-        />
-      </div>
-      <div className="grid max-h-48 gap-0.5 overflow-y-auto rounded-md border border-border p-1">
+      <SearchInput className="mb-1" onChange={setQuery} placeholder={searchPlaceholder} value={query} />
+      <div className="grid max-h-48 gap-1 overflow-y-auto">
         {filteredItems.length === 0
           ? (
             <div className="px-2 py-6 text-center text-2xs text-muted-foreground">
@@ -62,28 +50,15 @@ export function PickList({
           : filteredItems.map((item) => {
             const active = activeIds.includes(item.id);
             return (
-              <button
-                className={cn(
-                  "flex items-center gap-2 rounded-sm px-2 py-1 text-left hover:bg-hover",
-                  active && "bg-selected",
-                )}
+              <ChoiceButton
                 key={item.id}
+                leading={<Icon name={iconName} className="text-muted-foreground" size={11} />}
                 onClick={() => onToggle(item.id)}
-                type="button"
+                selected={active}
+                selectionMode="multiple"
               >
-                <span
-                  className={cn(
-                    "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border",
-                    active
-                      ? "border-foreground-strong bg-foreground-strong text-background"
-                      : "border-border",
-                  )}
-                >
-                  {active ? <Icon name="check" size={10} /> : null}
-                </span>
-                <Icon name={iconName} className="shrink-0 text-muted-foreground" size={11} />
-                <span className="truncate text-[12px] text-foreground">{item.title}</span>
-              </button>
+                {item.title}
+              </ChoiceButton>
             );
           })}
       </div>

@@ -22,27 +22,40 @@ export function buildObjectReferences(input: {
   evalFiles: EvalFile[];
   workstreams: WorkstreamDefinition[];
 }): ObjectReference[] {
-  const itemRefs = input.items
-    .filter((item) => item.status !== "archived")
-    .map((item): ObjectReference => ({
+  const seen = new Set<string>();
+  const result: ObjectReference[] = [];
+
+  // typed entries first — they have richer kind info
+  for (const role of input.roles) {
+    if (role.status !== "active" || seen.has(role.id)) continue;
+    seen.add(role.id);
+    result.push({ id: role.id, kind: "role", title: role.name, subtitle: role.description });
+  }
+  for (const skill of input.skills) {
+    if (skill.status !== "active" || seen.has(skill.id)) continue;
+    seen.add(skill.id);
+    result.push({ id: skill.id, kind: "skill", title: skill.name, subtitle: skill.description });
+  }
+  for (const evalFile of input.evalFiles) {
+    if (evalFile.status !== "active" || seen.has(evalFile.id)) continue;
+    seen.add(evalFile.id);
+    result.push({ id: evalFile.id, kind: "eval", title: evalFile.name, subtitle: `${evalFile.rules.length} criteria` });
+  }
+  for (const workstream of input.workstreams) {
+    if (workstream.status !== "active" || seen.has(workstream.id)) continue;
+    seen.add(workstream.id);
+    result.push({ id: workstream.id, kind: "workflow", title: workstream.name, subtitle: `${workstream.nodes.length} steps` });
+  }
+  for (const item of input.items) {
+    if (item.status === "archived" || seen.has(item.id)) continue;
+    seen.add(item.id);
+    result.push({
       id: item.id,
-      kind: item.kind === "prompts" ? "prompt" : "file",
+      kind: item.kind === "prompt" ? "prompt" : "file",
       title: item.title,
       subtitle: item.folder ?? item.kind
-    }));
-  return [
-    ...input.roles
-      .filter((role) => role.status === "active")
-      .map((role): ObjectReference => ({ id: role.id, kind: "role", title: role.name, subtitle: role.description })),
-    ...input.skills
-      .filter((skill) => skill.status === "active")
-      .map((skill): ObjectReference => ({ id: skill.id, kind: "skill", title: skill.name, subtitle: skill.description })),
-    ...input.evalFiles
-      .filter((evalFile) => evalFile.status === "active")
-      .map((evalFile): ObjectReference => ({ id: evalFile.id, kind: "eval", title: evalFile.name, subtitle: `${evalFile.rubrics.length} criteria` })),
-    ...input.workstreams
-      .filter((workstream) => workstream.status === "active")
-      .map((workstream): ObjectReference => ({ id: workstream.id, kind: "workflow", title: workstream.title, subtitle: `${workstream.nodes.length} steps` })),
-    ...itemRefs
-  ].sort((a, b) => a.title.localeCompare(b.title));
+    });
+  }
+
+  return result.sort((a, b) => a.title.localeCompare(b.title));
 }

@@ -1,8 +1,7 @@
 "use client";
 
 import type { Role } from "@spielos/core";
-import { Icon } from "@spielos/design-system/components";
-import { Field, Input, NativeSelect } from "@spielos/design-system";
+import { Field, Input, Inspector, InspectorBody, InspectorEmptyState, InspectorHeader, InspectorSection, NativeSelect } from "@spielos/design-system";
 import { MentionTextarea } from "../../components/mention-textarea";
 import { ContractFlow } from "./contract-flow";
 import { PickList } from "./pick-list";
@@ -51,11 +50,12 @@ export function NodeInspector({
 }) {
   if (!node) {
     return (
-      <div className="flex flex-col items-center gap-2 px-3 py-8 text-center text-2xs text-muted-foreground">
-        <Icon name="workflow-alt" size={16} />
-        <div>No step selected.</div>
-        <div>Click a step on the canvas to edit it.</div>
-      </div>
+      <Inspector>
+        <InspectorHeader icon="workflow-alt" title="Step settings" />
+        <InspectorBody>
+          <InspectorEmptyState description="Select a step on the canvas to edit its role, contracts, files, and skills." icon="workflow-alt" title="No step selected" />
+        </InspectorBody>
+      </Inspector>
     );
   }
 
@@ -65,7 +65,7 @@ export function NodeInspector({
       label: role.status === "active" ? role.name : `${role.name} (disabled)`,
       value: role.id,
     }));
-  const isEvalNode = node.nodeType === "eval";
+  const isEvalNode = !!node.evalInput;
   const selectedRole = roles.find((role) => role.id === node.roleId) ?? null;
   const evalOptions = evals
     .filter((evalFile) => evalFile.status === "active" || node.skillIds.includes(evalFile.id))
@@ -85,18 +85,16 @@ export function NodeInspector({
     ...nodes
       .filter((entry) => entry.id !== node.id)
       .map((entry) => ({
-        label: `${entry.title} output${entry.output ? ` (${entry.output})` : ""}`,
+        label: `${entry.title} output${entry.outputContract ? ` (${entry.outputContract})` : ""}`,
         value: `node:${entry.id}`,
       })),
   ];
 
   return (
-    <div>
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
-        <Icon name="workflow-alt" className="text-muted-foreground" size={14} />
-        <span className="text-xs font-semibold text-foreground">Step Settings</span>
-      </div>
-      <div className="border-b border-border p-3">
+    <Inspector>
+      <InspectorHeader icon="workflow-alt" title="Step settings" />
+      <InspectorBody>
+      <InspectorSection>
         <Field label="Step title">
           <Input
             className="w-full"
@@ -104,7 +102,7 @@ export function NodeInspector({
             value={node.title}
           />
         </Field>
-      </div>
+      </InspectorSection>
       <div className="grid gap-3 p-3">
         {isEvalNode ? (
           <>
@@ -117,7 +115,7 @@ export function NodeInspector({
                     roleId: "runtime.eval",
                     skillIds: [value],
                     title: evalFile ? `QA: ${evalFile.name}` : node.title,
-                    output: "Eval report",
+                    outputContract: "Eval report",
                     loopConfig: evalFile
                       ? { ...evalFile.loopConfig, evalId: evalFile.id }
                       : node.loopConfig,
@@ -143,19 +141,19 @@ export function NodeInspector({
                 ariaLabel="Eval input source"
                 onChange={(value) => {
                   if (value === "workflow_input") {
-                    updateNode(node.id, { input: "workflow_request", evalInput: { type: "workflow_input" } });
+                    updateNode(node.id, { inputContract: "workflow_request", evalInput: { type: "workflow_input" } });
                     return;
                   }
                   if (value.startsWith("node:")) {
                     const nodeId = value.slice("node:".length);
                     const sourceNode = nodes.find((entry) => entry.id === nodeId);
                     updateNode(node.id, {
-                      input: sourceNode?.output ?? "selected_output",
+                      inputContract: sourceNode?.outputContract ?? "selected_output",
                       evalInput: { type: "node_output", nodeId },
                     });
                     return;
                   }
-                  updateNode(node.id, { input: "previous_output", evalInput: { type: "previous_output" } });
+                  updateNode(node.id, { inputContract: "previous_output", evalInput: { type: "previous_output" } });
                 }}
                 options={evalInputOptions}
                 value={evalInputValue}
@@ -171,8 +169,8 @@ export function NodeInspector({
                 updateNode(node.id, {
                   roleId: value,
                   title: nextRole?.name ?? node.title,
-                  input: nextRole ? roleContractName(nextRole, "inputs", "Role input") : node.input,
-                  output: nextRole ? roleContractName(nextRole, "outputs", "Role output") : node.output,
+                  inputContract: nextRole ? roleContractName(nextRole, "inputs", "Role input") : node.inputContract,
+                  outputContract: nextRole ? roleContractName(nextRole, "outputs", "Role output") : node.outputContract,
                 });
               }}
               options={roleOptions}
@@ -181,8 +179,8 @@ export function NodeInspector({
           </Field>
         )}
         <ContractFlow
-          inputLabel={node.input}
-          outputLabel={node.output}
+          inputLabel={node.inputContract}
+          outputLabel={node.outputContract}
           inputDetail={
             isEvalNode || !selectedRole ? "" : (roleContracts(selectedRole, "inputs")[0]?.body?.trim() ?? "")
           }
@@ -193,17 +191,18 @@ export function NodeInspector({
         />
         {!isEvalNode ? (
           <Field label="Prompt override">
-            <div className="overflow-hidden rounded-md border border-border bg-background">
+            <div className="overflow-hidden rounded-md border border-border bg-input transition-colors focus-within:border-[var(--focus-border)] focus-within:ring-2 focus-within:ring-[var(--focus-ring)]">
               <div className="flex h-8 items-center gap-2 border-b border-border bg-panel-raised px-2">
                 <span className="text-2xs text-muted-foreground">Optional role prompt override</span>
                 <span className="ml-auto text-3xs text-muted-foreground select-none">@ to mention</span>
               </div>
               <MentionTextarea
                 className="min-h-36"
+                density="field"
                 mono
-                onChange={(event) => updateNode(node.id, { prompt: event })}
+                onChange={(event) => updateNode(node.id, { promptOverride: event })}
                 placeholder="Optional. Leave blank to use the role's current prompt."
-                value={node.prompt}
+                value={node.promptOverride ?? ""}
               />
             </div>
           </Field>
@@ -235,6 +234,7 @@ export function NodeInspector({
           />
         ) : null}
       </div>
-    </div>
+      </InspectorBody>
+    </Inspector>
   );
 }

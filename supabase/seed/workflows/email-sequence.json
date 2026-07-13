@@ -1,0 +1,65 @@
+{
+  "title": "Email Sequence Builder",
+  "description": "Creates a 3-email nurture sequence from strategy, with Gmail dispatch after human approval.",
+  "nodes": [
+    {
+      "id": "ask-topic",
+      "title": "Sequence Topic",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Ask the user: what should the email sequence be about? Suggest: (A) Welcome sequence for new subscribers, (B) Nurture sequence for a specific offer, (C) Launch sequence for a new product/feature, (D) Custom topic.",
+      "input": "user_request",
+      "output": "topic_input",
+      "x": 80,
+      "y": 200
+    },
+    {
+      "id": "strategy",
+      "title": "Sequence Strategy",
+      "roleSlug": "strategist",
+      "skillSlugs": ["llm.generate", "icp-world-simulator"],
+      "prompt": "Create a 6-field brief for the email sequence. Also define: sequence goal, audience segment, email cadence (timing between emails).",
+      "input": "topic_input",
+      "output": "sequence_brief",
+      "x": 340,
+      "y": 200
+    },
+    {
+      "id": "write",
+      "title": "Write Emails",
+      "roleSlug": "writer",
+      "skillSlugs": ["llm.generate", "template.apply", "voice.match"],
+      "prompt": "Write 3 emails for the sequence using the email-sequence template. Email 1: hook and pain. Email 2: contradiction and proof. Email 3: meaning and CTA. Apply voice match.",
+      "input": "sequence_brief",
+      "output": "email_drafts",
+      "x": 600,
+      "y": 200
+    },
+    {
+      "id": "ask-review",
+      "title": "Review Sequence",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Show all 3 email drafts to the user. Ask: (A) Approve all and send via Gmail, (B) Edit specific emails, (C) Hold for later, (D) Reject and rewrite.",
+      "input": "email_drafts",
+      "output": "review_decision",
+      "x": 860,
+      "y": 200
+    },
+    {
+      "id": "send",
+      "title": "Send via Gmail",
+      "roleSlug": "gmail-agent",
+      "skillSlugs": ["gmail.draft", "gmail.send"],
+      "prompt": "For approved emails: create Gmail drafts first, then send each email with the appropriate delay between them. Return send status for each.",
+      "input": "review_decision",
+      "output": "send_status",
+      "x": 1120,
+      "y": 200
+    }
+  ],
+  "edges": [
+    { "id": "topic-strategy", "source": "ask-topic", "target": "strategy" },
+    { "id": "strategy-write", "source": "strategy", "target": "write" },
+    { "id": "write-review", "source": "write", "target": "ask-review" },
+    { "id": "review-send", "source": "ask-review", "target": "send" }
+  ]
+}

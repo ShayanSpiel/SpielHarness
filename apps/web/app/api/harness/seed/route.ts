@@ -1,46 +1,72 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { errorResponse, getOrg, requireOrgRole, requireSupabase } from "../../../../lib/server";
+import {
+  createFile,
+  createFolder,
+  findFolderByName,
+  listHarnessFiles,
+  updateFile,
+  audit
+} from "@spielos/db";
+import { errorResponse, getOrg, requireAdmin } from "../../../../lib/server";
+import { SEED_ROOT } from "../../../../lib/repo-paths";
 
-const SEED_ROOT = path.join(process.cwd(), "..", "..", "supabase", "seed");
+const MANIFEST_PATH = path.join(SEED_ROOT, "harness-manifest.json");
+
+type ManifestEntry = {
+  fileType?: string;
+  slug?: string;
+  kind?: string;
+  systemRole?: string;
+  skillSlugs?: string[];
+  folder?: string;
+};
+
+type Manifest = Record<string, ManifestEntry>;
 
 type SeedFile = {
   path: string;
   title: string;
   body: string;
   fileType: string;
-  status?: "active" | "draft" | "archived";
-  folder: string;
+  status: "active" | "draft" | "archived";
+  folderName: string;
   metadata: Record<string, unknown>;
-};
-
-type ExistingFile = {
-  id: string;
-  title: string;
-  body: string;
-  file_type: string;
-  status: string;
-  folder_id: string | null;
-  metadata: Record<string, unknown>;
-  content_format: string;
-};
-
-type FolderRow = {
-  id: string;
-  name: string;
 };
 
 const FOLDER_BY_SEED_DIR: Record<string, string> = {
   agents: "Roles",
   skills: "Skills",
   workflows: "Workflows",
-  workstreams: "Workflows",
   evals: "Evals",
-  templates: "Templates",
-  system: "Prompts"
+  templates: "Templates"
 };
 
-function titleFromFile(fileName: string, body: string) {
+const FOLDER_ORDER: Record<string, number> = {
+  Roles: 10,
+  Skills: 20,
+  Evals: 30,
+  Workflows: 40,
+  Templates: 50,
+  Strategy: 60,
+  "Template Prompts": 65,
+  "System Prompts": 70
+};
+
+function folderNameFor(
+  relPath: string,
+  fileType: string,
+  manifest: Manifest
+): string {
+  const relPosix = relPath.replaceAll(path.sep, "/");
+  const entry = manifest[relPosix];
+  if (entry?.folder) return entry.folder;
+
+  const folderKey = relPath.split(path.sep)[0] ?? "";
+  return FOLDER_BY_SEED_DIR[folderKey] ?? "Knowledge";
+}
+
+function titleFromFile(fileName: string, body: string): string {
   const heading = body.match(/^#\s+(.+)$/m)?.[1]?.trim();
   if (heading) return heading;
   return fileName
@@ -51,76 +77,102 @@ function titleFromFile(fileName: string, body: string) {
     .join(" ");
 }
 
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
-      .join(",")}}`;
+function classify(
+  relPath: string,
+  manifest: Manifest
+): { fileType: string; metadata: Record<string, unknown> } {
+  const folder = relPath.split(path.sep)[0] ?? "";
+  const base = (relPath.split(path.sep).pop() ?? "").replace(/\.[^.]+$/, "");
+
+  const relPosix = relPath.replaceAll(path.sep, "/");
+  const entry = manifest[relPosix];
+
+  let fileType: string;
+  if (entry?.fileType) {
+    fileType = entry.fileType;
+  } else if (entry?.kind === "eval") {
+    fileType = "harness_eval";
+  } else if (folder === "agents") {
+    fileType = "harness_role";
+  } else if (folder === "skills") {
+    fileType = "harness_skill";
+  } else if (folder === "workflows") {
+    fileType = "harness_workflow";
+  } else if (folder === "templates") {
+    fileType = "harness_template";
+  } else if (folder === "system") {
+    fileType = "prompt";
+  } else if (folder === "evals") {
+    fileType = "harness_eval";
+  } else {
+    fileType = "knowledge";
   }
-  return JSON.stringify(value);
+
+  const slug = entry?.slug ?? base;
+
+  const metadata: Record<string, unknown> = { slug };
+  if (fileType === "harness_role") metadata.role = true;
+  if (fileType === "harness_skill") metadata.skill = true;
+  if (fileType === "harness_workflow") metadata.workstream = true;
+  if (fileType === "harness_template") metadata.template = true;
+  if (fileType === "harness_eval") metadata.eval = true;
+  if (fileType === "prompt" || fileType === "strategy" || fileType === "knowledge") {
+    metadata.prompt = true;
+  }
+  if (entry?.kind) metadata.kind = entry.kind;
+
+  return { fileType, metadata };
 }
 
 function withoutUndefined(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withoutUndefined);
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      if (entry !== undefined) out[key] = withoutUndefined(entry);
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v !== undefined) out[k] = withoutUndefined(v);
     }
     return out;
   }
   return value;
 }
 
-function classify(relPath: string): { fileType: string; metadata: Record<string, unknown> } {
-  const parts = relPath.split(path.sep);
-  const folder = parts[0] ?? "";
-  const fileName = parts[parts.length - 1] ?? "";
-  const base = fileName.replace(/\.[^.]+$/, "");
-
-  if (folder === "agents") {
-    return {
-      fileType: "harness_role",
-      metadata: { role: true, slug: base }
-    };
+async function loadManifest(): Promise<Manifest> {
+  try {
+    const raw = await readFile(MANIFEST_PATH, "utf8");
+    return JSON.parse(raw) as Manifest;
+  } catch {
+    return {};
   }
-  if (folder === "skills") {
-    return {
-      fileType: "harness_skill",
-      metadata: { skill: true, slug: base, kind: "llm_call" }
-    };
-  }
-  if (folder === "workflows" || folder === "workstreams") {
-    return {
-      fileType: "harness_workstream",
-      metadata: { workstream: true, slug: base }
-    };
-  }
-  if (folder === "templates") {
-    return {
-      fileType: "harness_template",
-      metadata: { template: true, slug: base }
-    };
-  }
-  if (folder === "system") {
-    return {
-      fileType: "strategy",
-      metadata: { system: true, slug: base }
-    };
-  }
-  if (folder === "evals") {
-    return {
-      fileType: "harness_eval",
-      metadata: { eval: true, slug: base }
-    };
-  }
-  return { fileType: "knowledge", metadata: {} };
 }
 
-async function walk(dir: string, base: string, out: SeedFile[], manifest: Record<string, Record<string, unknown>>): Promise<void> {
+async function ensureFolders(
+  sql: import("@spielos/db").Sql,
+  orgId: string,
+  manifest: Manifest
+): Promise<Map<string, string>> {
+  const allFolders = new Set<string>();
+  for (const n of Object.values(FOLDER_BY_SEED_DIR)) allFolders.add(n);
+  for (const entry of Object.values(manifest)) {
+    if (entry?.folder) allFolders.add(entry.folder);
+  }
+
+  const folderMap = new Map<string, string>();
+  for (const name of allFolders) {
+    let folder = await findFolderByName(sql, orgId, name);
+    if (!folder) {
+      folder = await createFolder(sql, orgId, name, FOLDER_ORDER[name] ?? 100);
+    }
+    folderMap.set(name, folder.id);
+  }
+  return folderMap;
+}
+
+async function walk(
+  dir: string,
+  base: string,
+  out: SeedFile[],
+  manifest: Manifest
+): Promise<void> {
   let entries: import("node:fs").Dirent[];
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -131,7 +183,7 @@ async function walk(dir: string, base: string, out: SeedFile[], manifest: Record
     const full = path.join(dir, entry.name);
     const rel = path.join(base, entry.name);
     if (entry.isDirectory()) {
-      if (!base && entry.name === "integrations") continue;
+      if (!base && (entry.name === "integrations" || entry.name === "harness-manifest.json")) continue;
       await walk(full, rel, out, manifest);
       continue;
     }
@@ -139,96 +191,100 @@ async function walk(dir: string, base: string, out: SeedFile[], manifest: Record
     if (entry.name.startsWith(".")) continue;
     if (rel.replaceAll(path.sep, "/") === "harness-manifest.json") continue;
     if (!/\.(md|markdown|json|yaml|yml)$/i.test(entry.name)) continue;
-    const fileName = entry.name;
     const body = await readFile(full, "utf8");
-    const { fileType: classifiedFileType, metadata: classifiedMetadata } = classify(rel);
-    const { fileType: configuredFileType, status: configuredStatus, ...manifestMetadata } = manifest[rel.replaceAll(path.sep, "/")] ?? {};
-    const fileType = typeof configuredFileType === "string" ? configuredFileType : classifiedFileType;
-    const status = ["active", "draft", "archived"].includes(String(configuredStatus))
-      ? configuredStatus as SeedFile["status"]
-      : "active";
-    const folderName = FOLDER_BY_SEED_DIR[rel.split(path.sep)[0] ?? ""] ?? "Knowledge";
+    const { fileType: classifiedFileType, metadata: classifiedMetadata } = classify(rel, manifest);
+    const fileName = entry.name;
+    const folderName = folderNameFor(rel, classifiedFileType, manifest);
+
     const metadata = withoutUndefined({
       ...classifiedMetadata,
-      ...manifestMetadata,
       seed: true,
       seedPath: rel,
       seedFolder: folderName
     }) as Record<string, unknown>;
-    if (fileType === "harness_eval" && entry.name.endsWith(".json")) {
+
+    let title = titleFromFile(fileName, body);
+    const finalFileType = classifiedFileType;
+    let finalMetadata = metadata;
+
+    if (classifiedFileType === "harness_eval" && fileName.endsWith(".json")) {
       try {
         const parsed = JSON.parse(body);
-        const seedTitle = parsed.name ?? fileName.replace(/\.[^.]+$/, "");
-        out.push({
-          path: rel,
-          title: seedTitle,
-          body: body,
-          fileType,
-          status,
-          folder: folderName,
-          metadata: withoutUndefined({
-            ...metadata,
-            eval: true,
-            targetType: parsed.targetType,
-            overallThreshold: parsed.overallThreshold,
-            rubrics: parsed.rubrics,
-            loopConfig: parsed.loopConfig
-          }) as Record<string, unknown>
-        });
-        continue;
+        title = parsed.name ?? fileName.replace(/\.[^.]+$/, "");
+        finalMetadata = withoutUndefined({
+          ...metadata,
+          rules: parsed.rules ?? parsed.rubrics,
+          overallThreshold: parsed.overallThreshold,
+          loopConfig: parsed.loopConfig
+        }) as Record<string, unknown>;
       } catch {
-        // fall through to text mode
+        // fall through
       }
-    }
-    if (fileType === "harness_workstream" && entry.name.endsWith(".json")) {
+    } else if (classifiedFileType === "harness_workflow" && fileName.endsWith(".json")) {
       try {
         const parsed = JSON.parse(body);
+        title = parsed.title ?? parsed.name ?? fileName.replace(/\.[^.]+$/, "");
+        finalMetadata = withoutUndefined({
+          ...metadata,
+          nodes: parsed.nodes ?? [],
+          edges: parsed.edges ?? []
+        }) as Record<string, unknown>;
         out.push({
           path: rel,
-          title: parsed.title ?? parsed.name ?? fileName.replace(/\.[^.]+$/, ""),
+          title,
           body: parsed.description ?? "",
-          fileType,
-          status,
-          folder: folderName,
-          metadata: withoutUndefined({
-            ...metadata,
-            workstream: true,
-            nodes: parsed.nodes ?? [],
-            edges: parsed.edges ?? []
-          }) as Record<string, unknown>
+          fileType: classifiedFileType,
+          status: "active",
+          folderName,
+          metadata: finalMetadata
         });
         continue;
       } catch {
-        // fall through to text mode
+        // fall through
       }
     }
-    const title = titleFromFile(fileName, body);
-    out.push({ path: rel, title, body, fileType, status, folder: folderName, metadata });
+
+    out.push({
+      path: rel,
+      title,
+      body,
+      fileType: finalFileType,
+      status: "active",
+      folderName,
+      metadata: finalMetadata
+    });
   }
 }
 
-async function loadSeed(): Promise<SeedFile[]> {
+async function loadSeed(manifest: Manifest): Promise<SeedFile[]> {
   const out: SeedFile[] = [];
-  let manifest: Record<string, Record<string, unknown>> = {};
-  try {
-    manifest = JSON.parse(await readFile(path.join(SEED_ROOT, "harness-manifest.json"), "utf8"));
-  } catch {
-    // The manifest is optional for user-created seed directories.
-  }
   await walk(SEED_ROOT, "", out, manifest);
   return out;
+}
+
+function applyManifestToRole(
+  file: SeedFile,
+  manifest: Manifest
+): SeedFile {
+  const relPosix = file.path.replaceAll(path.sep, "/");
+  const entry = manifest[relPosix];
+  if (file.fileType === "harness_role" && entry?.skillSlugs) {
+    return {
+      ...file,
+      metadata: {
+        ...file.metadata,
+        skillSlugs: entry.skillSlugs
+      }
+    };
+  }
+  return file;
 }
 
 export async function GET() {
   try {
     const org = await getOrg();
-    const supabase = requireSupabase(org);
-    const { count, error } = await supabase
-      .from("files")
-      .select("*", { count: "exact", head: true })
-      .eq("org_id", org.orgId);
-    if (error) throw error;
-    return Response.json({ status: "ok", fileCount: count ?? 0 });
+    const files = await listHarnessFiles(org.sql, org.orgId);
+    return Response.json({ status: "ok", fileCount: files.length });
   } catch (err) {
     return errorResponse(err);
   }
@@ -237,85 +293,63 @@ export async function GET() {
 export async function POST() {
   try {
     const org = await getOrg();
-    requireOrgRole(org, ["owner", "admin"]);
-    const supabase = requireSupabase(org);
-    const seed = await loadSeed();
-    const folderNames = Array.from(new Set(seed.map((file) => file.folder)));
-    const { data: existingFolders, error: folderReadError } = await supabase
-      .from("folders")
-      .select("id,name")
-      .eq("org_id", org.orgId)
-      .is("parent_id", null)
-      .is("deleted_at", null);
-    if (folderReadError) throw folderReadError;
+    requireAdmin(org);
 
-    const folderByName = new Map((existingFolders ?? [] as FolderRow[]).map((folder) => [folder.name, folder.id]));
-    for (const name of folderNames) {
-      if (folderByName.has(name)) continue;
-      const { data, error } = await supabase
-        .from("folders")
-        .insert({ org_id: org.orgId, name, sort_order: 100 })
-        .select("id,name")
-        .single();
-      if (error) throw error;
-      folderByName.set(data.name, data.id);
-    }
+    const manifest = await loadManifest();
+    const seed = await loadSeed(manifest);
+    const folderMap = await ensureFolders(org.sql, org.orgId, manifest);
 
-    const { data: existingRows, error: fileReadError } = await supabase
-      .from("files")
-      .select("id,title,body,file_type,status,folder_id,metadata,content_format")
-      .eq("org_id", org.orgId);
-    if (fileReadError) throw fileReadError;
-
-    const existing = (existingRows ?? []) as ExistingFile[];
-    const bySeedPath = new Map<string, ExistingFile>();
-    const bySlugAndType = new Map<string, ExistingFile>();
+    const existing = await listHarnessFiles(org.sql, org.orgId);
+    const bySeedPath = new Map<string, (typeof existing)[number]>();
     for (const row of existing) {
       const seedPath = row.metadata?.seedPath;
-      const slug = row.metadata?.slug;
       if (typeof seedPath === "string") bySeedPath.set(seedPath, row);
-      if (typeof slug === "string") bySlugAndType.set(`${row.file_type}:${slug}`, row);
     }
 
     let seeded = 0;
     let updated = 0;
-    for (const file of seed) {
-        const folderId = folderByName.get(file.folder) ?? null;
-        const existingFile =
-          bySeedPath.get(file.path) ??
-          bySlugAndType.get(`${file.fileType}:${file.metadata.slug as string}`);
-        const payload = {
-          org_id: org.orgId,
+    for (let file of seed) {
+      file = applyManifestToRole(file, manifest);
+      const folderId = folderMap.get(file.folderName) ?? null;
+
+      const current = bySeedPath.get(file.path);
+      if (current) {
+        const changed =
+          current.title !== file.title ||
+          current.body !== file.body ||
+          current.file_type !== file.fileType ||
+          current.status !== file.status ||
+          current.folder_id !== folderId ||
+          JSON.stringify(current.metadata ?? {}) !== JSON.stringify(file.metadata);
+        if (changed) {
+          await updateFile(org.sql, org.orgId, current.id, {
+            title: file.title,
+            body: file.body,
+            fileType: file.fileType,
+            status: file.status,
+            folderId,
+            metadata: file.metadata
+          });
+          await audit(org.sql, org.orgId, {
+            action: "seed-update",
+            entityType: "file",
+            entityId: current.id
+          });
+          updated++;
+        }
+      } else {
+        await createFile(org.sql, org.orgId, {
           title: file.title,
           body: file.body,
-          file_type: file.fileType,
-          status: file.status ?? "active",
-          folder_id: folderId,
-          metadata: withoutUndefined(file.metadata) as Record<string, unknown>,
-          content_format: "markdown"
-        };
-        if (existingFile) {
-          const changed =
-            existingFile.title !== payload.title ||
-            existingFile.body !== payload.body ||
-            existingFile.file_type !== payload.file_type ||
-            existingFile.status !== payload.status ||
-            existingFile.folder_id !== payload.folder_id ||
-            existingFile.content_format !== payload.content_format ||
-            stableJson(existingFile.metadata ?? {}) !== stableJson(payload.metadata);
-          if (changed) {
-            const { error } = await supabase.from("files").update(payload).eq("id", existingFile.id).eq("org_id", org.orgId);
-            if (error) throw error;
-            updated++;
-          }
-        } else {
-          const { error } = await supabase.from("files").insert(payload);
-          if (error) throw error;
-          seeded++;
-        }
+          fileType: file.fileType,
+          status: file.status,
+          folderId,
+          metadata: file.metadata
+        });
+        seeded++;
+      }
     }
-    const { error: relationError } = await supabase.rpc("rebuild_harness_file_relations", { target_org_id: org.orgId });
-    if (relationError) throw relationError;
+
     return Response.json({
       message: `Seed sync complete. Inserted ${seeded}, updated ${updated}.`,
       seeded,

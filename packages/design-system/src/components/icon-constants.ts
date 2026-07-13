@@ -31,18 +31,26 @@ export const ACTION_ICONS = {
 } as const;
 
 export const EVENT_ICONS = {
+  run_started: "play",
   run_completed: "check",
-  run_failed: "x",
-  run_cancelled: "x",
+  run_failed: "x-circle",
+  run_cancelled: "stop",
   node_started: "circle-dot",
   node_status: "circle-dot",
   skill_started: "circle-dot",
   node_completed: "check",
+  node_failed: "x-circle",
+  node_skipped: "arrow-right",
+  node_retrying: "repeat",
   skill_completed: "check",
   artifact_created: "file-text",
   eval_score_updated: "bar-chart",
   human_input_requested: "user",
   human_input_received: "check-circle",
+  tool_call_started: "tool",
+  tool_call_result: "check-circle",
+  text_delta: "text",
+  status: "activity",
 } as const;
 
 export const CONTEXT_KIND_ICONS: Record<string, string> = {
@@ -50,6 +58,7 @@ export const CONTEXT_KIND_ICONS: Record<string, string> = {
    skill: ENTITY_ICONS.skill,
   library: "archive",
   workstream: ENTITY_ICONS.workflow,
+  workflow: ENTITY_ICONS.workflow,
   strategy: "file-text",
   knowledge: ENTITY_ICONS.knowledge,
   prompt: ENTITY_ICONS.prompt,

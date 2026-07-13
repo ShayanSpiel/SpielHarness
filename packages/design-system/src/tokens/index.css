@@ -36,14 +36,32 @@
   --radius-md: 6px;
   --radius-lg: 10px;
   --radius-xl: 14px;
+  --radius-pill: 999px;
 
   --duration-fast: 120ms;
   --duration: 160ms;
   --duration-slow: 240ms;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-distance-sm: 4px;
+  --motion-scale-in: 0.985;
+  --sidebar-list-responsive-max: 38vw;
+  --editor-field-min: 10rem;
+  --editor-field-min-compact: 9.375rem;
+
+  /*
+   * Interaction emphasis is derived from each theme's semantic ring and
+   * border colors. Components consume these tokens instead of choosing
+   * their own focus color or opacity.
+   */
+  --focus-border: color-mix(in oklab, var(--ring) 42%, var(--border-strong));
+  --focus-ring: color-mix(in oklab, var(--ring) 18%, transparent);
+  --disabled-surface: color-mix(in oklab, var(--input) 58%, var(--panel) 42%);
+  --disabled-border: color-mix(in oklab, var(--border) 68%, transparent);
+  --disabled-foreground: color-mix(in oklab, var(--muted-foreground) 72%, transparent);
 
   --font-size-3xs: 10px;
   --font-size-2xs: 11px;
+  --font-size-editor: 15px;
 
   --leading-tight: 1.25;
   --leading-snug: 1.375;

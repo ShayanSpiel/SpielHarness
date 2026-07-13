@@ -1,11 +1,45 @@
-import { errorResponse, getOrg, HttpError, requireOrgRole, requireSupabase } from "../../../lib/server";
-import { loadIntegrationCatalog, type IntegrationOperation as Operation, type IntegrationPreset } from "../../../lib/integration-catalog";
+import {
+  listConnections,
+  softDeleteConnection,
+  updateConnection,
+  upsertConnection
+} from "@spielos/db";
+import type { Connection } from "@spielos/core";
+import { errorResponse, getOrg, HttpError, requireAdmin, requireWrite } from "../../../lib/server";
+import { loadIntegrationCatalog, type IntegrationPreset } from "../../../lib/integration-catalog";
 
+function parseOperations(
+  raw: unknown
+): Connection["operations"] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((o: Record<string, unknown>) => ({
+    id: String(o.id ?? ""),
+    label: o.label as string | undefined,
+    effect: (o.effect as Connection["operations"][number]["effect"]) ?? "read",
+    method: o.method as string | undefined,
+    path: o.path as string | undefined,
+    inputParam: o.inputParam as string | undefined
+  }));
+}
 
-function clientConnection(row: Record<string, unknown>) {
+function toClient(row: {
+  id: string;
+  org_id: string;
+  name: string;
+  kind: string;
+  status: string;
+  base_url: string | null;
+  secret_env_key: string | null;
+  config: Record<string, unknown>;
+  operations: unknown;
+  enabled: boolean;
+}, catalog: IntegrationPreset[] = []) {
   const secretEnvKey = typeof row.secret_env_key === "string" ? row.secret_env_key : null;
   const secretReady = !secretEnvKey || Boolean(process.env[secretEnvKey]);
-  const config = (row.config as Record<string, unknown> | null) ?? {};
+  const config = (row.config ?? {}) as Record<string, unknown>;
+  const preset = typeof config.presetId === "string"
+    ? catalog.find((item) => item.id === config.presetId)
+    : undefined;
   return {
     id: row.id,
     name: row.name,
@@ -14,8 +48,8 @@ function clientConnection(row: Record<string, unknown>) {
     baseUrl: row.base_url,
     secretEnvKey,
     secretConfigured: secretEnvKey ? secretReady : null,
-    operations: (row.operations as Operation[] | null) ?? [],
-    logo: typeof config.logo === "string" ? config.logo : null,
+    operations: parseOperations(row.operations),
+    logo: typeof config.logo === "string" ? config.logo : preset?.logo ?? null,
     account: typeof config.account === "string" ? config.account : null,
     enabled: row.enabled !== false
   };
@@ -23,7 +57,7 @@ function clientConnection(row: Record<string, unknown>) {
 
 export async function GET() {
   const rawCatalog = await loadIntegrationCatalog().catch(() => [] as IntegrationPreset[]);
-  const catalog = rawCatalog.map((preset) => ({
+  const presets = rawCatalog.map((preset) => ({
     ...preset,
     oauthReady: preset.kind !== "oauth" || (preset.id === "notion"
       ? Boolean(process.env.NOTION_CLIENT_ID && process.env.NOTION_CLIENT_SECRET)
@@ -31,40 +65,52 @@ export async function GET() {
   }));
   try {
     const org = await getOrg();
-    const supabase = requireSupabase(org);
-    const { data, error } = await supabase.from("connections").select("*")
-      .eq("org_id", org.orgId).is("deleted_at", null).order("name");
-    if (error) {
-      return Response.json({ integrations: [], presets: catalog, setupRequired: true });
-    }
-    return Response.json({ integrations: (data ?? []).map(clientConnection), presets: catalog });
+    const connections = await listConnections(org.sql, org.orgId);
+    return Response.json({ integrations: connections.map((row) => toClient(row, rawCatalog)), presets });
   } catch {
-    return Response.json({ integrations: [], presets: catalog, setupRequired: true });
+    return Response.json({ integrations: [], presets, setupRequired: true });
   }
 }
 
 export async function POST(request: Request) {
   try {
     const org = await getOrg();
-    requireOrgRole(org, ["owner", "admin"]);
-    const supabase = requireSupabase(org);
-    const body = await request.json() as Record<string, unknown>;
-    const preset = typeof body.presetId === "string" ? (await loadIntegrationCatalog()).find((item) => item.id === body.presetId) : undefined;
-    const name = body.name ?? preset?.name;
-    if (!name) throw new HttpError(400, "name is required");
-    const { data, error } = await supabase.from("connections").insert({
-      org_id: org.orgId,
-      name,
-      kind: body.kind ?? preset?.kind ?? "api",
-      base_url: body.baseUrl || preset?.baseUrl || null,
-      secret_env_key: body.secretEnvKey || preset?.secretEnvKey || null,
-      config: preset ? { presetId: preset.id, icon: preset.icon, logo: preset.logo, description: preset.description } : {},
-      operations: body.operations ?? preset?.operations ?? [],
-      status: body.status ?? (preset?.kind === "oauth" ? "needs_secret" : "configured"),
+    requireWrite(org);
+    const body = (await request.json()) as {
+      presetId?: string;
+      name: string;
+      kind: string;
+      status?: string;
+      baseUrl?: string | null;
+      secretEnvKey?: string | null;
+      config?: Record<string, unknown>;
+      operations?: Array<Record<string, unknown>>;
+      enabled?: boolean;
+    };
+    const catalog = body.presetId ? await loadIntegrationCatalog() : [];
+    const preset = body.presetId
+      ? catalog.find((item) => item.id === body.presetId)
+      : undefined;
+    if (body.presetId && !preset) throw new HttpError(400, "Unknown integration preset");
+    if (!preset && !body.name) throw new HttpError(400, "name is required");
+    const row = await upsertConnection(org.sql, org.orgId, {
+      name: preset?.name ?? body.name,
+      kind: preset?.kind ?? body.kind ?? "api",
+      status: body.status,
+      baseUrl: preset?.baseUrl ?? body.baseUrl ?? null,
+      secretEnvKey: preset?.secretEnvKey ?? body.secretEnvKey ?? null,
+      config: preset
+        ? {
+            presetId: preset.id,
+            icon: preset.icon,
+            logo: preset.logo,
+            description: preset.description,
+          }
+        : body.config ?? {},
+      operations: preset?.operations ?? body.operations ?? [],
       enabled: body.enabled ?? true
-    }).select().single();
-    if (error) throw error;
-    return Response.json({ integration: clientConnection(data) }, { status: 201 });
+    });
+    return Response.json({ integration: toClient(row) }, { status: 201 });
   } catch (err) {
     return errorResponse(err);
   }
@@ -73,21 +119,27 @@ export async function POST(request: Request) {
 export async function PUT(request: Request) {
   try {
     const org = await getOrg();
-    requireOrgRole(org, ["owner", "admin"]);
-    const supabase = requireSupabase(org);
-    const body = await request.json() as Record<string, unknown>;
+    requireWrite(org);
+    const body = (await request.json()) as {
+      id: string;
+      name?: string;
+      kind?: string;
+      baseUrl?: string | null;
+      secretEnvKey?: string | null;
+      operations?: Array<Record<string, unknown>>;
+      enabled?: boolean;
+    };
     if (!body.id) throw new HttpError(400, "id is required");
-    const patch: Record<string, unknown> = {};
-    if (body.name !== undefined) patch.name = body.name;
-    if (body.kind !== undefined) patch.kind = body.kind;
-    if (body.baseUrl !== undefined) patch.base_url = body.baseUrl || null;
-    if (body.secretEnvKey !== undefined) patch.secret_env_key = body.secretEnvKey || null;
-    if (body.operations !== undefined) patch.operations = body.operations;
-    if (body.enabled !== undefined) patch.enabled = body.enabled;
-    const { data, error } = await supabase.from("connections").update(patch)
-      .eq("id", body.id).eq("org_id", org.orgId).select().single();
-    if (error) throw error;
-    return Response.json({ integration: clientConnection(data) });
+    const row = await updateConnection(org.sql, org.orgId, body.id, {
+      name: body.name,
+      kind: body.kind,
+      baseUrl: body.baseUrl,
+      secretEnvKey: body.secretEnvKey,
+      operations: body.operations,
+      enabled: body.enabled
+    });
+    if (!row) throw new HttpError(404, "Connection not found");
+    return Response.json({ integration: toClient(row) });
   } catch (err) {
     return errorResponse(err);
   }
@@ -96,13 +148,11 @@ export async function PUT(request: Request) {
 export async function DELETE(request: Request) {
   try {
     const org = await getOrg();
-    requireOrgRole(org, ["owner", "admin"]);
-    const supabase = requireSupabase(org);
+    requireAdmin(org);
     const id = new URL(request.url).searchParams.get("id");
     if (!id) throw new HttpError(400, "id is required");
-    const { error } = await supabase.from("connections").update({ deleted_at: new Date().toISOString() })
-      .eq("id", id).eq("org_id", org.orgId);
-    if (error) throw error;
+    const ok = await softDeleteConnection(org.sql, org.orgId, id);
+    if (!ok) throw new HttpError(404, "Connection not found");
     return Response.json({ ok: true });
   } catch (err) {
     return errorResponse(err);

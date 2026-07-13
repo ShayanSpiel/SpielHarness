@@ -1,0 +1,65 @@
+{
+  "title": "SEO Content Strategy",
+  "description": "Keyword research → topic cluster → strategy brief. Uses DuckDuckGo for SEO research.",
+  "nodes": [
+    {
+      "id": "ask-keywords",
+      "title": "Enter Keywords",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Ask the user: what topic or keywords should we research? Suggest: (A) Enter specific keywords, (B) Describe a topic and I'll find keywords, (C) Browse a competitor URL and I'll extract their keywords.",
+      "input": "user_request",
+      "output": "keywords_input",
+      "x": 80,
+      "y": 200
+    },
+    {
+      "id": "research",
+      "title": "SEO Research",
+      "roleSlug": "researcher",
+      "skillSlugs": ["duckduckgo.search", "knowledge.search"],
+      "prompt": "Research the keywords topic. Find: search volume signals, related queries, search intent, competitor content ranking. Use DuckDuckGo for web search.",
+      "input": "keywords_input",
+      "output": "seo_research",
+      "x": 340,
+      "y": 200
+    },
+    {
+      "id": "strategy",
+      "title": "Topic Cluster Brief",
+      "roleSlug": "strategist",
+      "skillSlugs": ["llm.generate", "template.picker"],
+      "prompt": "From the SEO research, build a topic cluster. Identify 1 pillar topic and 3-5 cluster topics. Write a brief for each with reader, pain, belief, point, proof, meaning.",
+      "input": "seo_research",
+      "output": "cluster_brief",
+      "x": 600,
+      "y": 200
+    },
+    {
+      "id": "ask-approve",
+      "title": "Approve Cluster",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Show the topic cluster to the user. Ask: (A) Approve all and proceed to content calendar, (B) Approve with edits (let them specify), (C) Reject and refine.",
+      "input": "cluster_brief",
+      "output": "approval",
+      "x": 860,
+      "y": 200
+    },
+    {
+      "id": "calendar",
+      "title": "Content Calendar",
+      "roleSlug": "strategist",
+      "skillSlugs": ["content-calendar", "llm.generate"],
+      "prompt": "Build a content calendar from the approved cluster. Schedule one post per topic per platform over 2 weeks.",
+      "input": "approval",
+      "output": "content_calendar",
+      "x": 1120,
+      "y": 200
+    }
+  ],
+  "edges": [
+    { "id": "keywords-research", "source": "ask-keywords", "target": "research" },
+    { "id": "research-strategy", "source": "research", "target": "strategy" },
+    { "id": "strategy-approve", "source": "strategy", "target": "ask-approve" },
+    { "id": "approve-calendar", "source": "ask-approve", "target": "calendar" }
+  ]
+}

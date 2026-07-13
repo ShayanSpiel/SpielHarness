@@ -1,95 +1,116 @@
 {
   "title": "Content Pipeline",
-  "description": "Research, strategy, writing, editing, and publishing approval for one content request.",
+  "description": "Turns any topic, session log, or user prompt into X, LinkedIn, and Blog posts. Includes format selection and publish approval wizards.",
   "nodes": [
     {
       "id": "research",
       "title": "Research",
       "roleSlug": "researcher",
-      "skillSlugs": ["knowledge.search"],
-      "prompt": "Gather only the evidence needed to write a grounded strategy brief.",
+      "skillSlugs": ["duckduckgo.search", "knowledge.search"],
+      "prompt": "Gather audience, market, and competitor signals for the topic. Use DuckDuckGo for web research. Return only what the Strategist needs.",
       "input": "user_request",
-      "output": "research_report",
+      "output": "research_output",
       "x": 80,
-      "y": 160
+      "y": 200
+    },
+    {
+      "id": "ask-formats",
+      "title": "Choose Formats",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Ask the user which content formats to generate. Suggest: (A) X Post only, (B) LinkedIn Post only, (C) Blog Post only, (D) X + LinkedIn, (E) All 3 platforms. Let them pick multiple or write their own.",
+      "input": "research_output",
+      "output": "formats_decision",
+      "x": 340,
+      "y": 200
     },
     {
       "id": "strategy",
       "title": "Strategy Brief",
       "roleSlug": "strategist",
-      "skillSlugs": ["llm.generate", "icp-world-simulator"],
-      "prompt": "Translate the research and request into the six-field strategy brief.",
-      "input": "research_report",
+      "skillSlugs": ["llm.generate", "icp-world-simulator", "template.picker"],
+      "prompt": "Run ICP World Simulator on the source. Map to 6-field brief. Run template picker for the chosen formats. Write the brief.",
+      "input": "formats_decision",
       "output": "brief",
-      "x": 340,
-      "y": 160
+      "x": 600,
+      "y": 200
     },
     {
-      "id": "draft",
-      "title": "Draft",
+      "id": "write",
+      "title": "Write Drafts",
       "roleSlug": "writer",
-      "skillSlugs": ["llm.generate", "template.apply"],
-      "prompt": "Write X, LinkedIn, and blog drafts from the strategy brief.",
+      "skillSlugs": ["llm.generate", "voice.match", "template.apply"],
+      "prompt": "Run voice match first. Then write drafts for each chosen format from the brief using the picked templates. Apply full frontmatter to every draft.",
       "input": "brief",
       "output": "drafts",
-      "x": 600,
-      "y": 160
+      "x": 860,
+      "y": 200
     },
     {
       "id": "edit",
       "title": "Edit Drafts",
       "roleSlug": "editor",
-      "skillSlugs": ["llm.generate"],
-      "prompt": "Edit the drafts for clarity and readiness. Return the revised drafts.",
+      "skillSlugs": ["llm.generate", "pipeline-gate-evaluator", "grounding-evaluator"],
+      "prompt": "Run pipeline gates and grounding check on every draft. If any fail below 75%, return specific fix notes. If all pass, mark drafts as ready.",
       "input": "drafts",
       "output": "revised_drafts",
-      "x": 860,
-      "y": 160
+      "x": 1120,
+      "y": 200
     },
     {
       "id": "gate-eval",
       "nodeType": "eval",
       "title": "QA: Pipeline Gates",
-      "roleId": "runtime.eval",
-      "skillSlugs": ["pipeline-gates"],
-      "prompt": "Run the mechanical pipeline gates.",
+      "skillSlugs": ["pipeline-gate-evaluator"],
+      "prompt": "Run the mechanical pipeline gates on the edited drafts.",
       "input": "revised_drafts",
       "output": "eval_report",
       "evalInput": { "type": "node_output", "nodeId": "edit" },
-      "x": 1120,
-      "y": 160
+      "x": 1380,
+      "y": 120
     },
     {
       "id": "grounding-eval",
       "nodeType": "eval",
       "title": "QA: Grounding Check",
-      "roleId": "runtime.eval",
-      "skillSlugs": ["grounding-check"],
-      "prompt": "Run the grounding evaluation against the strategy brief and evidence.",
+      "skillSlugs": ["grounding-evaluator"],
+      "prompt": "Run grounding evaluation against the strategy brief.",
       "input": "eval_report",
       "output": "grounding_report",
       "evalInput": { "type": "node_output", "nodeId": "edit" },
       "x": 1380,
-      "y": 160
+      "y": 280
     },
     {
-      "id": "approval",
-      "title": "Approval",
-      "roleSlug": "publisher",
+      "id": "ask-publish",
+      "title": "Publish Approval",
       "skillSlugs": ["ask-the-user"],
-      "prompt": "Ask for publish, hold, or reject, then build a manual publish package for approved drafts.",
+      "prompt": "Show the user each ready draft. Ask: (A) Publish all to their platforms, (B) Publish X only, (C) Publish LinkedIn only, (D) Publish Blog only, (E) Hold all. Include the draft summaries in your question.",
       "input": "grounding_report",
-      "output": "publish_package",
+      "output": "approval_decision",
       "x": 1640,
-      "y": 160
+      "y": 200
+    },
+    {
+      "id": "publish",
+      "title": "Publish",
+      "roleSlug": "publisher",
+      "skillSlugs": ["publish-package-builder"],
+      "prompt": "Build publish packages for approved drafts. Include platform, final body, and tracking notes.",
+      "input": "approval_decision",
+      "output": "publish_package",
+      "x": 1900,
+      "y": 200
     }
   ],
   "edges": [
-    { "id": "research-strategy", "source": "research", "target": "strategy" },
-    { "id": "strategy-draft", "source": "strategy", "target": "draft" },
-    { "id": "draft-edit", "source": "draft", "target": "edit" },
+    { "id": "research-formats", "source": "research", "target": "ask-formats" },
+    { "id": "formats-strategy", "source": "ask-formats", "target": "strategy" },
+    { "id": "strategy-write", "source": "strategy", "target": "write" },
+    { "id": "write-edit", "source": "write", "target": "edit" },
     { "id": "edit-gate", "source": "edit", "target": "gate-eval" },
-    { "id": "gate-grounding", "source": "gate-eval", "target": "grounding-eval" },
-    { "id": "grounding-approval", "source": "grounding-eval", "target": "approval" }
+    { "id": "edit-grounding", "source": "edit", "target": "grounding-eval" },
+    { "id": "gate-publish", "source": "gate-eval", "target": "ask-publish" },
+    { "id": "grounding-publish", "source": "grounding-eval", "target": "ask-publish" },
+    { "id": "ask-publish-out", "source": "ask-publish", "target": "publish" }
   ]
 }

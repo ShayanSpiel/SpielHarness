@@ -84,7 +84,7 @@ export function MentionDropdown({
     return (
       <div
         className={cn(
-          "z-50 w-72 overflow-hidden rounded-lg border border-border bg-panel-raised shadow-[var(--shadow-panel)]",
+          "z-50 w-72 overflow-hidden rounded-md border border-border bg-panel-strong shadow-popover",
           className
         )}
       >
@@ -102,7 +102,7 @@ export function MentionDropdown({
   return (
     <div
       className={cn(
-        "z-50 max-h-64 w-72 overflow-y-auto rounded-lg border border-border bg-panel-raised shadow-[var(--shadow-panel)]",
+        "z-50 max-h-64 w-72 overflow-y-auto rounded-md border border-border bg-panel-strong shadow-popover",
         className
       )}
       onKeyDown={handleKeyDown}
@@ -111,7 +111,7 @@ export function MentionDropdown({
     >
       {grouped.map((group) => (
         <div key={group.kind}>
-          <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
             <Icon name={KIND_ICONS[group.kind]} size={12} />
             {group.label}
           </div>

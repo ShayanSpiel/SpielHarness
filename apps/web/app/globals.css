@@ -1,9 +1,9 @@
+@import "@spielos/design-system/base.css";
+@import "../components/chat/chat-markdown.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-@import "@spielos/design-system/base.css";
-@import "../components/chat/chat-markdown.css";
 
 html,
 body {
@@ -22,7 +22,7 @@ kbd {
 .react-flow .react-flow__controls {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-popover);
   overflow: hidden;
 }
@@ -58,12 +58,12 @@ kbd {
 .react-flow .react-flow__minimap {
   background: var(--panel) !important;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-popover);
 }
 
 .react-flow .react-flow__minimap-svg {
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 .react-flow .react-flow__minimap-node {

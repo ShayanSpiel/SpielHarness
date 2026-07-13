@@ -45,7 +45,7 @@ select {
 ::-webkit-scrollbar-thumb {
   background: var(--border);
   border: 2px solid var(--background);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -79,4 +79,98 @@ button {
 
 button:disabled {
   cursor: not-allowed;
+}
+
+@keyframes spiel-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes spiel-overlay-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes spiel-dialog-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + var(--motion-distance-sm))) scale(var(--motion-scale-in));
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes spiel-dialog-out {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + var(--motion-distance-sm))) scale(var(--motion-scale-in));
+  }
+}
+
+@keyframes spiel-dialog-top-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, var(--motion-distance-sm)) scale(var(--motion-scale-in));
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+@keyframes spiel-dialog-top-out {
+  from {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, var(--motion-distance-sm)) scale(var(--motion-scale-in));
+  }
+}
+
+.motion-overlay[data-state="open"] {
+  animation: spiel-overlay-in var(--duration-fast) var(--ease) both;
+}
+
+.motion-overlay[data-state="closed"] {
+  animation: spiel-overlay-out var(--duration-fast) var(--ease) both;
+}
+
+.motion-dialog[data-state="open"] {
+  animation: spiel-dialog-in var(--duration) var(--ease) both;
+}
+
+.motion-dialog {
+  transform: translate(-50%, -50%);
+}
+
+.motion-dialog[data-state="closed"] {
+  animation: spiel-dialog-out var(--duration-fast) var(--ease) both;
+}
+
+.motion-dialog-top {
+  transform: translate(-50%, 0);
+}
+
+.motion-dialog-top[data-state="open"] {
+  animation: spiel-dialog-top-in var(--duration) var(--ease) both;
+}
+
+.motion-dialog-top[data-state="closed"] {
+  animation: spiel-dialog-top-out var(--duration-fast) var(--ease) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-overlay,
+  .motion-dialog,
+  .motion-dialog-top {
+    animation: none !important;
+  }
 }

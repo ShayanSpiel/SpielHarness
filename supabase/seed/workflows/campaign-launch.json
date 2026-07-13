@@ -1,0 +1,101 @@
+{
+  "title": "Campaign Launch",
+  "description": "Full end-to-end campaign: define, research, strategize, write, create tasks in Notion, and publish. Exercises DuckDuckGo, Notion, and Buffer.",
+  "nodes": [
+    {
+      "id": "ask-campaign",
+      "title": "Campaign Brief",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Ask the user for the campaign details. Suggest: (A) Product launch campaign, (B) Seasonal promotion, (C) Content series (e.g. 5-part LinkedIn series), (D) Custom campaign. Also ask: target audience, key message, timeline.",
+      "input": "user_request",
+      "output": "campaign_params",
+      "x": 80,
+      "y": 160
+    },
+    {
+      "id": "research",
+      "title": "Campaign Research",
+      "roleSlug": "researcher",
+      "skillSlugs": ["duckduckgo.search", "knowledge.search"],
+      "prompt": "Research the campaign topic. Find: audience conversations, competitor campaigns, trending angles, relevant data points.",
+      "input": "campaign_params",
+      "output": "research_output",
+      "x": 340,
+      "y": 160
+    },
+    {
+      "id": "strategy",
+      "title": "Campaign Strategy",
+      "roleSlug": "strategist",
+      "skillSlugs": ["llm.generate", "icp-world-simulator", "template.picker"],
+      "prompt": "Create the campaign strategy: reader, pain, belief, point, proof, meaning for the campaign. Pick templates per platform. Define campaign narrative arc across all posts.",
+      "input": "research_output",
+      "output": "campaign_brief",
+      "x": 600,
+      "y": 160
+    },
+    {
+      "id": "ask-strategy",
+      "title": "Approve Strategy",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Show the campaign strategy brief. Ask: (A) Approve and proceed to writing and task creation, (B) Edit strategy, (C) Reject and restart.",
+      "input": "campaign_brief",
+      "output": "strategy_approval",
+      "x": 860,
+      "y": 80
+    },
+    {
+      "id": "write",
+      "title": "Write Assets",
+      "roleSlug": "writer",
+      "skillSlugs": ["llm.generate", "template.apply", "voice.match"],
+      "prompt": "Write all campaign assets: posts for each platform in the campaign, using the strategy brief and picked templates. Apply voice match and full frontmatter.",
+      "input": "strategy_approval",
+      "output": "campaign_drafts",
+      "x": 860,
+      "y": 240
+    },
+    {
+      "id": "notion-tasks",
+      "title": "Create Campaign Tasks",
+      "roleSlug": "notion-admin",
+      "skillSlugs": ["notion.create"],
+      "prompt": "Create tasks in the Campaign database in Notion. Include: campaign name, assets to produce, deadlines, and status tracking.",
+      "input": "strategy_approval",
+      "output": "campaign_tasks",
+      "x": 1120,
+      "y": 160
+    },
+    {
+      "id": "ask-publish",
+      "title": "Final Approval",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Show the user: (1) All campaign drafts, (2) Notion tasks created. Ask: (A) Publish all assets now, (B) Schedule across the campaign timeline, (C) Publish some now, hold others, (D) Hold all for manual review.",
+      "input": "campaign_drafts",
+      "output": "final_approval",
+      "x": 1380,
+      "y": 160
+    },
+    {
+      "id": "publish",
+      "title": "Publish Campaign",
+      "roleSlug": "publisher",
+      "skillSlugs": ["publish-package-builder"],
+      "prompt": "Build publish packages for approved campaign assets and dispatch.",
+      "input": "final_approval",
+      "output": "publish_package",
+      "x": 1640,
+      "y": 160
+    }
+  ],
+  "edges": [
+    { "id": "ask-research", "source": "ask-campaign", "target": "research" },
+    { "id": "research-strategy", "source": "research", "target": "strategy" },
+    { "id": "strategy-approve", "source": "strategy", "target": "ask-strategy" },
+    { "id": "approve-write", "source": "ask-strategy", "target": "write" },
+    { "id": "approve-notion", "source": "ask-strategy", "target": "notion-tasks" },
+    { "id": "write-publishask", "source": "write", "target": "ask-publish" },
+    { "id": "notion-publishask", "source": "notion-tasks", "target": "ask-publish" },
+    { "id": "publishask-out", "source": "ask-publish", "target": "publish" }
+  ]
+}

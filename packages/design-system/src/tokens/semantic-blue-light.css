@@ -1,14 +1,14 @@
 [data-theme="blue-light"] {
   --background: var(--blue-light-bg0);
-  --background-deep: var(--blue-light-bg0_h);
-  --panel: var(--blue-light-bg0);
+  --background-deep: var(--blue-light-bg0_s);
+  --panel: var(--blue-light-bg0_h);
   --panel-raised: var(--blue-light-bg0_s);
   --panel-strong: var(--blue-light-bg1);
-  --input: var(--blue-light-bg0);
-  --hover: var(--blue-light-bg1);
-  --selected: var(--blue-light-bg2);
-  --border: var(--blue-light-bg2);
-  --border-strong: var(--blue-light-bg3);
+  --input: var(--blue-light-bg0_h);
+  --hover: color-mix(in oklab, var(--blue-light-fg1) 5%, var(--blue-light-bg0_h));
+  --selected: color-mix(in oklab, var(--blue-light-blue) 10%, var(--blue-light-bg0_s));
+  --border: color-mix(in oklab, var(--blue-light-bg2) 68%, var(--blue-light-bg0_h));
+  --border-strong: var(--blue-light-bg2);
   --ring: var(--blue-light-blue);
 
   --foreground: var(--blue-light-fg1);

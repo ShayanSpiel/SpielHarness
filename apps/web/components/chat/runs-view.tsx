@@ -1,9 +1,7 @@
 "use client";
 
-import { Icon } from "@spielos/design-system/components";
-import { InspectorToggle } from "../inspector-toggle";
-import { useEffect, useMemo, useState } from "react";
 import { Button, Tooltip } from "@spielos/design-system";
+import { useEffect, useState } from "react";
 import { ChatThread } from "./chat-thread";
 import { RunsModal } from "./runs-modal";
 import { useRunContext } from "../../lib/run-context";
@@ -12,43 +10,28 @@ import { useWorkspaceStore } from "../../lib/use-workspace-store";
 function RunHeader({ onOpenRuns }: { onOpenRuns: () => void }) {
   const run = useRunContext();
   const store = useWorkspaceStore();
-  const chat = useMemo(
-    () => store.chats.find((entry) => entry.id === store.activeChatId) ?? null,
-    [store.chats, store.activeChatId]
-  );
+  const chat = store.chats.find((c) => c.id === store.activeChatId) ?? null;
+  const [title, setTitle] = useState(chat?.title ?? "New run");
 
   useEffect(() => {
-    if (chat) {
-      run.setRunTitle(chat.title);
-    }
-  }, [chat, run]);
+    if (chat) setTitle(chat.title);
+  }, [chat]);
 
-  const counts = useMemo(() => {
-    const map: Record<string, number> = { role: 0, skill: 0, library: 0, workstream: 0, strategy: 0, knowledge: 0, prompt: 0, eval: 0 };
-    for (const item of run.contextItems) map[item.kind] += 1;
-    return map;
-  }, [run.contextItems]);
+  const counts: Record<string, number> = {};
+  for (const item of run.contextItems) counts[item.kind] = (counts[item.kind] ?? 0) + 1;
 
   return (
-    <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-panel-raised px-3">
+    <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-background px-3">
       <Tooltip content="Open runs (⌘⇧O)" side="bottom">
-        <Button
-          aria-label="Open runs"
-          className="gap-1.5 text-xs font-medium text-foreground"
-          onClick={onOpenRuns}
-          size="sm"
-          variant="ghost"
-        >
-          <Icon name="play" size={14} />
-          {run.runTitle}
+        <Button aria-label="Open runs" onClick={onOpenRuns} size="sm" variant="ghost" icon="play">
+          {title}
         </Button>
       </Tooltip>
       <span className="text-2xs text-muted-foreground">
-        {counts.role} roles · {counts.skill} skills · {counts.prompt} prompts · {counts.library + counts.strategy + counts.knowledge} files · {counts.workstream} workstreams
+        {run.contextItems.length} attached
+        {run.events.length > 0 ? ` · ${run.events.length} events` : ""}
+        {run.artifacts.length > 0 ? ` · ${run.artifacts.length} artifacts` : ""}
       </span>
-      <div className="ml-auto flex items-center gap-1.5">
-        <InspectorToggle label="Open inspector" />
-      </div>
     </header>
   );
 }
@@ -56,15 +39,24 @@ function RunHeader({ onOpenRuns }: { onOpenRuns: () => void }) {
 export function RunsView() {
   const [runsOpen, setRunsOpen] = useState(false);
 
+  useEffect(() => {
+    function handle(event: KeyboardEvent) {
+      if (event.key === "O" && (event.metaKey || event.ctrlKey) && event.shiftKey) {
+        event.preventDefault();
+        setRunsOpen((current) => !current);
+      }
+    }
+    document.addEventListener("keydown", handle);
+    return () => document.removeEventListener("keydown", handle);
+  }, []);
+
   return (
-    <>
-      <div className="flex h-full min-h-0 flex-col bg-background">
-        <RunHeader onOpenRuns={() => setRunsOpen(true)} />
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <ChatThread />
-        </div>
+    <div className="flex h-full min-h-0 flex-col bg-background">
+      <RunHeader onOpenRuns={() => setRunsOpen(true)} />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <ChatThread />
       </div>
       <RunsModal onOpenChange={setRunsOpen} open={runsOpen} />
-    </>
+    </div>
   );
 }

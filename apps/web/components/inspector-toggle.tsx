@@ -1,22 +1,19 @@
 "use client";
 
-import { Icon } from "@spielos/design-system/components";
 import { Button, Tooltip } from "@spielos/design-system";
-import { useWorkspaceStore } from "../lib/use-workspace-store";
+import { useUiStore } from "../lib/use-ui-store";
 
-export function InspectorToggle({ label }: { label?: string }) {
-  const store = useWorkspaceStore();
-
+export function InspectorToggle({ label }: { label: string }) {
+  const ui = useUiStore();
   return (
-    <Tooltip content={store.inspectorOpen ? "Close panel" : (label ?? "Open panel")} side="bottom">
+    <Tooltip content={label} side="bottom">
       <Button
-        aria-label={store.inspectorOpen ? "Close panel" : (label ?? "Open panel")}
-        onClick={() => store.toggleInspector()}
+        aria-label={label}
+        icon={ui.inspectorOpen ? "panel-right-close" : "panel-right-open"}
+        onClick={ui.toggleInspector}
         size="icon"
         variant="ghost"
-      >
-        <Icon name={store.inspectorOpen ? "panel-right-close" : "panel-right-open"} size={14} />
-      </Button>
+      />
     </Tooltip>
   );
 }

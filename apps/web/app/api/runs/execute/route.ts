@@ -1,304 +1,215 @@
-import { errorResponse, getOrg, HttpError, requireOrgWrite, requireSupabase } from "../../../../lib/server";
 import {
-  resolveModelProvider,
-  resolveExecution,
-  streamPlainChat,
-  type ExecuteBody
-} from "../../../../lib/execution-service";
-import { streamRun } from "@spielos/graph";
-import { recordRunUsage } from "../../../../lib/usage";
-import { createRunEventBuffer } from "../../../../lib/run-event-buffer";
-import { persistRunArtifact } from "../../../../lib/workspace-artifact";
+  appendChatMessages,
+  appendRunEvents,
+  createChat,
+  createFile,
+  createRun,
+  linkRunInputFiles,
+  linkRunOutputFile,
+  nextRunEventSequence,
+  recordUsage,
+  updateRun
+} from "@spielos/db";
+import { errorResponse, getOrg, HttpError, requireWrite } from "../../../../lib/server";
+import { resolveExecution, type ExecuteBody } from "../../../../lib/execution-service";
+import { streamChatRun, streamRun, type RunCheckpoint, type RunYield } from "@spielos/graph";
+import type { Artifact, RunEvent, RunStatus } from "@spielos/core";
 
-function frame(data: unknown) {
+function frame(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
-function runEvent(orgId: string, runId: string, type: "run_completed" | "run_failed" | "run_cancelled", message: string, payload?: Record<string, unknown>) {
-  return {
-    id: `evt_${crypto.randomUUID()}`,
-    orgId,
-    runId,
-    type,
-    message,
-    payload,
-    createdAt: new Date().toISOString()
-  };
-}
+type PendingEvent = {
+  event_type: string;
+  node_id: string | null;
+  node_title: string | null;
+  skill_id: string | null;
+  skill_name: string | null;
+  message: string;
+  payload: Record<string, unknown>;
+};
 
 export async function POST(request: Request) {
   try {
     const org = await getOrg();
-    requireOrgWrite(org);
-    const supabase = requireSupabase(org);
+    requireWrite(org);
+
     const body = (await request.json()) as ExecuteBody;
     if (!body.prompt?.trim()) throw new HttpError(400, "prompt is required");
-    const idempotencyKey = request.headers.get("idempotency-key") ?? body.idempotencyKey;
+
+    const idempotencyKey = request.headers.get("idempotency-key") ?? body.idempotencyKey ?? null;
     if (idempotencyKey) {
-      const { data: duplicate, error: duplicateError } = await supabase
-        .from("runs")
-        .select("id, status")
-        .eq("org_id", org.orgId)
-        .eq("idempotency_key", idempotencyKey)
-        .maybeSingle();
-      if (duplicateError) throw duplicateError;
-      if (duplicate) throw new HttpError(409, `Run already exists (${duplicate.id}, ${duplicate.status}).`);
-    }
-
-    const resolved = await resolveExecution(supabase, org.orgId, body);
-    const preferredModelId = resolved.nodes.map((node) => resolved.rolesById[node.roleId]?.modelId).find(Boolean);
-    const { provider, model } = await resolveModelProvider(supabase, org.orgId, preferredModelId);
-
-    if (body.chatId) {
-      const { data: existingChat } = await supabase.from("chats").select("id").eq("id", body.chatId).eq("org_id", org.orgId).maybeSingle();
-      if (!existingChat) {
-        const { error: chatError } = await supabase.from("chats").insert({
-          id: body.chatId,
-          org_id: org.orgId,
-          title: body.prompt.trim().slice(0, 80) || "New chat"
-        });
-        if (chatError) throw new HttpError(400, "Invalid or unavailable chat id");
+      const existing = await org.sql<{ id: string; status: string }[]>`
+        select id, status from runs
+        where org_id = ${org.orgId} and idempotency_key = ${idempotencyKey}
+        limit 1
+      `;
+      if (existing.length > 0) {
+        throw new HttpError(409, `Run already exists (${existing[0].id}, ${existing[0].status}).`);
       }
     }
 
-    let runId = body.runId;
-    const inputs = {
-      target: resolved.target,
-      contextRefs: resolved.contextRefs,
-      selectedContext: resolved.selectedContext,
-      nodes: resolved.nodes,
-      workstreamId: resolved.workstreamId,
-      explicit_context: resolved.contextRefs.length === 0 ? [] : resolved.contextRefs
-    };
+    const chatId: string | null = body.chatId ?? null;
+    const [resolved] = await Promise.all([
+      resolveExecution(org, body),
+      chatId
+        ? createChat(org.sql, org.orgId, chatId, body.prompt.trim().slice(0, 80) || "New chat")
+        : Promise.resolve(null)
+    ]);
 
-    if (runId) {
-      const { data: existingRun, error: existingRunError } = await supabase
-        .from("runs")
-        .select("id")
-        .eq("id", runId)
-        .eq("org_id", org.orgId)
-        .single();
-      if (existingRunError || !existingRun) throw new HttpError(404, "Run not found");
-      const { error: updateError } = await supabase
-        .from("runs")
-        .update({ status: "running", inputs, updated_at: new Date().toISOString() })
-        .eq("id", runId)
-        .eq("org_id", org.orgId);
-      if (updateError) throw updateError;
-    } else {
-      const { data: created, error } = await supabase
-        .from("runs")
-        .insert({
-          org_id: org.orgId,
-          chat_id: body.chatId ?? null,
-          workstream_id: resolved.workstreamId,
-          run_type: resolved.target.type === "eval" ? "eval" : "custom",
-          prompt: body.prompt,
-          status: "running",
-          inputs,
-          idempotency_key: idempotencyKey ?? null,
-          requested_by: org.profileId,
-          definition_snapshot: {
-            target: resolved.target,
-            nodes: resolved.nodes,
-            selectedContext: resolved.selectedContext,
-            workstreamId: resolved.workstreamId
-          }
-        })
-        .select()
-        .single();
-      if (error) throw error;
-      if (!created) throw new HttpError(500, "Failed to create run");
-      runId = created.id;
+    const run = await createRun(org.sql, org.orgId, {
+      chatId,
+      workflowId: resolved.target.type === "workflow" ? resolved.target.id : null,
+      type: resolved.type,
+      prompt: body.prompt,
+      inputs: {
+        target: resolved.target,
+        contextFileIds: resolved.contextFileIds
+      },
+      definitionSnapshot: {
+        target: resolved.target,
+        workflow: resolved.runRequest.workflow,
+        singleNode: resolved.runRequest.singleNode,
+        roles: resolved.runRequest.roles,
+        skills: resolved.runRequest.skills
+      },
+      idempotencyKey
+    });
+
+    if (resolved.contextFileIds.length > 0) {
+      await linkRunInputFiles(org.sql, org.orgId, run.id, resolved.contextFileIds);
     }
+    const firstEventSequence = await nextRunEventSequence(org.sql, org.orgId, run.id);
 
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
-        let waitingForHuman = false;
-        let terminalSent = false;
-        let terminalStatus: "completed" | "failed" | "cancelled" | null = null;
+        controller.enqueue(encoder.encode(frame({ kind: "run", runId: run.id, type: resolved.type })));
+        const pendingEvents: PendingEvent[] = [];
+        const pendingArtifacts: Artifact[] = [];
         let outputText = "";
-        const artifactIds: string[] = [];
-        let checkpoint: Record<string, unknown> = {};
-        const eventBuffer = createRunEventBuffer(supabase, org.orgId, runId!);
-        controller.enqueue(encoder.encode(frame({
-          kind: "run",
-          runId,
-          target: resolved.target,
-          selectedContext: resolved.selectedContext
-        })));
+        let terminalStatus: RunStatus = "completed";
+        let errorMessage: string | null = null;
+        let checkpoint: RunCheckpoint | null = null;
+        let streamEventSequence = firstEventSequence;
+
+        const gen: AsyncGenerator<RunYield, void, void> =
+          resolved.type === "chat"
+            ? streamChatRun({
+                ...resolved.runRequest,
+                runId: run.id,
+                directorPrompt: resolved.directorPrompt,
+                history: body.messages,
+                signal: request.signal
+              })
+            : streamRun({ ...resolved.runRequest, runId: run.id, signal: request.signal });
 
         try {
-          if (resolved.target.type === "chat") {
-            let text = "";
-            controller.enqueue(encoder.encode(frame({
-              kind: "status",
-              status: { phase: "generating", message: "Director is generating." }
-            })));
-            for await (const delta of streamPlainChat(
-              org.orgId,
-              body.prompt,
-              resolved.directorPrompt,
-              resolved.selectedContext,
-              resolved.knowledgeFiles,
-              body.messages ?? [],
-              provider,
-              model,
-              request.signal
-            )) {
-              text += delta;
-              controller.enqueue(encoder.encode(frame({ kind: "text", text: delta })));
-            }
-            if (body.chatId) {
-              const history = body.messages ?? [];
-              const lastUser = [...history].reverse().find((message) => message.role === "user")?.content ?? body.prompt;
-              const { error: messageError } = await supabase.from("chat_messages").insert([
-                { org_id: org.orgId, chat_id: body.chatId, role: "user", body: lastUser, metadata: { runId } },
-                { org_id: org.orgId, chat_id: body.chatId, role: "assistant", body: text, metadata: { runId } }
-              ]);
-              if (messageError) throw messageError;
-            }
-            await supabase.from("run_events").insert({
-              org_id: org.orgId,
-              run_id: runId,
-              event_type: "run_completed",
-              message: "Chat completed.",
-              payload: { target: resolved.target, selectedContext: resolved.selectedContext }
-            });
-            await supabase
-              .from("runs")
-              .update({
-                status: "completed",
-                outputs: { text },
-                completed_at: new Date().toISOString()
-              })
-              .eq("id", runId)
-              .eq("org_id", org.orgId);
-            await recordRunUsage({ supabase, orgId: org.orgId, runId: runId!, provider, model, input: body.prompt, output: text });
-            controller.enqueue(encoder.encode(frame({
-              kind: "event",
-              event: runEvent(org.orgId, runId!, "run_completed", "Chat completed.", { target: resolved.target })
-            })));
-            return;
-          }
-
-          for await (const item of streamRun({
-            orgId: org.orgId,
-            runId: runId!,
-            prompt: body.prompt,
-            nodes: resolved.nodes,
-            skills: resolved.skills,
-            roles: resolved.rolesById,
-            provider,
-            model,
-            knowledgeFiles: resolved.knowledgeFiles,
-            workstreamId: resolved.workstreamId
-          }, request.signal)) {
-            if (item.kind === "event") {
-              if (item.event.type === "run_completed" || item.event.type === "run_failed" || item.event.type === "run_cancelled") {
-                terminalSent = true;
-                terminalStatus =
-                  item.event.type === "run_failed" ? "failed" :
-                  item.event.type === "run_cancelled" ? "cancelled" :
-                  "completed";
-              }
-              await eventBuffer.push(item.event);
-              controller.enqueue(encoder.encode(frame({ kind: "event", event: item.event })));
-            } else if (item.kind === "artifact") {
-              const created = await persistRunArtifact(supabase, org.orgId, runId!, item.artifact, resolved.selectedContext);
-              if (created.fileId) {
-                artifactIds.push(created.fileId);
-                await supabase.from("generated_files").insert({
-                  org_id: org.orgId,
-                  run_id: runId,
-                  file_id: created.fileId,
-                  relationship: "output"
-                });
-              }
-              controller.enqueue(encoder.encode(frame({ kind: "artifact", artifact: item.artifact })));
-            } else if (item.kind === "human_input") {
-              waitingForHuman = true;
-              await supabase
-                .from("runs")
-                .update({ status: "waiting_human", updated_at: new Date().toISOString() })
-                .eq("id", runId)
-                .eq("org_id", org.orgId);
-              controller.enqueue(encoder.encode(frame({ kind: "human_input", request: item.request })));
-            } else if (item.kind === "text") {
+          for await (const item of gen) {
+            if (item.kind === "text") {
               outputText += item.text;
               controller.enqueue(encoder.encode(frame({ kind: "text", text: item.text })));
             } else if (item.kind === "status") {
-              controller.enqueue(encoder.encode(frame({ kind: "status", status: item.status })));
-            } else if (item.kind === "values") {
-              checkpoint = {
-                cursor: item.state.cursor,
-                humanInputs: item.state.humanInputs,
-                humanInputRequest: item.state.humanInputRequest,
-                outputsByNode: item.state.outputsByNode,
-                evalAttempts: item.state.evalAttempts,
-                output: item.state.output
-              };
-            }
-          }
-
-          await eventBuffer.flush();
-
-          if (waitingForHuman) {
-            await supabase
-              .from("runs")
-              .update({ checkpoint, status: "waiting_human", updated_at: new Date().toISOString() })
-              .eq("id", runId)
-              .eq("org_id", org.orgId);
-          } else {
-            await recordRunUsage({ supabase, orgId: org.orgId, runId: runId!, provider, model, input: body.prompt, output: outputText });
-            await supabase
-              .from("runs")
-              .update({
-                status: terminalStatus ?? "completed",
-                outputs: { text: outputText, artifactIds },
-                completed_at: new Date().toISOString()
-              })
-              .eq("id", runId)
-              .eq("org_id", org.orgId);
-            if (!terminalSent) {
-              const completedEvent = runEvent(org.orgId, runId!, "run_completed", "Run completed.", {
-                target: resolved.target,
-                selectedContext: resolved.selectedContext
+              controller.enqueue(encoder.encode(frame({ kind: "status", message: item.message })));
+            } else if (item.kind === "event") {
+              const e: RunEvent = { ...item.event, sequence: streamEventSequence++ };
+              pendingEvents.push({
+                event_type: e.type,
+                node_id: e.nodeId ?? null,
+                node_title: e.nodeTitle ?? null,
+                skill_id: e.skillId ?? null,
+                skill_name: e.skillName ?? null,
+                message: e.message,
+                payload: e.payload ?? {}
               });
-              await supabase.from("run_events").insert({
-                org_id: org.orgId,
-                run_id: runId,
-                event_type: completedEvent.type,
-                message: completedEvent.message,
-                payload: completedEvent.payload
-              });
-              controller.enqueue(encoder.encode(frame({ kind: "event", event: completedEvent })));
+              controller.enqueue(encoder.encode(frame({ kind: "event", event: e })));
+            } else if (item.kind === "artifact") {
+              pendingArtifacts.push(item.artifact);
+              controller.enqueue(encoder.encode(frame({ kind: "artifact", artifact: item.artifact })));
+            } else if (item.kind === "human_input") {
+              terminalStatus = "waiting_human";
+              controller.enqueue(encoder.encode(frame({ kind: "human_input", request: item.request })));
+            } else if (item.kind === "checkpoint") {
+              checkpoint = item.state;
+            } else if (item.kind === "done") {
+              const allowed: RunStatus[] = ["running", "waiting_human", "completed", "failed", "cancelled"];
+              terminalStatus = (allowed.includes(item.status as RunStatus) ? item.status : "completed") as RunStatus;
             }
           }
         } catch (err) {
-          console.error("[runs/execute] stream error:", err);
-          const message = err instanceof Error ? err.message : "Unknown run error";
-          const cancelled = request.signal.aborted || (err instanceof Error && err.name === "AbortError");
-          await eventBuffer.flush().catch(() => undefined);
-          await supabase
-            .from("runs")
-            .update({ status: cancelled ? "cancelled" : "failed", completed_at: new Date().toISOString() })
-            .eq("id", runId)
-            .eq("org_id", org.orgId);
-          const failedEvent = runEvent(org.orgId, runId!, cancelled ? "run_cancelled" : "run_failed", cancelled ? "Run cancelled." : message, { target: resolved.target });
-          await supabase.from("run_events").insert({
-            org_id: org.orgId, run_id: runId, event_type: failedEvent.type,
-            message: failedEvent.message, payload: failedEvent.payload
-          });
-          controller.enqueue(encoder.encode(frame({ kind: "event", event: failedEvent })));
-          controller.enqueue(encoder.encode(frame({
-            kind: "error",
-            message
-          })));
-        } finally {
-          controller.close();
+          errorMessage = err instanceof Error ? err.message : "Run failed";
+          terminalStatus = "failed";
+          controller.enqueue(encoder.encode(frame({ kind: "error", message: errorMessage })));
         }
+
+        if (pendingEvents.length > 0) {
+          try {
+            await appendRunEvents(org.sql, org.orgId, run.id, pendingEvents);
+          } catch (err) {
+            console.error("[runs/execute] event persist failed:", err);
+          }
+        }
+
+        for (const artifact of pendingArtifacts) {
+          try {
+            const file = await createFile(org.sql, org.orgId, {
+              title: artifact.title,
+              body: artifact.body,
+              fileType: artifact.type === "artifact" ? "artifact" : artifact.type,
+              status: "active",
+              metadata: { ...artifact.metadata, runId: run.id, runtimeArtifactId: artifact.id }
+            });
+            await linkRunOutputFile(org.sql, org.orgId, run.id, file.id);
+          } catch (err) {
+            console.error("[runs/execute] artifact persist failed:", err);
+          }
+        }
+
+        const completedAt =
+          terminalStatus === "completed" || terminalStatus === "failed" || terminalStatus === "cancelled"
+            ? new Date().toISOString()
+            : null;
+
+        await updateRun(org.sql, org.orgId, run.id, {
+          status: terminalStatus,
+          outputs: { text: outputText },
+          state: checkpoint ?? undefined,
+          error: errorMessage,
+          completedAt
+        });
+
+        if (
+          resolved.runRequest.provider &&
+          resolved.runRequest.model &&
+          outputText
+        ) {
+          try {
+            await recordUsage(org.sql, org.orgId, {
+              runId: run.id,
+              provider: resolved.runRequest.provider.name,
+              model: resolved.runRequest.model.model,
+              inputTokens: Math.ceil(body.prompt.length / 4),
+              outputTokens: Math.ceil(outputText.length / 4),
+              costMicros: 0
+            });
+          } catch (err) {
+            console.warn("[runs/execute] usage record failed:", err);
+          }
+        }
+
+        if (chatId && outputText) {
+          try {
+            await appendChatMessages(org.sql, org.orgId, chatId, [
+              { role: "user", body: body.prompt, metadata: { runId: run.id } },
+              { role: "assistant", body: outputText, metadata: { runId: run.id } }
+            ]);
+          } catch (err) {
+            console.warn("[runs/execute] chat persist failed:", err);
+          }
+        }
+
+        controller.enqueue(encoder.encode(frame({ kind: "done", runId: run.id, status: terminalStatus })));
+        controller.close();
       }
     });
 
@@ -310,7 +221,6 @@ export async function POST(request: Request) {
       }
     });
   } catch (err) {
-    console.error("[runs/execute] error:", err);
     return errorResponse(err);
   }
 }

@@ -1,51 +1,11 @@
-import { errorResponse, getOrg, HttpError, requireOrgWrite, requireSupabase } from "../../../lib/server";
+import { listRuns } from "@spielos/db";
+import { errorResponse, getOrg } from "../../../lib/server";
 
 export async function GET() {
   try {
     const org = await getOrg();
-    const supabase = requireSupabase(org);
-    const { data, error } = await supabase
-      .from("runs")
-      .select("*")
-      .eq("org_id", org.orgId)
-      .order("created_at", { ascending: false })
-      .limit(50);
-    if (error) throw error;
-    return Response.json({ runs: data ?? [] });
-  } catch (err) {
-    return errorResponse(err);
-  }
-}
-
-export async function POST(request: Request) {
-  try {
-    const org = await getOrg();
-    requireOrgWrite(org);
-    const supabase = requireSupabase(org);
-    const body = (await request.json()) as {
-      prompt?: string;
-      workstreamId?: string | null;
-      runType?: string;
-      inputs?: Record<string, unknown>;
-    };
-    if (!body.prompt) throw new HttpError(400, "prompt is required");
-    const { data, error } = await supabase
-      .from("runs")
-      .insert({
-        org_id: org.orgId,
-        workstream_id: body.workstreamId ?? null,
-        run_type: body.runType ?? "custom",
-        prompt: body.prompt,
-        status: "draft",
-        inputs: {
-          ...(body.inputs ?? {}),
-          ...(body.workstreamId ? { workstreamId: body.workstreamId } : {})
-        }
-      })
-      .select()
-      .single();
-    if (error) throw error;
-    return Response.json({ run: data }, { status: 201 });
+    const runs = await listRuns(org.sql, org.orgId);
+    return Response.json({ runs });
   } catch (err) {
     return errorResponse(err);
   }

@@ -5,15 +5,21 @@ import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import {
   Button,
+  ChoiceButton,
+  ConfirmDialog,
   EmptyState,
   Field,
   Input,
+  Inspector,
+  InspectorBody,
+  InspectorHeader,
+  InspectorTabs,
+  ListItem,
   NativeSelect,
   PageHeader,
   Pill,
   ToggleRow,
   Tooltip,
-  cn,
   toast
 } from "@spielos/design-system";
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
@@ -77,17 +83,11 @@ function newRole(modelId: string | null = null): Omit<Role, "id" | "orgId"> {
     description: "Configurable marketing role.",
     prompt: "Define this agent's job, constraints, skills, memory, and decision rules.",
     skillIds: [],
-    memoryPolicy: ["run"],
-    inputArtifactTypes: ["draft"],
-    outputArtifactTypes: ["draft"],
     modelId,
     status: "active",
-    metadata: {
-      contracts: {
-        inputs: [defaultContract("inputs")],
-        outputs: [defaultContract("outputs")]
-      }
-    }
+    inputContract: { name: "Input", format: "markdown", body: "", required: true, multiple: false },
+    outputContract: { name: "Output", format: "markdown", body: "", required: true, multiple: false },
+    metadata: {}
   };
 }
 
@@ -100,6 +100,8 @@ export default function RolesPage() {
   );
   const [query, setQuery] = useState("");
   const [saving, setSaving] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const isNew = selectedId === null;
 
   useEffect(() => {
@@ -119,11 +121,13 @@ export default function RolesPage() {
   }, [query, store.roles]);
 
   function createRole() {
+    setCreating(true);
     setSelectedId(null);
     reset(newRole(defaultModel));
   }
 
   function selectRole(role: Role) {
+    setCreating(false);
     setSelectedId(role.id);
     reset(role);
   }
@@ -134,7 +138,8 @@ export default function RolesPage() {
       if (isNew) {
         const created = await store.addRole(draft as Omit<Role, "id" | "orgId">);
         setSelectedId(created?.id ?? null);
-        markSaved();
+        if (created) reset(created);
+        setCreating(false);
         toast.success("Role created");
       } else {
         await store.updateRole((draft as Role).id, draft as Partial<Role>);
@@ -148,10 +153,22 @@ export default function RolesPage() {
     }
   }
 
-  function remove() {
+  async function remove() {
     if (isNew) return;
-    store.deleteRole((draft as Role).id);
-    createRole();
+    const id = (draft as Role).id;
+    try {
+      await store.deleteRole(id);
+      const next = store.roles.find((role) => role.id !== id);
+      setCreating(false);
+      if (next) selectRole(next);
+      else {
+        setSelectedId(null);
+        reset(newRole(defaultModel));
+      }
+      toast.success("Role deleted");
+    } catch {
+      toast.error("Failed to delete role");
+    }
   }
 
   function toggleSkill(skillId: string) {
@@ -186,46 +203,37 @@ export default function RolesPage() {
         <div className="flex min-h-0 flex-1">
           <SidebarListPanel
             title="Agents"
-            count={store.roles.length}
+            count={store.roles.length + (creating ? 1 : 0)}
             onNew={createRole}
             newTooltip="New role"
             searchValue={query}
             onSearchChange={setQuery}
             searchPlaceholder="Search roles"
           >
-            {filteredRoles.length === 0 ? (
+            {filteredRoles.length === 0 && !creating ? (
               <EmptyState className="py-10" description="No roles match this search." title="No matches" />
             ) : (
               <ul className="grid gap-0.5">
+                {creating ? (
+                  <ListItem
+                    active
+                    description={draft.description}
+                    icon={ENTITY_ICONS.role}
+                    metadata={<Pill tone="info">New</Pill>}
+                    onClick={() => undefined}
+                    title={draft.name}
+                  />
+                ) : null}
                 {filteredRoles.map((role) => {
-                  const active = role.id === selectedId;
-                  return (
-                    <li key={role.id}>
-                      <button
-                        className={cn(
-                          "group flex min-h-10 w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
-                          active
-                            ? "bg-selected text-foreground-strong"
-                            : "text-foreground-muted hover:bg-hover hover:text-foreground"
-                        )}
-                        onClick={() => selectRole(role)}
-                        type="button"
-                      >
-                         <Icon name="bot" className="mt-0.5 shrink-0" size={14} />
-                        <span className="min-w-0 flex-1">
-                          <span className="flex items-center gap-2">
-                            <span className="truncate text-sm font-medium">{role.name}</span>
-                            <Pill tone={role.status === "active" ? "success" : "default"} className="ml-auto">
-                              {role.status === "active" ? "on" : "off"}
-                            </Pill>
-                          </span>
-                          <span className="line-clamp-2 text-2xs text-muted-foreground">
-                            {role.description}
-                          </span>
-                        </span>
-                      </button>
-                    </li>
-                  );
+                  return <ListItem
+                    active={role.id === selectedId}
+                    description={role.description}
+                    icon={ENTITY_ICONS.role}
+                    key={role.id}
+                    metadata={<Pill tone={role.status === "active" ? "success" : "default"}>{role.status === "active" ? "On" : "Off"}</Pill>}
+                    onClick={() => selectRole(role)}
+                    title={role.name}
+                  />;
                 })}
               </ul>
             )}
@@ -238,7 +246,7 @@ export default function RolesPage() {
                  <Icon name="chevron-right" size={12} />
                 <span className="max-w-72 truncate text-foreground">{draft.name}</span>
                 <Pill tone={draft.status === "active" ? "success" : "default"}>
-                  {draft.status === "active" ? "enabled" : "disabled"}
+                  {draft.status === "active" ? "Enabled" : "Disabled"}
                 </Pill>
               </div>
               <div className="ml-auto flex items-center gap-1.5">
@@ -254,20 +262,17 @@ export default function RolesPage() {
                 />
                 {!isNew ? (
                   <Tooltip content="Delete role" side="bottom">
-                    <Button aria-label="Delete role" onClick={remove} size="icon" variant="ghost">
-                       <Icon name="trash" size={14} />
-                    </Button>
+                    <Button aria-label="Delete role" icon="trash" onClick={() => setConfirmDelete(true)} size="icon-xs" variant="ghost" />
                   </Tooltip>
                 ) : null}
-                <Button disabled={!dirty || saving} onClick={save} size="md" variant={dirty ? "primary" : "outline"}>
-                   {saving ? <Icon name="loader" size={14} className="animate-spin" /> : <Icon name="save" size={14} />}
+                <Button disabled={!dirty} icon="save" loading={saving} onClick={save} size="md" variant={dirty ? "primary" : "outline"}>
                    Save
                  </Button>
               </div>
             </div>
 
             <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              <div className="grid shrink-0 gap-3 border-b border-border bg-panel-raised px-4 py-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_180px_150px]">
+              <div className="grid shrink-0 grid-cols-[repeat(auto-fit,minmax(min(100%,var(--editor-field-min)),1fr))] items-end gap-3 border-b border-border bg-panel-raised px-4 py-3">
                 <Field label="Name">
                   <Input
                     className="h-8 text-sm font-medium"
@@ -288,7 +293,7 @@ export default function RolesPage() {
                   <NativeSelect
                     ariaLabel="Model"
                     onChange={(value) => setDraft((current) => ({ ...current, modelId: value }))}
-                    options={store.models.map((model) => ({ label: model.label, value: model.id }))}
+                    options={store.models.map((model) => ({ label: model.name, value: model.id }))}
                     value={draft.modelId ?? ""}
                   />
                 </Field>
@@ -298,10 +303,10 @@ export default function RolesPage() {
                     onChange={(event) =>
                       setDraft((current) => ({
                         ...current,
-                        memoryPolicy: event.target.value.split(",").map((part) => part.trim()).filter(Boolean)
+                        metadata: { ...current.metadata, memoryPolicy: event.target.value }
                       }))
                     }
-                    value={draft.memoryPolicy.join(", ")}
+                    value={(draft.metadata?.memoryPolicy as string) ?? ""}
                   />
                 </Field>
               </div>
@@ -311,12 +316,10 @@ export default function RolesPage() {
                   <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-panel-raised px-3">
                      <Icon name="file-text" className="text-muted-foreground" size={14} />
                     <span className="text-xs font-medium text-foreground">System Prompt</span>
-                    <span className="ml-auto text-3xs text-muted-foreground">
-                      {draft.prompt.length} chars
-                    </span>
-                    <span className="ml-auto text-3xs text-muted-foreground select-none">
-                      @ to mention
-                    </span>
+                    <div className="ml-auto flex items-center gap-2 text-3xs text-muted-foreground">
+                      <span>{draft.prompt.length} chars</span>
+                      <span className="select-none">@ to mention</span>
+                    </div>
                   </div>
                   <RichEditor
                     mono
@@ -328,6 +331,17 @@ export default function RolesPage() {
             </section>
           </main>
         </div>
+        <ConfirmDialog
+          confirmLabel="Delete role"
+          description={`Workflows using ${draft.name} will no longer be able to execute this role.`}
+          onConfirm={async () => {
+            setConfirmDelete(false);
+            await remove();
+          }}
+          onOpenChange={setConfirmDelete}
+          open={confirmDelete}
+          title={`Delete ${draft.name}?`}
+        />
       </div>
     </AppShell>
   );
@@ -372,84 +386,53 @@ function RoleInspector({
   ];
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
-         <Icon name="reading-glass" className="text-muted-foreground" size={14} />
-        <span className="text-xs font-semibold text-foreground">Role Settings</span>
-        <Tooltip content="Configure this agent's skills, input contract, and output contract." side="bottom">
-          <Button aria-label="About role settings" className="h-6 w-6 p-0" size="icon" variant="ghost">
-            <Icon name="info" size={12} />
-          </Button>
-        </Tooltip>
-      </div>
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-panel-raised px-3">
-        {tabs.map((entry) => (
-          <button
-            className={cn(
-              "flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors",
-              tab === entry.id
-                ? "bg-selected text-foreground-strong"
-                : "text-muted-foreground hover:bg-hover hover:text-foreground"
-            )}
-            key={entry.id}
-            onClick={() => setTab(entry.id)}
-            type="button"
-          >
-            <Icon name={entry.icon} size={13} />
-            {entry.label}
-          </button>
-        ))}
-      </div>
-      {tab === "skills" ? (
-        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+    <Inspector>
+      <InspectorHeader
+        actions={
+          <Tooltip content="Configure this role's skills and input/output contracts." side="bottom">
+            <Button aria-label="About role settings" icon="info" size="icon-xs" variant="ghost" />
+          </Tooltip>
+        }
+        icon="reading-glass"
+        title="Role settings"
+      />
+      <InspectorTabs
+        onChange={(value) => setTab(value as typeof tab)}
+        tabs={tabs}
+        value={tab}
+      />
+      <InspectorBody>
+        {tab === "skills" ? (
+        <div className="p-2">
           <div className="grid gap-1">
             {store.skills.map((skill) => {
               const selected = draft.skillIds.includes(skill.id);
               const disabled = skill.status !== "active" && !selected;
               return (
-                <button
-                  className={cn(
-                    "flex items-start gap-2 rounded-md border px-2 py-2 text-left transition-colors",
-                    selected ? "border-border bg-selected" : "border-transparent hover:bg-hover",
-                    skill.status !== "active" && "opacity-55"
-                  )}
+                <ChoiceButton
+                  description={skill.description}
                   disabled={disabled}
                   key={skill.id}
                   onClick={() => toggleSkill(skill.id)}
-                  type="button"
+                  selected={selected}
+                  selectionMode="multiple"
+                  trailing={skill.status !== "active" ? <Pill>Off</Pill> : null}
                 >
-                  <span
-                    className={cn(
-                      "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border",
-                      selected
-                        ? "border-foreground-strong bg-foreground-strong text-background"
-                        : "border-border"
-                    )}
-                  >
-                     {selected ? <Icon name="check" size={12} /> : null}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-2">
-                      <span className="block min-w-0 flex-1 truncate text-[13px] text-foreground">{skill.name}</span>
-                      {skill.status !== "active" ? <Pill className="shrink-0">disabled</Pill> : null}
-                    </span>
-                    <span className="line-clamp-2 text-2xs text-muted-foreground">
-                      {skill.description}
-                    </span>
-                  </span>
-                </button>
+                  {skill.name}
+                </ChoiceButton>
               );
             })}
           </div>
         </div>
-      ) : (
-        <ContractEditor
-          contract={tab === "input" ? inputContract : outputContract}
-          direction={tab === "input" ? "inputs" : "outputs"}
-          onChange={(patch) => updateContract(tab === "input" ? "inputs" : "outputs", patch)}
-        />
-      )}
-    </div>
+        ) : (
+          <ContractEditor
+            contract={tab === "input" ? inputContract : outputContract}
+            direction={tab === "input" ? "inputs" : "outputs"}
+            onChange={(patch) => updateContract(tab === "input" ? "inputs" : "outputs", patch)}
+          />
+        )}
+      </InspectorBody>
+    </Inspector>
   );
 }
 
@@ -464,12 +447,10 @@ function ContractEditor({
 }) {
   const formatOptions: RoleContractFormat[] = ["markdown", "json"];
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto p-3">
-      <div className="rounded-md border border-border bg-panel p-3 shadow-sm">
+    <div className="p-3">
+      <div>
         <div className="mb-3 flex items-center gap-2">
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-panel-raised text-muted-foreground">
-            <Icon name={direction === "inputs" ? "arrow-down" : "arrow-up"} size={14} />
-          </div>
+          <Icon className="shrink-0 text-muted-foreground" name={direction === "inputs" ? "arrow-down" : "arrow-up"} size={14} />
           <div className="min-w-0">
             <div className="text-sm font-semibold text-foreground">
               {direction === "inputs" ? "Input contract" : "Output contract"}
@@ -485,28 +466,16 @@ function ContractEditor({
               value={contract.name}
             />
           </Field>
+          <Field label="Format">
+            <NativeSelect
+              ariaLabel="Contract format"
+              onChange={(format) => onChange({ format: format as RoleContractFormat })}
+              options={formatOptions.map((format) => ({ label: format === "json" ? "JSON" : "Markdown", value: format }))}
+              value={contract.format}
+            />
+          </Field>
           <div>
-            <div className="mb-1 flex items-center justify-between gap-2">
-              <span className="text-2xs font-medium text-muted-foreground">Format</span>
-              <div className="flex rounded-md border border-border bg-background p-0.5">
-                {formatOptions.map((format) => (
-                  <button
-                    className={cn(
-                      "h-6 rounded px-2 text-2xs font-medium capitalize transition-colors",
-                      contract.format === format
-                        ? "bg-selected text-foreground-strong"
-                        : "text-muted-foreground hover:text-foreground"
-                    )}
-                    key={format}
-                    onClick={() => onChange({ format })}
-                    type="button"
-                  >
-                    {format}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="flex items-center gap-2 rounded-md border border-border bg-background px-2 py-2">
+            <div className="grid gap-2 sm:grid-cols-2">
               <ToggleRow
                 checked={contract.required}
                 description="Required"
@@ -520,7 +489,7 @@ function ContractEditor({
             </div>
           </div>
           <Field label="Contract body">
-            <div className="overflow-hidden rounded-md border border-border bg-background">
+            <div className="overflow-hidden rounded-md border border-border bg-input transition-colors focus-within:border-[var(--focus-border)] focus-within:ring-2 focus-within:ring-[var(--focus-ring)]">
               <div className="flex h-8 items-center gap-2 border-b border-border bg-panel-raised px-2">
                 <Pill className="text-3xs">{contract.format}</Pill>
                 <span className="text-3xs text-muted-foreground">{contract.body.length} chars</span>
@@ -530,6 +499,7 @@ function ContractEditor({
               </div>
               <RichEditor
                 className="min-h-56"
+                density="field"
                 mono
                 onChange={(v) => onChange({ body: v })}
                 value={contract.body}

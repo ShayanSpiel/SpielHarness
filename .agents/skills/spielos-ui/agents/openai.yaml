@@ -1,0 +1,4 @@
+interface:
+  display_name: "SpielOS UI"
+  short_description: "Polish SpielOS UI without design drift"
+  default_prompt: "Use $spielos-ui to polish this SpielOS interface through shared tokens, primitives, and visual verification."

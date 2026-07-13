@@ -4,7 +4,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CommandPalette } from "./command-palette";
 import { NavRail } from "./nav-rail";
 import { InspectorToggle } from "./inspector-toggle";
-import { useWorkspaceStore } from "../lib/use-workspace-store";
+import { useUiStore } from "../lib/use-ui-store";
+import { SIDEBAR } from "../lib/layout-constants";
 
 export function AppShell({
   children,
@@ -13,7 +14,7 @@ export function AppShell({
   children: ReactNode;
   inspector?: ReactNode;
 }) {
-  const store = useWorkspaceStore();
+  const store = useUiStore();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [resizing, setResizing] = useState(false);
   const asideRef = useRef<HTMLDivElement>(null);
@@ -58,20 +59,46 @@ export function AppShell({
       <main className="min-w-0 flex-1 overflow-hidden bg-background">{children}</main>
 
       {hasInspector ? (
+        <button
+          aria-label="Close inspector"
+          aria-hidden={!store.inspectorOpen}
+          className="motion-overlay fixed inset-0 z-30 bg-[color:color-mix(in_oklab,var(--background)_72%,transparent)] backdrop-blur-sm data-[state=closed]:pointer-events-none lg:hidden"
+          data-state={store.inspectorOpen ? "open" : "closed"}
+          onClick={() => store.setInspectorOpen(false)}
+          tabIndex={store.inspectorOpen ? 0 : -1}
+          type="button"
+        />
+      ) : null}
+
+      {hasInspector ? (
         <aside
           ref={asideRef}
           aria-hidden={!store.inspectorOpen}
           data-inspector
-          className="relative shrink-0 overflow-hidden border-l border-border bg-panel transition-[width] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
+          className="fixed inset-y-0 right-0 z-40 max-w-full shrink-0 overflow-hidden border-l border-border bg-panel shadow-popover transition-[width] duration-[var(--duration-slow)] ease-[var(--ease)] lg:relative lg:z-auto lg:shadow-none"
           style={{ width: store.inspectorOpen ? store.inspectorWidth : 0 }}
         >
           <button
             aria-label="Resize inspector"
-            className="absolute left-0 top-0 z-20 flex h-full w-1.5 cursor-col-resize items-center justify-center text-muted-foreground hover:bg-border-strong/50 hover:text-foreground transition-colors"
+            aria-orientation="vertical"
+            aria-valuemax={SIDEBAR.INSPECTOR.MAX}
+            aria-valuemin={SIDEBAR.INSPECTOR.MIN}
+            aria-valuenow={store.inspectorWidth}
+            className="group absolute left-0 top-0 z-20 hidden h-full w-1.5 cursor-col-resize items-center justify-center text-muted-foreground transition-colors hover:bg-border-strong/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] lg:flex"
+            onDoubleClick={() => store.setInspectorWidth(SIDEBAR.INSPECTOR.DEFAULT)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowLeft") store.setInspectorWidth(store.inspectorWidth + 16);
+              else if (event.key === "ArrowRight") store.setInspectorWidth(store.inspectorWidth - 16);
+              else if (event.key === "Home") store.setInspectorWidth(SIDEBAR.INSPECTOR.MIN);
+              else if (event.key === "End") store.setInspectorWidth(SIDEBAR.INSPECTOR.MAX);
+              else return;
+              event.preventDefault();
+            }}
             onPointerDown={(event) => {
               event.preventDefault();
               setResizing(true);
             }}
+            role="separator"
             type="button"
           >
             <div className="h-8 w-0.5 rounded-full bg-border transition-colors group-hover:bg-muted-foreground" />

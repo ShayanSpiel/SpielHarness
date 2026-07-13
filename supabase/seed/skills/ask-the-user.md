@@ -1,24 +1,26 @@
 # Ask the User
 
-A human-in-the-loop skill. Pauses the run and asks the user a question (or set of questions) in the chat. Use this to confirm direction, gather a missing detail, or offer a choice between A/B/C options.
+A human-in-the-loop skill. It emits a typed `HumanInputRequest`, checkpoints the graph in `waiting_human`, and resumes only after the matching request id is answered.
 
-## How to use
-Use this skill as an explicit workstream checkpoint or run it directly. The run pauses, persists its checkpoint, and resumes after the user answers.
+## Question contract
 
-Assigning it to a role only makes it available to that role; discretionary “ask only when needed” behavior requires the role runtime to select it as a tool. Do not treat simple assignment as an unconditional checkpoint.
+Questions are file-backed on the workflow node or skill as `humanQuestions`. The supported kinds are:
 
-Example instruction for a tool-capable role:
+- `single` — one radio choice.
+- `multi` — one or more checkbox choices.
+- `text` — a composer answer.
+- `none` — an acknowledgement step with no answer value.
 
-> After you finish the draft, use the "Ask the user" skill to confirm which option to publish.
+Each structured question may define `options`, `allowCustom`, and a custom-answer `placeholder`. Two or more questions render as a Back/Next/Confirm wizard. Yes/no confirmation is a `single` question with explicit options; `confirm` is not a separate kind.
 
-## Question kinds
-- `single` — pick one option
-- `multi` — pick many options
-- `text` — write your own answer
-- `none` — just emit a message, no answer needed
+## Authoring rules
 
-## Example questions
-- "Which headline do you want to ship?" (single, 3 options)
-- "Which platforms should we post to?" (multi, 4 options)
-- "What's the launch date?" (text)
-- "All drafts ready." (none)
+- Put production question text, option ids, labels, descriptions, and kinds in `humanQuestions`; do not ask the client to parse prompt prose.
+- Use stable semantic ids because answers are persisted by question id and option id.
+- Use `single` for mutually exclusive decisions and `multi` only when combinations are valid.
+- Set `allowCustom` when the composer should accept an alternative answer.
+- Split additional details into a second `text` question so the runtime produces a wizard.
+- Keep choices concise; descriptions explain impact or reversibility when needed.
+- Never emit a fake answer, completion, or tool result while the run is waiting.
+
+Legacy `Suggest: (A)…` prompts are converted into the typed contract by the LangGraph boundary for compatibility, but new and edited workflows must author `humanQuestions` directly.

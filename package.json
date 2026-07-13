@@ -12,6 +12,7 @@
     "dev": "npm run dev --workspace @spielos/web",
     "build": "npm run build --workspace @spielos/web",
     "lint": "npm run lint --workspace @spielos/web",
+    "check:ui": "npm run check:colors --workspace @spielos/web && bash scripts/check-ui-contracts.sh",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts"
   },

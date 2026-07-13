@@ -5,13 +5,17 @@ import Image from "next/image";
 import { useCallback, useEffect, useState } from "react";
 import {
   Button,
+  ConfirmDialog,
   Field,
   Input,
   ListItem,
   NativeSelect,
   NavTabs,
+  Notice,
   PageHeader,
   Pill,
+  ResizableSidebar,
+  SIDEBAR,
   ToggleRow,
   Tooltip,
   cn,
@@ -22,8 +26,7 @@ import { useTheme } from "@spielos/design-system/hooks/use-theme";
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { AppShell } from "../../components/app-shell";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
-import type { ProviderModel } from "../../lib/workspace-data";
-import { SIDEBAR } from "../../lib/layout-constants";
+import type { Model, ProviderModel } from "../../lib/workspace-data";
 
 type SettingsTab = "models" | "connections" | "variables" | "theme" | "workspace";
 
@@ -35,12 +38,20 @@ const SETTINGS_TABS: { id: SettingsTab; label: string; icon: string }[] = [
   { id: "workspace", label: "Workspace", icon: SETTINGS_TAB_ICONS.workspace },
 ];
 
+const PROVIDER_OPTIONS = [
+  { label: "OpenAI", value: "openai" },
+  { label: "Anthropic", value: "anthropic" },
+  { label: "Mistral", value: "mistral" },
+  { label: "OpenAI Compatible", value: "openai-compatible" },
+];
+
 function emptyModel(): Omit<ProviderModel, "id"> {
   return {
-    provider: "",
+    provider: "openai",
     label: "",
     model: "",
     baseUrl: "",
+    secretEnvKey: null,
     enabled: true
   };
 }
@@ -68,10 +79,22 @@ export default function SettingsPage() {
   const [connectionDraft, setConnectionDraft] = useState({ presetId: "", name: "", kind: "api", baseUrl: "", secretEnvKey: "", operations: "" });
   const [variableDraft, setVariableDraft] = useState({ name: "", kind: "variable", value: "", description: "" });
   const [selectedId, setSelectedId] = useState<string | null>(store.models[0]?.id ?? null);
+  const toProviderModel = useCallback(
+    function (m: { id: string; provider: string; name: string; model: string; baseUrl: string | null; secretEnvKey: string | null; enabled: boolean }): ProviderModel {
+      return { id: m.id, provider: m.provider, label: m.name, model: m.model, baseUrl: m.baseUrl ?? "", secretEnvKey: m.secretEnvKey, enabled: m.enabled };
+    },
+    []
+  );
   const { draft, setDraft, dirty, reset, markSaved } = useDirty<ProviderModel | Omit<ProviderModel, "id">>(
-    store.models[0] ?? emptyModel()
+    store.models[0] ? toProviderModel(store.models[0]) : emptyModel()
   );
   const [saving, setSaving] = useState(false);
+  const [creatingModel, setCreatingModel] = useState(false);
+  const [confirmModelDelete, setConfirmModelDelete] = useState(false);
+  const [connectionSaving, setConnectionSaving] = useState(false);
+  const [disconnecting, setDisconnecting] = useState<typeof integrations[number] | null>(null);
+  const [disconnectingBusy, setDisconnectingBusy] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
   const isNew = selectedId === null;
 
   useEffect(() => {
@@ -90,17 +113,49 @@ export default function SettingsPage() {
   useEffect(() => { void reloadVariables(); }, [reloadVariables]);
 
   async function addConnection() {
-    const operations = connectionDraft.operations.split(",").map((value) => value.trim()).filter(Boolean).map((value) => ({ id: value, label: value, effect: value.includes("send") || value.includes("publish") ? "send" : value.includes("delete") ? "destructive" : "read" }));
-    const payload = { ...connectionDraft, ...(connectionDraft.presetId ? {} : { operations }) };
-    const response = await fetch("/api/integrations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    if (!response.ok) return toast.error("Failed to add connection");
-    const data = await response.json() as { integration: typeof integrations[number] };
-    setIntegrations((current) => [...current, data.integration]);
-    setConnectionDraft({ presetId: "", name: "", kind: "api", baseUrl: "", secretEnvKey: "", operations: "" });
-    toast.success("Connection added");
+    setConnectionSaving(true);
+    try {
+      const operations = connectionDraft.operations.split(",").map((value) => value.trim()).filter(Boolean).map((value) => ({ id: value, label: value, effect: value.includes("send") || value.includes("publish") ? "send" : value.includes("delete") ? "destructive" : "read" }));
+      const payload = connectionDraft.presetId
+        ? { presetId: connectionDraft.presetId }
+        : { ...connectionDraft, operations };
+      const response = await fetch("/api/integrations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (!response.ok) return toast.error("Failed to add connection");
+      const data = await response.json() as { integration: typeof integrations[number] };
+      setIntegrations((current) => [...current, data.integration]);
+      setConnectionDraft({ presetId: "", name: "", kind: "api", baseUrl: "", secretEnvKey: "", operations: "" });
+      toast.success("Connection added");
+    } catch {
+      toast.error("Failed to add connection");
+    } finally {
+      setConnectionSaving(false);
+    }
   }
 
-  function openPreset(preset: typeof presets[number]) {
+  async function disconnectIntegration(integration: typeof integrations[number]) {
+    setDisconnectingBusy(true);
+    try {
+      if (integration.kind === "oauth") {
+        const presetId = presets.find((p) => integration.name === p.name || integration.name.startsWith(`${p.name} —`))?.id;
+        if (presetId?.startsWith("google")) {
+          await fetch("/api/auth/google/revoke", { method: "POST" });
+        } else if (presetId === "notion") {
+          await fetch("/api/auth/notion/revoke", { method: "POST" });
+        }
+      }
+      const response = await fetch(`/api/integrations?id=${encodeURIComponent(integration.id)}`, { method: "DELETE" });
+      if (!response.ok) return toast.error("Failed to disconnect");
+      setIntegrations((current) => current.filter((i) => i.id !== integration.id));
+      setDisconnecting(null);
+      toast.success("Disconnected");
+    } catch {
+      toast.error("Failed to disconnect");
+    } finally {
+      setDisconnectingBusy(false);
+    }
+  }
+
+  async function openPreset(preset: typeof presets[number]) {
     if (preset.kind === "builtin") return;
     if (connectionsSetupRequired) {
       toast.error("Apply migration 0005_connections.sql before configuring external connections.");
@@ -112,6 +167,26 @@ export default function SettingsPage() {
         return;
       }
       window.location.href = preset.id === "notion" ? "/api/auth/notion" : `/api/auth/google?integration=${encodeURIComponent(preset.id)}`;
+      return;
+    }
+    // Keyless APIs (no secret env key) connect in one click
+    if (!preset.secretEnvKey) {
+      setConnectionSaving(true);
+      try {
+        const response = await fetch("/api/integrations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ presetId: preset.id })
+        });
+        if (!response.ok) return toast.error(`Failed to connect ${preset.name}`);
+        const data = await response.json() as { integration: typeof integrations[number] };
+        setIntegrations((current) => [...current, data.integration]);
+        toast.success(`${preset.name} connected`);
+      } catch {
+        toast.error(`Failed to connect ${preset.name}`);
+      } finally {
+        setConnectionSaving(false);
+      }
       return;
     }
     setConnectionDraft({ presetId: preset.id, name: preset.name, kind: preset.kind, baseUrl: preset.baseUrl ?? "", secretEnvKey: preset.secretEnvKey ?? "", operations: preset.operations.map((operation) => operation.id).join(", ") });
@@ -130,10 +205,11 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!selectedId) return;
     const found = store.models.find((m) => m.id === selectedId);
-    if (found) reset(found);
-  }, [selectedId, store.models, reset]);
+    if (found) reset(toProviderModel(found));
+  }, [selectedId, store.models, reset, toProviderModel]);
 
   function createModel() {
+    setCreatingModel(true);
     setSelectedId(null);
     reset(emptyModel());
   }
@@ -142,13 +218,21 @@ export default function SettingsPage() {
     setSaving(true);
     try {
       if (isNew) {
-        const id = await store.addModel(draft as Omit<ProviderModel, "id">);
-        setSelectedId(id);
-        reset({ ...draft, id });
+        const created = await store.addModel({
+          name: draft.label,
+          provider: draft.provider as Model["provider"],
+          model: draft.model,
+          baseUrl: draft.baseUrl || null,
+          secretEnvKey: draft.secretEnvKey || null,
+          enabled: draft.enabled
+        });
+        setSelectedId(created.id);
+        reset(toProviderModel(created));
+        setCreatingModel(false);
         toast.success("Model created");
       } else {
         const id = (draft as ProviderModel).id;
-        await store.updateModel(id, draft as Partial<ProviderModel>);
+        await store.updateModel(id, { name: draft.label, provider: draft.provider as Model["provider"], model: draft.model, baseUrl: draft.baseUrl || null, secretEnvKey: draft.secretEnvKey || null, enabled: draft.enabled });
         markSaved();
         toast.success("Model saved");
       }
@@ -164,7 +248,15 @@ export default function SettingsPage() {
     const id = (draft as ProviderModel).id;
     try {
       await store.deleteModel(id);
-      createModel();
+      const next = store.models.find((model) => model.id !== id);
+      setCreatingModel(false);
+      if (next) {
+        setSelectedId(next.id);
+        reset(toProviderModel(next));
+      } else {
+        setSelectedId(null);
+        reset(emptyModel());
+      }
       toast.success("Model deleted");
     } catch {
       toast.error("Failed to delete model");
@@ -192,60 +284,78 @@ export default function SettingsPage() {
 
         {activeTab === "models" && (
           <div className="flex min-h-0 flex-1">
-            <aside className={`flex ${SIDEBAR.LIST_NARROW} shrink-0 flex-col border-r border-border bg-background p-2`}>
+            <ResizableSidebar
+              className="p-2"
+              defaultWidth={SIDEBAR.LIST.NARROW_DEFAULT}
+              sidebarId="settings-models"
+              title="Models"
+            >
               <Button className="mb-2 w-full" icon="plus" onClick={createModel} size="md" variant="outline">
                 New model
               </Button>
               <ul className="space-y-1">
+                {creatingModel ? (
+                  <ListItem
+                    active
+                    metadata={<Pill tone="info">New</Pill>}
+                    onClick={() => undefined}
+                    subtitle={draft.model || draft.provider}
+                    title={draft.label || "New model"}
+                  />
+                ) : null}
                 {store.models.map((model) => (
                   <ListItem
                     active={model.id === selectedId}
                     key={model.id}
                     metadata={
                       <Pill tone={model.enabled ? "success" : "default"} className="shrink-0 text-3xs">
-                        {model.enabled ? "on" : "off"}
+                        {model.enabled ? "On" : "Off"}
                       </Pill>
                     }
                     onClick={() => {
+                      setCreatingModel(false);
                       setSelectedId(model.id);
-                      reset(model);
+                      reset(toProviderModel(model));
                     }}
                     subtitle={`${model.provider} / ${model.model}`}
-                    title={model.label}
+                    title={model.name}
                   />
                 ))}
               </ul>
-            </aside>
+            </ResizableSidebar>
             <section className="min-w-0 flex-1 overflow-y-auto bg-background">
               <div className="mx-auto w-full max-w-2xl px-6 py-6">
                 <div className="rounded-md border border-border bg-panel p-5">
                   <div className="mb-4 flex items-center gap-2">
                     <h2 className="text-sm font-semibold text-foreground">Model provider</h2>
-                    <Pill tone="default" className="text-3xs">
-                      {isNew ? "new" : "edit"}
+                    <Pill tone={isNew ? "info" : "default"} className="text-3xs">
+                      {isNew ? "New" : "Edit"}
                     </Pill>
                     <div className="ml-auto flex items-center gap-1.5">
                       {!isNew ? (
                         <Tooltip content="Delete model" side="bottom">
-                          <Button aria-label="Delete" icon="trash" onClick={remove} size="icon-sm" variant="ghost" />
+                          <Button aria-label="Delete" icon="trash" onClick={() => setConfirmModelDelete(true)} size="icon-xs" variant="ghost" />
                         </Tooltip>
                       ) : null}
                       <Button
-                        disabled={!dirty || saving}
+                        disabled={!dirty || !draft.label.trim() || !draft.model.trim()}
+                        icon="save"
+                        loading={saving}
                         onClick={save}
                         size="md"
                         variant={dirty ? "primary" : "outline"}
                       >
-                        {saving ? <Icon name="loader" size={14} className="animate-spin" /> : <Icon name="save" size={14} />}
                         Save
                       </Button>
                     </div>
                   </div>
                   <div className="grid gap-3">
                     <Field label="Provider">
-                      <Input
-                        onChange={(event) => setDraft({ ...draft, provider: event.target.value })}
+                      <NativeSelect
+                        ariaLabel="Provider"
                         value={draft.provider}
+                        options={PROVIDER_OPTIONS}
+                        onChange={(value) => setDraft({ ...draft, provider: value })}
                       />
                     </Field>
                     <Field label="Label">
@@ -264,6 +374,13 @@ export default function SettingsPage() {
                       <Input
                         onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })}
                         value={draft.baseUrl ?? ""}
+                      />
+                    </Field>
+                    <Field label="API key (env variable name)">
+                      <Input
+                        placeholder="MISTRAL_API_KEY"
+                        onChange={(event) => setDraft({ ...draft, secretEnvKey: event.target.value || null })}
+                        value={draft.secretEnvKey ?? ""}
                       />
                     </Field>
                     <Field label="Enabled">
@@ -292,16 +409,16 @@ export default function SettingsPage() {
                 <p className="text-xs text-muted-foreground">
                   Connect an API, MCP server, or OAuth account once. Its operations then appear in every skill.
                 </p>
-                {connectionsSetupRequired ? <div className="mt-3 flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-foreground"><Icon name="alert-triangle" className="mt-0.5 text-warning" size={14} /><span>Connection storage is not installed yet. Apply <code>0005_connections.sql</code>; native SpielOS tools remain available.</span></div> : null}
+                {connectionsSetupRequired ? <Notice className="mt-3" tone="warning" title="Connection storage is unavailable">Apply <code>0005_connections.sql</code>; native SpielOS tools remain available.</Notice> : null}
                 <div className="mt-4">
                   <div className="mb-2 text-xs font-medium text-foreground">Add an integration</div>
                   <div className="grid gap-2 md:grid-cols-3">
                     {presets.map((preset) => {
                       const added = integrations.some((integration) => integration.name === preset.name || integration.name.startsWith(`${preset.name} —`));
                       const action = preset.kind === "builtin" ? "Available" : added ? "Connected" : preset.kind === "oauth" ? "Connect" : "Configure";
-                      return <div className="flex min-h-36 flex-col rounded-lg border border-border bg-panel-raised p-3" key={preset.id}>
+                      return <div className="flex min-h-36 flex-col rounded-lg bg-panel-raised p-3 transition-colors hover:bg-hover" key={preset.id}>
                         <div className="flex items-start gap-3">
-                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-background shadow-sm ring-1 ring-border">
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-panel shadow-panel">
                             {preset.logo ? <Image alt={`${preset.name} logo`} height={24} src={preset.logo} width={24} /> : <Icon name={preset.icon} size={18} />}
                           </span>
                           <span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-foreground">{preset.name}</span><span className="mt-1 block text-2xs leading-relaxed text-muted-foreground">{preset.description}</span></span>
@@ -320,7 +437,7 @@ export default function SettingsPage() {
                   <Field label="Base URL (optional)"><Input placeholder="https://..." value={connectionDraft.baseUrl} onChange={(event) => setConnectionDraft((d) => ({ ...d, baseUrl: event.target.value }))} /></Field>
                   <Field label="Secret environment key (optional)"><Input placeholder="BUFFER_API_KEY" value={connectionDraft.secretEnvKey} onChange={(event) => setConnectionDraft((d) => ({ ...d, secretEnvKey: event.target.value }))} /></Field>
                   <div className="md:col-span-2"><Field label="Operations"><Input placeholder="buffer.publish, buffer.list_channels" value={connectionDraft.operations} onChange={(event) => setConnectionDraft((d) => ({ ...d, operations: event.target.value }))} /></Field></div>
-                  <div className="md:col-span-2"><Button disabled={!connectionDraft.name.trim()} onClick={addConnection} size="md" variant="primary"><Icon name="plus" size={14} />Save connection</Button></div>
+                  <div className="md:col-span-2"><Button disabled={!connectionDraft.name.trim()} icon="plus" loading={connectionSaving} onClick={addConnection} size="md" variant="primary">Save connection</Button></div>
                 </div>
                 <div className="mt-4 grid gap-2">
                   {integrations.map((integration) => (
@@ -329,14 +446,17 @@ export default function SettingsPage() {
                         {integration.logo ? <Image alt={`${integration.name} logo`} height={18} src={integration.logo} width={18} /> : <Icon name={integration.kind === "mcp" ? "server" : integration.kind === "oauth" ? "lock" : "globe"} size={14} />}
                         <span className="text-sm font-medium text-foreground">{integration.name}</span>
                         <Pill tone={integration.status === "configured" ? "success" : "warning"} className="ml-auto">
-                          {integration.status === "configured" ? "connected" : integration.kind === "oauth" ? "needs login" : "needs config"}
+                          {integration.status === "configured" ? "Connected" : integration.kind === "oauth" ? "Needs login" : "Needs config"}
                         </Pill>
+                        <Tooltip content="Disconnect" side="bottom">
+                          <Button aria-label={`Disconnect ${integration.name}`} icon="trash" onClick={() => setDisconnecting(integration)} size="icon-xs" variant="ghost" />
+                        </Tooltip>
                       </div>
                       <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
                         <div>Kind: {integration.kind}</div>
                         <div>Secret: {integration.secretEnvKey ? `${integration.secretEnvKey} · ${integration.secretConfigured ? "ready" : "missing"}` : "not required"}</div>
                         {integration.baseUrl ? <div>Base URL: {integration.baseUrl}</div> : null}
-                        <div>Operations: {integration.operations.map((operation) => operation.id).join(", ") || "none"}</div>
+                        <div>Operations: {(Array.isArray(integration.operations) ? integration.operations : []).map((operation) => operation.id).join(", ") || "none"}</div>
                       </div>
                     </div>
                   ))}
@@ -357,7 +477,7 @@ export default function SettingsPage() {
               <Field label="Description (optional)"><Input value={variableDraft.description} onChange={(event) => setVariableDraft((d) => ({ ...d, description: event.target.value }))} /></Field>
               <div className="md:col-span-2"><Button disabled={!variableDraft.name.trim()} onClick={addVariable} size="md" variant="primary"><Icon name="plus" size={14} />Add</Button></div>
             </div>
-            <div className="mt-4 grid gap-2">{variables.map((variable) => <div className="flex items-center gap-3 rounded-md bg-panel-raised p-3" key={variable.id}><Icon name={variable.kind === "secret_ref" ? "lock" : "code"} size={14} /><div className="min-w-0 flex-1"><div className="text-sm font-medium text-foreground">{variable.name}</div><div className="truncate text-xs text-muted-foreground">{variable.kind === "secret_ref" ? variable.envKey : variable.value}</div></div><Pill tone={variable.kind === "secret_ref" && !variable.configured ? "warning" : "success"}>{variable.kind === "secret_ref" ? variable.configured ? "ready" : "missing env" : "variable"}</Pill></div>)}</div>
+            <div className="mt-4 grid gap-2">{variables.map((variable) => <div className="flex items-center gap-3 rounded-md bg-panel-raised p-3" key={variable.id}><Icon name={variable.kind === "secret_ref" ? "lock" : "code"} size={14} /><div className="min-w-0 flex-1"><div className="text-sm font-medium text-foreground">{variable.name}</div><div className="truncate text-xs text-muted-foreground">{variable.kind === "secret_ref" ? variable.envKey : variable.value}</div></div><Pill tone={variable.kind === "secret_ref" && !variable.configured ? "warning" : "success"}>{variable.kind === "secret_ref" ? variable.configured ? "Ready" : "Missing env" : "Variable"}</Pill></div>)}</div>
           </div></div></div>
         )}
 
@@ -371,25 +491,36 @@ export default function SettingsPage() {
                 <p className="text-xs text-muted-foreground">
                   Switch the global theme. All themes use the same semantic token system.
                 </p>
-                <div className="mt-4 grid gap-2">
+                <div className="mt-4 grid gap-2 sm:grid-cols-2">
                   {THEME_REGISTRY.map((t) => (
                     <button
+                      aria-pressed={activeTheme === t.id}
                       className={cn(
-                        "flex items-center justify-between rounded-md px-3 py-2 text-left transition-colors",
+                        "flex min-h-14 items-center gap-3 rounded-md px-3 py-2 text-left transition-colors duration-[var(--duration)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]",
                         activeTheme === t.id
-                          ? "bg-selected ring-1 ring-[var(--ring)]"
+                          ? "bg-selected text-foreground-strong"
                           : "bg-panel-raised hover:bg-hover"
                       )}
                       key={t.id}
                       onClick={() => setTheme(t.id)}
                       type="button"
                     >
-                      <div>
-                        <p className="text-sm font-medium text-foreground">{t.label}</p>
-                        <p className="text-xs text-muted-foreground">{t.group} · {t.mode}</p>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs font-medium text-foreground">{t.label}</p>
+                        <p className="text-2xs text-muted-foreground">{t.group} · {t.mode}</p>
                       </div>
+                      <span
+                        aria-hidden
+                        className="flex h-7 w-20 shrink-0 items-center gap-1 rounded-sm border border-border bg-background px-1.5"
+                        data-theme={t.id}
+                      >
+                        <span className="h-3 flex-1 rounded-sm bg-panel" />
+                        <span className="h-3 w-3 rounded-sm bg-primary" />
+                        <span className="h-3 w-3 rounded-sm bg-success" />
+                        <span className="h-3 w-3 rounded-sm bg-destructive" />
+                      </span>
                       {activeTheme === t.id ? (
-                        <Pill tone="primary" className="text-3xs">active</Pill>
+                        <Icon name="check" className="shrink-0 text-primary" size={12} />
                       ) : null}
                     </button>
                   ))}
@@ -412,11 +543,7 @@ export default function SettingsPage() {
                 </p>
                 <div className="mt-4">
                   <Button
-                    onClick={() => {
-                      if (confirm("Reset all workspace data? This cannot be undone.")) {
-                        store.resetWorkspace();
-                      }
-                    }}
+                    onClick={() => setResetOpen(true)}
                     size="md"
                     variant="danger"
                   >
@@ -428,6 +555,41 @@ export default function SettingsPage() {
             </div>
           </div>
         )}
+
+        <ConfirmDialog
+          confirmLabel="Delete model"
+          description={`Roles configured to use ${draft.label || "this model"} will need a replacement model before they can run.`}
+          onConfirm={async () => {
+            setConfirmModelDelete(false);
+            await remove();
+          }}
+          onOpenChange={setConfirmModelDelete}
+          open={confirmModelDelete}
+          title={`Delete ${draft.label || "this model"}?`}
+        />
+        <ConfirmDialog
+          busy={disconnectingBusy}
+          confirmLabel="Disconnect"
+          description={disconnecting ? `Skills using ${disconnecting.name} will stop working until it is connected again.` : "This connection will be removed."}
+          onConfirm={async () => {
+            if (disconnecting) await disconnectIntegration(disconnecting);
+          }}
+          onOpenChange={(open) => { if (!open) setDisconnecting(null); }}
+          open={disconnecting !== null}
+          title={disconnecting ? `Disconnect ${disconnecting.name}?` : "Disconnect connection?"}
+        />
+        <ConfirmDialog
+          confirmLabel="Reset workspace"
+          description="This permanently clears locally stored chats, artifacts, roles, models, and folders. This action cannot be undone."
+          onConfirm={() => {
+            store.resetWorkspace();
+            setResetOpen(false);
+            toast.success("Workspace reset");
+          }}
+          onOpenChange={setResetOpen}
+          open={resetOpen}
+          title="Reset the workspace?"
+        />
       </div>
     </AppShell>
   );

@@ -1,0 +1,98 @@
+{
+  "title": "Competitor Intelligence",
+  "description": "Research competitors on the web, create a strategic brief, and save findings to Notion. Exercises DuckDuckGo search and Notion integration.",
+  "nodes": [
+    {
+      "id": "ask-competitors",
+      "title": "Competitor Names",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Ask the user: which competitors should we research? Suggest: (A) Enter competitor names or URLs, (B) Describe your market and I'll find competitors, (C) Upload a list.",
+      "humanQuestions": [
+        {
+          "id": "competitor_source",
+          "kind": "single",
+          "question": "How should we choose the competitors to research?",
+          "options": [
+            { "id": "specific", "label": "Use specific competitors", "description": "Type competitor names or URLs in the composer." },
+            { "id": "discover", "label": "Discover them from my market", "description": "Describe the market and audience in the composer." },
+            { "id": "list", "label": "Use an existing list", "description": "Paste the list or attach the source file." }
+          ],
+          "allowCustom": true
+        },
+        {
+          "id": "competitor_details",
+          "kind": "text",
+          "question": "What names, URLs, market description, or list should the research use?",
+          "placeholder": "Add the competitor details…",
+          "allowCustom": true
+        }
+      ],
+      "input": "user_request",
+      "output": "competitor_list",
+      "x": 80,
+      "y": 200
+    },
+    {
+      "id": "research",
+      "title": "Deep Research",
+      "roleSlug": "researcher",
+      "skillSlugs": ["duckduckgo.search", "knowledge.search"],
+      "prompt": "Research each competitor. Find: positioning, content strategy, audience engagement, product offering, pricing signals, social presence. Record URLs and dates.",
+      "input": "competitor_list",
+      "output": "research_output",
+      "x": 340,
+      "y": 200
+    },
+    {
+      "id": "strategy",
+      "title": "Intel Brief",
+      "roleSlug": "strategist",
+      "skillSlugs": ["llm.generate"],
+      "prompt": "From the research, write a competitive intel brief: each competitor's positioning, content approach, strengths, gaps, and opportunities for differentiation.",
+      "input": "research_output",
+      "output": "intel_brief",
+      "x": 600,
+      "y": 200
+    },
+    {
+      "id": "ask-review",
+      "title": "Review Intel",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Show the intel brief to the user. Ask: (A) Approve and save to Notion, (B) Edit and then save, (C) Reject and refine research.",
+      "humanQuestions": [
+        {
+          "id": "review_decision",
+          "kind": "single",
+          "question": "What should happen to the competitive intelligence brief?",
+          "options": [
+            { "id": "approve", "label": "Approve and save", "description": "Save the current brief to Notion." },
+            { "id": "edit", "label": "Request edits", "description": "Describe the changes before saving." },
+            { "id": "reject", "label": "Refine the research", "description": "Return to research instead of saving." }
+          ],
+          "allowCustom": true
+        }
+      ],
+      "input": "intel_brief",
+      "output": "review_decision",
+      "x": 860,
+      "y": 200
+    },
+    {
+      "id": "notion-save",
+      "title": "Save to Notion",
+      "roleSlug": "notion-admin",
+      "skillSlugs": ["notion.create", "notion.update"],
+      "prompt": "Create a new page in the Competitor Intelligence database. Include: competitor name, positioning summary, strengths, gaps, opportunities, and research date. Return the page URL.",
+      "input": "review_decision",
+      "output": "notion_result",
+      "x": 1120,
+      "y": 200
+    }
+  ],
+  "edges": [
+    { "id": "ask-research", "source": "ask-competitors", "target": "research" },
+    { "id": "research-strategy", "source": "research", "target": "strategy" },
+    { "id": "strategy-review", "source": "strategy", "target": "ask-review" },
+    { "id": "review-notion", "source": "ask-review", "target": "notion-save" }
+  ]
+}

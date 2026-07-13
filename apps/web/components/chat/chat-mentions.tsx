@@ -26,7 +26,16 @@ const CATEGORY_META: Record<string, { label: string; icon: string }> = {
 
 export function useChatMentionAdapter() {
   const store = useWorkspaceStore();
-  const references = useMemo(() => buildObjectReferences(store), [store]);
+  const references = useMemo(
+    () => buildObjectReferences({
+      items: store.items,
+      roles: store.roles,
+      skills: store.skills,
+      evalFiles: store.evalFiles,
+      workstreams: store.workflows
+    }),
+    [store.items, store.roles, store.skills, store.evalFiles, store.workflows]
+  );
 
   const categories = useMemo(() => {
     const kinds = new Set<string>(references.map((r: ObjectReference) => r.kind));

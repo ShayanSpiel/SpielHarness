@@ -48,12 +48,12 @@ function buildNodes(
   const outgoingIds = new Set(edges.map((e) => e.source));
   return draftNodes.map((n) => ({
     id: n.id,
-    type: n.nodeType === "eval" ? "eval" : "role",
-    position: { x: n.x, y: n.y },
+    type: n.evalInput ? "eval" : "role",
+    position: { x: n.position.x, y: n.position.y },
     data: {
       node: n,
       role:
-        n.nodeType === "eval"
+        n.evalInput
           ? evalsById.get(n.skillIds[0] ?? "")
           : rolesById.get(n.roleId),
       isConnecting: fromNodeId === n.id,
@@ -95,7 +95,7 @@ function FlowContent({
   addStep,
   onNodeSelect,
 }: {
-  draft: WorkstreamDefinition | Omit<WorkstreamDefinition, "id" | "updatedAt">;
+  draft: WorkstreamDefinition | Omit<WorkstreamDefinition, "id" | "orgId" | "createdAt" | "updatedAt">;
   rolesById: Map<string, string>;
   evalsById: Map<string, string>;
   fromNodeId: string | null;
@@ -143,8 +143,7 @@ function FlowContent({
   const onNodeDragStop: OnNodeDrag<Node<WorkflowNodeData>> = useCallback(
     (_, node: Node<WorkflowNodeData>) => {
       updateNode(node.id, {
-        x: Math.round(node.position.x),
-        y: Math.round(node.position.y),
+        position: { x: Math.round(node.position.x), y: Math.round(node.position.y) },
       });
     },
     [updateNode],
@@ -278,7 +277,7 @@ export function GraphCanvas({
   setSelectedNodeId,
   ...props
 }: {
-  draft: WorkstreamDefinition | Omit<WorkstreamDefinition, "id" | "updatedAt">;
+  draft: WorkstreamDefinition | Omit<WorkstreamDefinition, "id" | "orgId" | "createdAt" | "updatedAt">;
   rolesById: Map<string, string>;
   evalsById: Map<string, string>;
   fromNodeId: string | null;

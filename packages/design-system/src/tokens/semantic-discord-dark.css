@@ -1,14 +1,14 @@
 [data-theme="discord-dark"] {
-  --background: var(--discord-dark-bg0);
+  --background: var(--discord-dark-bg0_h);
   --background-deep: var(--discord-dark-bg0_h);
   --panel: var(--discord-dark-bg0);
   --panel-raised: var(--discord-dark-bg0_s);
   --panel-strong: var(--discord-dark-bg1);
-  --input: var(--discord-dark-bg1);
-  --hover: var(--discord-dark-bg2);
-  --selected: var(--discord-dark-bg2);
-  --border: var(--discord-dark-bg2);
-  --border-strong: var(--discord-dark-bg3);
+  --input: color-mix(in oklab, var(--discord-dark-bg1) 62%, var(--discord-dark-bg0));
+  --hover: color-mix(in oklab, var(--discord-dark-fg1) 7%, var(--discord-dark-bg0));
+  --selected: color-mix(in oklab, var(--discord-dark-blue) 17%, var(--discord-dark-bg0_s));
+  --border: color-mix(in oklab, var(--discord-dark-bg2) 62%, var(--discord-dark-bg0));
+  --border-strong: var(--discord-dark-bg2);
   --ring: var(--discord-dark-blue);
 
   --foreground: var(--discord-dark-fg1);

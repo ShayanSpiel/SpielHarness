@@ -1,234 +1,225 @@
-import { errorResponse, getOrg, HttpError, requireOrgWrite, requireSupabase } from "../../../../../lib/server";
-import { resolveExecution, resolveModelProvider, type ExecuteBody } from "../../../../../lib/execution-service";
-import { streamRun } from "@spielos/graph";
-import { recordRunUsage } from "../../../../../lib/usage";
-import { createRunEventBuffer } from "../../../../../lib/run-event-buffer";
-import { persistRunArtifact } from "../../../../../lib/workspace-artifact";
+import {
+  appendChatMessages,
+  appendRunEvents,
+  createFile,
+  getRun,
+  linkRunOutputFile,
+  nextRunEventSequence,
+  recordUsage,
+  updateRun
+} from "@spielos/db";
+import { errorResponse, getOrg, HttpError, requireWrite } from "../../../../../lib/server";
+import { resolveExecution, type ExecuteBody } from "../../../../../lib/execution-service";
+import { streamRun, type RunCheckpoint } from "@spielos/graph";
+import type { Artifact, RunEvent } from "@spielos/core";
+
+function frame(data: unknown): string {
+  return `data: ${JSON.stringify(data)}\n\n`;
+}
 
 type ReplyBody = {
   requestId: string;
   answers: Record<string, unknown>;
 };
 
-function frame(data: unknown) {
-  return `data: ${JSON.stringify(data)}\n\n`;
-}
-
-function runEvent(orgId: string, runId: string, type: "run_completed" | "run_failed" | "run_cancelled", message: string, payload?: Record<string, unknown>) {
-  return {
-    id: `evt_${crypto.randomUUID()}`,
-    orgId,
-    runId,
-    type,
-    message,
-    payload,
-    createdAt: new Date().toISOString()
-  };
-}
+type PendingEvent = {
+  event_type: string;
+  node_id: string | null;
+  node_title: string | null;
+  skill_id: string | null;
+  skill_name: string | null;
+  message: string;
+  payload: Record<string, unknown>;
+};
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const org = await getOrg();
-    requireOrgWrite(org);
-    const supabase = requireSupabase(org);
+    requireWrite(org);
     const { id: runId } = await params;
     const body = (await request.json()) as ReplyBody;
     if (!body.requestId || body.answers === undefined) {
       throw new HttpError(400, "requestId and answers are required");
     }
 
-    const { data: run, error: runErr } = await supabase
-      .from("runs")
-      .select("*")
-      .eq("id", runId)
-      .eq("org_id", org.orgId)
-      .single();
-    if (runErr || !run) throw new HttpError(404, "Run not found");
-    if (run.status !== "waiting_human") throw new HttpError(409, "Run is not waiting for human input");
-    const savedCheckpoint = (run.checkpoint as Record<string, unknown>) ?? {};
-    const pendingRequest = savedCheckpoint.humanInputRequest as { id?: string } | undefined;
-    if (!pendingRequest?.id || pendingRequest.id !== body.requestId) {
-      throw new HttpError(409, "This human-input request is stale or does not belong to the run");
+    const run = await getRun(org.sql, org.orgId, runId);
+    if (!run) throw new HttpError(404, "Run not found");
+    if (run.status !== "waiting_human") {
+      throw new HttpError(409, "Run is not waiting for human input");
     }
 
+    // Reconstruct the execution body from the persisted run.
     const previousInputs = (run.inputs as Record<string, unknown>) ?? {};
+    const target = previousInputs.target as { type?: ExecuteBody["type"]; id?: string | null } | undefined;
+    if (!target?.type) throw new HttpError(500, "Run is missing target");
+
     const executeBody: ExecuteBody = {
-      prompt: String(run.prompt ?? ""),
-      target: previousInputs.target as ExecuteBody["target"],
-      contextRefs: previousInputs.contextRefs as ExecuteBody["contextRefs"],
-      nodes: previousInputs.nodes as ExecuteBody["nodes"],
+      prompt: run.prompt,
+      type: target.type,
+      targetId: target.id ?? undefined,
+      workflowId: target.id ?? undefined,
+      contextFileIds: (previousInputs.contextFileIds as string[]) ?? [],
       runId
     };
-    const resolved = await resolveExecution(supabase, org.orgId, executeBody);
-    const preferredModelId = resolved.nodes.map((node) => resolved.rolesById[node.roleId]?.modelId).find(Boolean);
-    const { provider, model } = await resolveModelProvider(supabase, org.orgId, preferredModelId);
 
-    const humanInputs = (run.human_inputs as Record<string, unknown>) ?? {};
-    const updatedHumanInputs = { ...humanInputs, [body.requestId]: body.answers };
-    await supabase
-      .from("runs")
-      .update({
-        status: "running",
-        human_inputs: updatedHumanInputs,
-        updated_at: new Date().toISOString()
-      })
-      .eq("id", runId)
-      .eq("org_id", org.orgId);
+    const resolved = await resolveExecution(org, executeBody);
+    const definitionSnapshot = (run.definition_snapshot as Record<string, unknown>) ?? {};
+    if (definitionSnapshot.workflow) {
+      resolved.runRequest.workflow = definitionSnapshot.workflow as typeof resolved.runRequest.workflow;
+    }
+    if (definitionSnapshot.singleNode) {
+      resolved.runRequest.singleNode = definitionSnapshot.singleNode as typeof resolved.runRequest.singleNode;
+    }
+    if (definitionSnapshot.roles) {
+      resolved.runRequest.roles = definitionSnapshot.roles as typeof resolved.runRequest.roles;
+    }
+    if (definitionSnapshot.skills) {
+      resolved.runRequest.skills = definitionSnapshot.skills as typeof resolved.runRequest.skills;
+    }
+    const checkpoint: RunCheckpoint = (run.state as RunCheckpoint) ?? {
+      completedNodes: [],
+      outputs: {},
+      artifacts: [],
+      events: [],
+      evalAttempts: {},
+      pendingHumanInput: null,
+      status: "waiting_human",
+      failed: false,
+      failedNode: null,
+      error: null,
+      retryNodeId: null
+    };
 
-    await supabase.from("run_events").insert({
-      org_id: org.orgId,
-      run_id: runId,
-      event_type: "human_input_received",
-      message: "Human input received, resuming run.",
-      payload: { requestId: body.requestId }
+    // Persist the human answer against the run.
+    const previousHumanInputs = (run.human_inputs as Record<string, unknown>) ?? {};
+    await updateRun(org.sql, org.orgId, runId, {
+      status: "running",
+      humanInputs: { ...previousHumanInputs, [body.requestId]: body.answers }
     });
+
+    const firstEventSequence = await nextRunEventSequence(org.sql, org.orgId, runId);
 
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
+        controller.enqueue(encoder.encode(frame({ kind: "run", runId, type: target.type })));
+        const pendingEvents: PendingEvent[] = [];
+        const pendingArtifacts: Artifact[] = [];
         let outputText = "";
-        const artifactIds: string[] = [];
-        let checkpoint: Record<string, unknown> = savedCheckpoint;
-        const eventBuffer = createRunEventBuffer(supabase, org.orgId, runId);
-        controller.enqueue(encoder.encode(frame({
-          kind: "run",
-          runId,
-          target: resolved.target,
-          selectedContext: resolved.selectedContext
-        })));
+        let terminalStatus: "completed" | "failed" | "cancelled" | "waiting_human" = "completed";
+        let errorMessage: string | null = null;
+        let latestCheckpoint: RunCheckpoint = checkpoint;
+        let streamEventSequence = firstEventSequence;
 
         try {
-          let waitingForHuman = false;
-          let terminalSent = false;
-          let terminalStatus: "completed" | "failed" | "cancelled" | null = null;
           for await (const item of streamRun({
-            orgId: org.orgId,
+            ...resolved.runRequest,
             runId,
-            prompt: String(run.prompt ?? ""),
-            nodes: resolved.nodes,
-            skills: resolved.skills,
-            roles: resolved.rolesById,
-            provider,
-            model,
-            knowledgeFiles: resolved.knowledgeFiles,
-            workstreamId: resolved.workstreamId,
             resume: body.answers,
-            checkpoint: savedCheckpoint
-          }, request.signal)) {
-            if (item.kind === "event") {
-              if (item.event.type === "run_completed" || item.event.type === "run_failed" || item.event.type === "run_cancelled") {
-                terminalSent = true;
-                terminalStatus =
-                  item.event.type === "run_failed" ? "failed" :
-                  item.event.type === "run_cancelled" ? "cancelled" :
-                  "completed";
-              }
-              await eventBuffer.push(item.event);
-              controller.enqueue(encoder.encode(frame({ kind: "event", event: item.event })));
-            } else if (item.kind === "artifact") {
-              const created = await persistRunArtifact(supabase, org.orgId, runId, item.artifact, resolved.selectedContext);
-              if (created.fileId) {
-                artifactIds.push(created.fileId);
-                await supabase.from("generated_files").insert({
-                  org_id: org.orgId,
-                  run_id: runId,
-                  file_id: created.fileId,
-                  relationship: "output"
-                });
-              }
-              controller.enqueue(encoder.encode(frame({ kind: "artifact", artifact: item.artifact })));
-            } else if (item.kind === "human_input") {
-              waitingForHuman = true;
-              await supabase
-                .from("runs")
-                .update({ status: "waiting_human", updated_at: new Date().toISOString() })
-                .eq("id", runId)
-                .eq("org_id", org.orgId);
-              controller.enqueue(encoder.encode(frame({ kind: "human_input", request: item.request })));
-            } else if (item.kind === "text") {
+            checkpoint,
+            signal: request.signal
+          })) {
+            if (item.kind === "text") {
               outputText += item.text;
               controller.enqueue(encoder.encode(frame({ kind: "text", text: item.text })));
             } else if (item.kind === "status") {
-              controller.enqueue(encoder.encode(frame({ kind: "status", status: item.status })));
-            } else if (item.kind === "values") {
-              checkpoint = {
-                cursor: item.state.cursor,
-                humanInputs: item.state.humanInputs,
-                humanInputRequest: item.state.humanInputRequest,
-                outputsByNode: item.state.outputsByNode,
-                evalAttempts: item.state.evalAttempts,
-                output: item.state.output
-              };
-            }
-          }
-
-
-          await eventBuffer.flush();
-
-          if (waitingForHuman) {
-            await supabase
-              .from("runs")
-              .update({ checkpoint, status: "waiting_human", updated_at: new Date().toISOString() })
-              .eq("id", runId)
-              .eq("org_id", org.orgId);
-          } else {
-            await recordRunUsage({ supabase, orgId: org.orgId, runId, provider, model, input: String(run.prompt ?? ""), output: outputText });
-            if (run.chat_id && outputText.trim()) {
-              const { error: messageError } = await supabase.from("chat_messages").insert({
-                org_id: org.orgId,
-                chat_id: run.chat_id,
-                role: "assistant",
-                body: outputText,
-                metadata: { runId, resumedFrom: body.requestId }
+              controller.enqueue(encoder.encode(frame({ kind: "status", message: item.message })));
+            } else if (item.kind === "event") {
+              const e: RunEvent = { ...item.event, sequence: streamEventSequence++ };
+              pendingEvents.push({
+                event_type: e.type,
+                node_id: e.nodeId ?? null,
+                node_title: e.nodeTitle ?? null,
+                skill_id: e.skillId ?? null,
+                skill_name: e.skillName ?? null,
+                message: e.message,
+                payload: e.payload ?? {}
               });
-              if (messageError) throw messageError;
-            }
-            await supabase
-              .from("runs")
-              .update({
-                status: terminalStatus ?? "completed",
-                outputs: { text: outputText, artifactIds },
-                completed_at: new Date().toISOString()
-              })
-              .eq("id", runId)
-              .eq("org_id", org.orgId);
-            if (!terminalSent) {
-              const completedEvent = runEvent(org.orgId, runId, "run_completed", "Run completed.", {
-                target: resolved.target,
-                selectedContext: resolved.selectedContext
-              });
-              await supabase.from("run_events").insert({
-                org_id: org.orgId,
-                run_id: runId,
-                event_type: completedEvent.type,
-                message: completedEvent.message,
-                payload: completedEvent.payload
-              });
-              controller.enqueue(encoder.encode(frame({ kind: "event", event: completedEvent })));
+              controller.enqueue(encoder.encode(frame({ kind: "event", event: e })));
+            } else if (item.kind === "artifact") {
+              pendingArtifacts.push(item.artifact);
+              controller.enqueue(encoder.encode(frame({ kind: "artifact", artifact: item.artifact })));
+            } else if (item.kind === "human_input") {
+              terminalStatus = "waiting_human";
+              controller.enqueue(encoder.encode(frame({ kind: "human_input", request: item.request })));
+            } else if (item.kind === "checkpoint") {
+              latestCheckpoint = item.state;
+            } else if (item.kind === "done") {
+              const allowed = ["completed", "failed", "cancelled", "waiting_human"] as const;
+              terminalStatus = allowed.includes(item.status as (typeof allowed)[number])
+                ? (item.status as (typeof allowed)[number])
+                : "completed";
             }
           }
         } catch (err) {
-          const message = err instanceof Error ? err.message : "Unknown resume error";
-          const cancelled = request.signal.aborted || (err instanceof Error && err.name === "AbortError");
-          await eventBuffer.flush().catch(() => undefined);
-          await supabase
-            .from("runs")
-            .update({ status: cancelled ? "cancelled" : "failed", completed_at: new Date().toISOString() })
-            .eq("id", runId)
-            .eq("org_id", org.orgId);
-          const failedEvent = runEvent(org.orgId, runId, cancelled ? "run_cancelled" : "run_failed", cancelled ? "Run cancelled." : message, { target: resolved.target });
-          await supabase.from("run_events").insert({
-            org_id: org.orgId, run_id: runId, event_type: failedEvent.type,
-            message: failedEvent.message, payload: failedEvent.payload
-          });
-          controller.enqueue(encoder.encode(frame({ kind: "event", event: failedEvent })));
-          controller.enqueue(encoder.encode(frame({
-            kind: "error",
-            message
-          })));
-        } finally {
-          controller.close();
+          errorMessage = err instanceof Error ? err.message : "Resume failed";
+          terminalStatus = "failed";
+          controller.enqueue(encoder.encode(frame({ kind: "error", message: errorMessage })));
         }
+
+        if (pendingEvents.length > 0) {
+          try {
+            await appendRunEvents(org.sql, org.orgId, runId, pendingEvents);
+          } catch (err) {
+            console.error("[runs/reply] event persist failed:", err);
+          }
+        }
+
+        for (const artifact of pendingArtifacts) {
+          try {
+            const file = await createFile(org.sql, org.orgId, {
+              title: artifact.title,
+              body: artifact.body,
+              fileType: artifact.type === "artifact" ? "artifact" : artifact.type,
+              status: "active",
+              metadata: { ...artifact.metadata, runId, runtimeArtifactId: artifact.id }
+            });
+            await linkRunOutputFile(org.sql, org.orgId, runId, file.id);
+          } catch (err) {
+            console.error("[runs/reply] artifact persist failed:", err);
+          }
+        }
+
+        const completedAt =
+          terminalStatus === "completed" || terminalStatus === "failed" || terminalStatus === "cancelled"
+            ? new Date().toISOString()
+            : null;
+
+        await updateRun(org.sql, org.orgId, runId, {
+          status: terminalStatus,
+          outputs: { text: outputText },
+          state: latestCheckpoint,
+          error: errorMessage,
+          completedAt
+        });
+
+        if (resolved.runRequest.provider && resolved.runRequest.model && outputText) {
+          try {
+            await recordUsage(org.sql, org.orgId, {
+              runId,
+              provider: resolved.runRequest.provider.name,
+              model: resolved.runRequest.model.model,
+              inputTokens: Math.ceil(run.prompt.length / 4),
+              outputTokens: Math.ceil(outputText.length / 4),
+              costMicros: 0
+            });
+          } catch (err) {
+            console.warn("[runs/reply] usage record failed:", err);
+          }
+        }
+
+        if (run.chat_id && outputText) {
+          try {
+            await appendChatMessages(org.sql, org.orgId, run.chat_id, [
+              { role: "assistant", body: outputText, metadata: { runId, resumedFrom: body.requestId } }
+            ]);
+          } catch (err) {
+            console.warn("[runs/reply] chat persist failed:", err);
+          }
+        }
+
+        controller.enqueue(encoder.encode(frame({ kind: "done", runId, status: terminalStatus })));
+        controller.close();
       }
     });
 

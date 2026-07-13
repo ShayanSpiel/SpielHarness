@@ -39,7 +39,7 @@ export const DropdownMenuItem = forwardRef<
     <DropdownMenuPrimitive.Item
       ref={ref}
       className={cn(
-        "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none transition-colors duration-[var(--duration)] focus:bg-selected focus:text-foreground-strong data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+        "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none transition-colors duration-[var(--duration)] focus:bg-selected focus:text-foreground-strong data-[disabled]:pointer-events-none data-[disabled]:text-[var(--disabled-foreground)]",
         inset && "pl-8",
         className
       )}
@@ -57,7 +57,7 @@ export const DropdownMenuCheckboxItem = forwardRef<
       ref={ref}
       checked={checked}
       className={cn(
-        "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm py-1.5 pl-7 pr-2 text-sm outline-none transition-colors focus:bg-selected focus:text-foreground-strong data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+        "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm py-1.5 pl-7 pr-2 text-sm outline-none transition-colors focus:bg-selected focus:text-foreground-strong data-[disabled]:pointer-events-none data-[disabled]:text-[var(--disabled-foreground)]",
         className
       )}
       {...props}

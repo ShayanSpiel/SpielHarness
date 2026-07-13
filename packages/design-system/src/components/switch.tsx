@@ -6,7 +6,7 @@ import { forwardRef, type ComponentPropsWithoutRef, type ElementRef } from "reac
 import { cn } from "../index";
 
 const switchVariants = cva(
-  "peer inline-flex shrink-0 cursor-pointer items-center rounded-full border border-border bg-input transition-colors duration-[var(--duration)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)] disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=checked]:border-primary",
+  "peer inline-flex shrink-0 cursor-pointer items-center rounded-full border border-border bg-input transition-colors duration-[var(--duration)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--background)] disabled:cursor-not-allowed disabled:border-[var(--disabled-border)] disabled:bg-[var(--disabled-surface)] data-[state=checked]:bg-primary data-[state=checked]:border-primary",
   {
     variants: {
       size: {

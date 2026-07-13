@@ -87,8 +87,6 @@ const DEFAULT_ICON_MAP: Record<string, string> = {
   bold: "Bold",
   italic: "Italic",
   underline: "Underline",
-  "heading-1": "Heading",
-  "heading-2": "Heading",
   text: "FontColor",
   quote: "QuoteLeft",
   "list-ordered": "ListOl",

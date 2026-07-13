@@ -30,7 +30,10 @@ export function ToggleRow({
   return (
     <label
       className={cn(
-        "flex h-8 items-center gap-2 rounded-md border border-border bg-background px-2 text-xs text-muted-foreground",
+        "flex h-8 items-center gap-2 rounded-md border px-2 text-xs transition-colors duration-[var(--duration)]",
+        disabled
+          ? "cursor-not-allowed border-[var(--disabled-border)] bg-[var(--disabled-surface)] text-[var(--disabled-foreground)]"
+          : "border-border bg-input text-muted-foreground hover:border-border-strong",
         className
       )}
     >

@@ -24,7 +24,7 @@ export function EmptyState({
       )}
     >
       {icon ? (
-        <div className="rounded-full border border-border bg-panel-raised p-3 text-muted-foreground">
+        <div className="rounded-full bg-panel-raised p-3 text-muted-foreground">
           {icon}
         </div>
       ) : null}

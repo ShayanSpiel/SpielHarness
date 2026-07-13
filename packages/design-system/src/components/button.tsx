@@ -7,7 +7,7 @@ import { cn } from "../index";
 import { Icon } from "./icons";
 
 const buttonStyles = cva(
-  "inline-flex items-center justify-center rounded-md border border-transparent text-sm font-medium transition-colors duration-[var(--duration)] disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]",
+  "inline-flex items-center justify-center rounded-md border border-transparent text-sm font-medium transition-colors duration-[var(--duration)] disabled:pointer-events-none disabled:border-[var(--disabled-border)] disabled:bg-[var(--disabled-surface)] disabled:text-[var(--disabled-foreground)] disabled:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--background)]",
   {
     variants: {
       variant: {
@@ -24,10 +24,11 @@ const buttonStyles = cva(
         link: "border-transparent text-primary underline-offset-4 hover:underline"
       },
       size: {
-        xs: "h-6 gap-1 px-1.5 text-[10px]",
+        xs: "h-6 gap-1 px-1.5 text-3xs",
         sm: "h-7 gap-1.5 px-2.5 text-xs",
         md: "h-8 gap-2 px-3",
         lg: "h-9 gap-2 px-4",
+        "icon-xs": "h-6 w-6 p-0",
         icon: "h-8 w-8 p-0",
         "icon-sm": "h-7 w-7 p-0",
       }
@@ -41,22 +42,35 @@ const ICON_SIZE: Record<string, number> = {
   sm: 12,
   md: 14,
   lg: 16,
+  "icon-xs": 12,
   icon: 16,
   "icon-sm": 14,
 };
 
 export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> &
-  VariantProps<typeof buttonStyles> & { asChild?: boolean; icon?: string };
+  VariantProps<typeof buttonStyles> & {
+    asChild?: boolean;
+    icon?: string;
+    loading?: boolean;
+  };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { className, variant, size, asChild, icon, children, ...props },
+  { className, variant, size, asChild, icon, loading = false, disabled, children, ...props },
   ref
 ) {
   const Comp = asChild ? Slot : "button";
   const iconSize = size ? ICON_SIZE[size] : 14;
   return (
-    <Comp ref={ref} className={cn(buttonStyles({ variant, size }), className)} {...props}>
-      {icon ? <Icon name={icon} size={iconSize} /> : null}
+    <Comp
+      ref={ref}
+      aria-busy={loading || undefined}
+      className={cn(buttonStyles({ variant, size }), className)}
+      disabled={disabled || loading}
+      {...props}
+    >
+      {loading || icon ? (
+        <Icon name={loading ? "loader" : icon!} className={loading ? "animate-spin" : undefined} size={iconSize} />
+      ) : null}
       {children}
     </Comp>
   );

@@ -1,6 +1,6 @@
-# Marketing Harness Model
+# SpielOS Harness Model
 
-SpielOS is a customizable, role-based marketing team harness. The UI manages harness resources through focused pages, not a separate `/harness` area.
+SpielOS is a customizable, role-based assistant and workflow harness. The starter corpus focuses on marketing operations, but the runtime and file model are domain-independent. The UI manages harness resources through focused pages, not a separate `/harness` area.
 
 ## Source Of Truth
 
@@ -11,7 +11,7 @@ SpielOS is a customizable, role-based marketing team harness. The UI manages har
 
 ## Domain Boundaries
 
-- Roles are executable marketing team members. A role owns its prompt, model selection, input/output contracts, memory policy, and assigned skills.
+- Roles are executable team members. A role owns its prompt, model selection, input/output contracts, memory policy, and assigned skills.
 - Skills are reusable capabilities. A skill may reference an operation exposed by an integration, but it does not store connector credentials.
 - Integrations live in Settings or server configuration. The relationship is Integration -> operation -> Skill -> Role.
 - Evaluations are reusable rubric definitions. They can run independently through the execution service or be represented as `kind="eval"` skills for role/workflow use.
@@ -20,13 +20,14 @@ SpielOS is a customizable, role-based marketing team harness. The UI manages har
 
 ## Chat Compatibility
 
-- Empty context is valid and is sent as `explicit_context = []`.
+- Empty context is valid. Ordinary assistant conversation uses `type: "chat"` and `contextFileIds: []`.
 - Files, prompts, datasets, and library records are context only.
-- One workflow may be selected. It is exclusive with role, skill, and eval targets; knowledge context is allowed.
-- One role may be selected. One direct skill may supplement it.
+- A run has one executable target: workflow, role, skill, or eval.
+- A workflow target is sent as `workflowId`; role, skill, and eval targets use `targetId`.
+- The UI may attach any number of file-context items alongside the executable target.
 - One direct skill may run by itself.
 - One eval may run by itself.
-- Invalid combinations are blocked in the context picker and validated again by `/api/runs/execute`.
+- The server validates target ids, active status, workflow edges, cycles, and every referenced skill before creating the run.
 
 ## Canonical Execution Path
 
@@ -42,19 +43,22 @@ Chat / Role test / Skill test / Eval test / Workflow run
   -> run events, artifacts, generated file links
 ```
 
-`apps/web/lib/execution-service.ts` owns target inference, compatibility validation, server-side DAG compilation, file-backed role/skill/eval/workflow resolution, selected context tracing, and stored provider/model resolution with environment fallback.
+`apps/web/lib/execution-service.ts` owns target validation, file-backed role/skill/eval/workflow resolution, selected file tracing, workflow normalization, and stored provider/model resolution with an environment-backed Mistral fallback.
 
 ## LangGraph Ownership
 
-`packages/graph` owns orchestration for role, skill, evaluation, and workflow execution. The graph is shared and data-driven:
+`packages/graph` owns orchestration for role, skill, evaluation, and workflow execution. It builds the `StateGraph` directly from saved nodes and edges:
 
-- `resolve` picks the next role-bound node and skill step.
-- `execute` runs the active skill kind with dependency outputs and selected marketing objects.
-- `advance` moves through the compiled DAG or persists a durable human-input checkpoint.
+- roots are nodes without incoming edges;
+- fan-out branches run independently;
+- multi-input edges form joins;
+- skills inside a node execute sequentially;
+- eval retry routes can re-enter the declared source node;
+- human input persists a resumable checkpoint.
 
-Saved workflow edges are authoritative. The server rejects missing endpoints and cycles, computes dependency order, and ignores client-supplied node overrides for saved workflows. Multi-skill nodes are expanded into deterministic skill steps rather than silently dropping companion skills.
+Saved workflow edges are authoritative. The server rejects missing endpoints, cycles, missing/disabled skills, and disabled targets. Node, skill, tool, eval, artifact, human-input, and terminal events stream when they occur and are retained in checkpoint state.
 
-Plain empty-context chat can complete through the same run API without building a graph when no executable target is selected.
+Plain chat completes through the same run API without building a workflow graph. It receives a file-backed workspace instruction plus a generated catalog of available harness names, while unattached file bodies remain excluded.
 
 ## Adding Resources
 

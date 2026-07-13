@@ -1,42 +1,53 @@
 # Runs
 
-The run workbench lives at `/runs`. The right sidebar shows run details: context, step log, artifacts. The chat area is where the user interacts with the team.
+Chat is the primary run surface. The right inspector has Context, Events, and Outputs tabs. Workflow and direct executable pages use the same `/api/runs/execute` contract.
+
+## Request contract
+
+The request includes `prompt`, an optional `type` (defaults to `chat`), `contextFileIds`, chat history, and an optional idempotency key.
+
+- `workflow` uses `workflowId`. The resolver also accepts `targetId` for compatibility, but clients must send `workflowId`.
+- `role`, `skill`, and `eval` use `targetId`.
+- `chat` has no executable target.
+- Empty file context is `contextFileIds: []`; the server supplies workspace catalog awareness but does not attach every file body.
+
+## Lifecycle
+
+Durable statuses are:
+
+- `running`: the model or graph may emit work.
+- `waiting_human`: execution is checkpointed and requires `/reply`.
+- `completed`: successful terminal state.
+- `failed`: terminal runtime or persistence failure.
+- `cancelled`: terminal user/system cancellation.
+
+`idle` exists only in the client before a run starts. UI loading is derived from `status === "running"`. Terminal events and `done.status` clear activity and the active role; no second loading flag is allowed.
 
 ## Streaming protocol
 
-The server emits Server-Sent Events. Each frame is `data: { kind, ... }\n\n` with one of:
+The server returns SSE frames separated by a blank line:
 
-- `run` — run id, selected target, and selected context summary. This is emitted first so chat can resume human-input runs.
-- `event` — `RunEvent` (typed via `eventTypeSchema` in `packages/core`).
-- `artifact` — `Artifact` produced by the run.
-- `text` — streamed text output from chat, LLM skills, and retrieval skills.
-- `human_input` — `HumanInputRequest` (the run is pausing for a user answer).
-- `error` — terminal error.
+- `run`: run id and type.
+- `event`: typed lifecycle event.
+- `artifact`: generated structured output.
+- `text`: native model/output delta.
+- `status`: optional transient compatibility label; lifecycle state comes from events and `done`.
+- `human_input`: question payload and pause point.
+- `error`: transport/runtime error.
+- `done`: terminal or waiting status.
 
-Event types:
+Lifecycle event families are `run_*`, `node_*`, `skill_*`, `tool_call_*`, `human_input_*`, `artifact_created`, and `eval_score_updated`. LangGraph writes custom event frames when an operation starts or finishes, so the UI does not wait for the node result to discover that work began.
 
-```
-node_started, node_status,
-skill_started, skill_completed,
-human_input_requested, human_input_received,
-tool_call_started, tool_call_result,
-artifact_created,
-eval_score_updated,
-node_completed, run_completed, run_failed, run_cancelled
-```
+Plain chat emits model-generation run events without pretending a workflow is executing. Workflow events carry node, skill, and active-role identity. Chat compacts paired start/completion events into inline activity rows without a bordered transcript. The Events inspector preserves the full ordered history.
 
-## Human-in-the-loop
+## Resume and cancellation
 
-When a step's skill is `kind="human_input"`, the run pauses. The chat shows a question card with the questions defined in the skill. The user answers and hits **Send answers**. The reply hits `POST /api/runs/[id]/reply` and the run resumes from the next node.
+Human input is posted to `/api/runs/[id]/reply`. The checkpoint is loaded from `runs.state`, resumed, and replaced with the latest checkpoint. Output files and events are persisted.
 
-## Context tracing
+The valid transition is `running → waiting_human → running`. A run can enter any terminal state from `running`; terminal states do not resume.
 
-`/api/runs/execute` stores the typed target, selected context references, selected context summary, normalized nodes, and `explicit_context` in `runs.inputs`. Empty explicit context is represented as `[]`; it does not trigger automatic library injection.
+Client cancellation aborts the active streaming request and calls `/api/runs/[id]/cancel`. The endpoint updates durable status, but there is no cross-process cancellation signal until execution is moved to a worker.
 
-## Cancel
+## Replay
 
-`POST /api/runs/[id]/cancel` cancels the run. The current SSE stream is closed client-side via the AbortController in `useRunExecutor`.
-
-## Reset
-
-A run can be reset (events/artifacts cleared) by reloading the page or by calling `run.resetRun()` from the store. The persisted rows in the database remain.
+`GET /api/runs/[id]/events` returns persisted events and `GET /api/runs/[id]/artifacts` returns linked output files. Events are currently persisted at pause/termination rather than continuously, so they are not yet a live reconnect mechanism.

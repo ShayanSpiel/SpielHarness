@@ -19,7 +19,7 @@ export function PageHeader({ icon, title, actions, children, className }: PageHe
         className
       )}
     >
-      <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border bg-panel-raised text-foreground">
+      <div className="flex h-6 w-6 shrink-0 items-center justify-center text-foreground-muted">
         {icon}
       </div>
       <h1 className="truncate text-sm font-semibold text-foreground">{title}</h1>

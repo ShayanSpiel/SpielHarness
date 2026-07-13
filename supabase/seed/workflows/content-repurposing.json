@@ -1,0 +1,119 @@
+{
+  "title": "Content Repurposing",
+  "description": "Takes existing content (blog post, video transcript, podcast) and repurposes it into X thread + LinkedIn post + newsletter. Exercises all format templates.",
+  "nodes": [
+    {
+      "id": "ask-content",
+      "title": "Upload Source Content",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Ask the user: what content should we repurpose? Suggest: (A) Paste a blog post URL or text, (B) Upload a video transcript, (C) Paste a podcast transcript or notes, (D) Reference an existing platform file by title.",
+      "humanQuestions": [
+        {
+          "id": "source_content",
+          "kind": "single",
+          "question": "What content should we repurpose?",
+          "options": [
+            { "id": "article", "label": "Paste a blog post URL or text" },
+            { "id": "video", "label": "Upload a video transcript" },
+            { "id": "podcast", "label": "Paste a podcast transcript or notes" },
+            { "id": "workspace_file", "label": "Reference an existing platform file by title" }
+          ],
+          "placeholder": "Or paste the source content…",
+          "allowCustom": true
+        }
+      ],
+      "input": "user_request",
+      "output": "source_content",
+      "x": 80,
+      "y": 200
+    },
+    {
+      "id": "analyze",
+      "title": "Extract Core Ideas",
+      "roleSlug": "researcher",
+      "skillSlugs": ["knowledge.search", "llm.generate"],
+      "prompt": "Read the source content. Extract: main argument, 3 key proof points, the aha/meaning, best hook line. Identify which format each idea fits best.",
+      "input": "source_content",
+      "output": "extracted_ideas",
+      "x": 340,
+      "y": 200
+    },
+    {
+      "id": "ask-formats",
+      "title": "Choose Output Formats",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Show the extracted ideas. Ask the user: which formats should we repurpose into? Suggest: (A) X Thread + LinkedIn Post, (B) X Thread only, (C) LinkedIn Post only, (D) Newsletter, (E) All formats.",
+      "humanQuestions": [
+        {
+          "id": "output_formats",
+          "kind": "multi",
+          "question": "Which formats should we repurpose into?",
+          "options": [
+            { "id": "x_thread", "label": "X Thread" },
+            { "id": "linkedin", "label": "LinkedIn Post" },
+            { "id": "newsletter", "label": "Newsletter" }
+          ],
+          "placeholder": "Or add another format…",
+          "allowCustom": true
+        }
+      ],
+      "input": "extracted_ideas",
+      "output": "format_choice",
+      "x": 600,
+      "y": 200
+    },
+    {
+      "id": "write",
+      "title": "Write Repurposed Drafts",
+      "roleSlug": "writer",
+      "skillSlugs": ["llm.generate", "template.apply", "voice.match"],
+      "prompt": "Write drafts for each chosen format. X thread: use x-thread template. LinkedIn: use linkedin-post template. Newsletter: use email-newsletter template. Apply voice match and full frontmatter to each.",
+      "input": "format_choice",
+      "output": "repurposed_drafts",
+      "x": 860,
+      "y": 200
+    },
+    {
+      "id": "ask-publish",
+      "title": "Approve & Publish",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Show all repurposed drafts. Ask: (A) Publish all, (B) Publish specific formats only, (C) Edit and republish, (D) Hold all.",
+      "humanQuestions": [
+        {
+          "id": "publish_decision",
+          "kind": "single",
+          "question": "What should happen to the repurposed drafts?",
+          "options": [
+            { "id": "publish_all", "label": "Publish all", "description": "Dispatch every approved format." },
+            { "id": "publish_selected", "label": "Publish selected formats", "description": "Choose which formats to dispatch." },
+            { "id": "edit", "label": "Request edits", "description": "Describe changes before publishing." },
+            { "id": "hold", "label": "Hold all", "description": "Keep every draft for manual review." }
+          ],
+          "allowCustom": true
+        }
+      ],
+      "input": "repurposed_drafts",
+      "output": "approval",
+      "x": 1120,
+      "y": 200
+    },
+    {
+      "id": "publish",
+      "title": "Dispatch",
+      "roleSlug": "publisher",
+      "skillSlugs": ["publish-package-builder"],
+      "prompt": "Build publish packages for approved drafts and dispatch.",
+      "input": "approval",
+      "output": "publish_package",
+      "x": 1380,
+      "y": 200
+    }
+  ],
+  "edges": [
+    { "id": "ask-analyze", "source": "ask-content", "target": "analyze" },
+    { "id": "analyze-formats", "source": "analyze", "target": "ask-formats" },
+    { "id": "formats-write", "source": "ask-formats", "target": "write" },
+    { "id": "write-approve", "source": "write", "target": "ask-publish" },
+    { "id": "approve-publish", "source": "ask-publish", "target": "publish" }
+  ]
+}

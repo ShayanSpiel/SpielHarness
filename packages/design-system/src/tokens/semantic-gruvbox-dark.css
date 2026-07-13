@@ -1,14 +1,14 @@
 [data-theme="gruvbox-dark"] {
-  --background: var(--gruvbox-dark-bg0);
+  --background: var(--gruvbox-dark-bg0_h);
   --background-deep: var(--gruvbox-dark-bg0_h);
   --panel: var(--gruvbox-dark-bg0);
   --panel-raised: var(--gruvbox-dark-bg0_s);
   --panel-strong: var(--gruvbox-dark-bg1);
-  --input: var(--gruvbox-dark-bg1);
-  --hover: var(--gruvbox-dark-bg2);
-  --selected: var(--gruvbox-dark-bg2);
-  --border: var(--gruvbox-dark-bg2);
-  --border-strong: var(--gruvbox-dark-bg3);
+  --input: color-mix(in oklab, var(--gruvbox-dark-bg1) 62%, var(--gruvbox-dark-bg0));
+  --hover: color-mix(in oklab, var(--gruvbox-dark-fg1) 7%, var(--gruvbox-dark-bg0));
+  --selected: color-mix(in oklab, var(--gruvbox-dark-blue) 17%, var(--gruvbox-dark-bg0_s));
+  --border: color-mix(in oklab, var(--gruvbox-dark-bg2) 62%, var(--gruvbox-dark-bg0));
+  --border-strong: var(--gruvbox-dark-bg2);
   --ring: var(--gruvbox-dark-blue);
 
   --foreground: var(--gruvbox-dark-fg1);

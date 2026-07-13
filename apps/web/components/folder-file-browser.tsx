@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   Button,
+  ConfirmDialog,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -16,14 +17,16 @@ import {
   EmptyState,
   Field,
   Input,
+  NativeSelect,
   Pill,
+  ResizableSidebar,
+  SearchInput,
   Tooltip,
   cn
 } from "@spielos/design-system";
 import { Icon } from "@spielos/design-system/components";
 import { useWorkspaceStore } from "../lib/use-workspace-store";
-import type { WorkspaceItem, WorkspaceKind } from "../lib/workspace-data";
-import { SIDEBAR } from "../lib/layout-constants";
+import type { WorkspaceItem, WorkspaceItemKind as WorkspaceKind } from "../lib/workspace-data";
 
 type FolderFileBrowserProps = {
   title: string;
@@ -104,6 +107,11 @@ export function FolderFileBrowser({
   const [folderDraft, setFolderDraft] = useState("");
   const [editingFileId, setEditingFileId] = useState<string | null>(null);
   const [fileNameDraft, setFileNameDraft] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<
+    | { kind: "folder"; folder: string; fileCount: number }
+    | { kind: "file"; item: WorkspaceItem }
+    | null
+  >(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
     () => new Set([initialItem?.folder ?? folders[0] ?? defaultFolders[0] ?? "Notes"])
   );
@@ -116,7 +124,6 @@ export function FolderFileBrowser({
       body: "",
       folder,
       status: "draft",
-      metadata: { type: fileExtension === ".json" ? "json" : "markdown" },
       updatedAt: new Date().toISOString()
     };
   }
@@ -198,11 +205,7 @@ export function FolderFileBrowser({
         resourceItems
           .filter((item) => item.folder === editingFolder)
           .forEach((item) =>
-            store.updateItem(item.id, {
-              ...item,
-              folder: clean,
-              metadata: { ...item.metadata, seedFolder: clean }
-            })
+            store.updateItem(item.id, { folder: clean })
           );
       }
       setSelectedFolder((current) => (current === editingFolder ? clean : current));
@@ -232,9 +235,9 @@ export function FolderFileBrowser({
     setDraft(nextFile ?? emptyDraft(nextFolder));
   }
 
-  function createFile() {
+  async function createFile() {
     const folder = selectedFolder || folders[0] || defaultFolders[0] || "Notes";
-    const created = store.addItem({
+    const created = await store.addItem({
       ...emptyDraft(folder),
       kind: itemKind,
       title: `Untitled${fileExtension}`
@@ -268,7 +271,7 @@ export function FolderFileBrowser({
     setDraft(next);
   }
 
-  function deleteFile(item = selected) {
+  function deleteFile(item: WorkspaceItem | null = selected) {
     if (!item) return;
     store.deleteItem(item.id);
     const next =
@@ -281,9 +284,9 @@ export function FolderFileBrowser({
 
   return (
     <div className="flex min-h-0 flex-1">
-      <aside className={`flex ${SIDEBAR.LIST_WIDTH} shrink-0 flex-col border-r border-border bg-background`}>
+      <ResizableSidebar sidebarId={`files-${itemKind}`} title={folderSectionLabel}>
         <div className="border-b border-border p-3 md:hidden">
-          <SearchInput placeholder={searchPlaceholder} query={query} setQuery={setQuery} />
+          <SearchInput onChange={setQuery} placeholder={searchPlaceholder} value={query} />
         </div>
 
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
@@ -294,32 +297,30 @@ export function FolderFileBrowser({
             <Tooltip content="New folder" side="bottom">
               <Button
                 aria-label="New folder"
-                className="h-7 px-2"
                 onClick={() => setCreatingFolder(true)}
                 size="sm"
                 variant="ghost"
+                icon="folder-plus"
               >
-                <Icon name="folder-plus" size={14} />
-                <span className="ml-1 text-xs">Category</span>
+                Category
               </Button>
             </Tooltip>
             <Tooltip content="New file" side="bottom">
               <Button
                 aria-label="New file"
-                className="h-7 px-2"
                 onClick={createFile}
                 size="sm"
                 variant="ghost"
+                icon="plus"
               >
-                <Icon name="plus" size={14} />
-                <span className="ml-1 text-xs">{newFileLabel}</span>
+                {newFileLabel}
               </Button>
             </Tooltip>
           </div>
         </div>
 
         <div className="hidden border-b border-border p-2 md:block">
-          <SearchInput placeholder={searchPlaceholder} query={query} setQuery={setQuery} />
+          <SearchInput onChange={setQuery} placeholder={searchPlaceholder} value={query} />
         </div>
 
         {creatingFolder ? (
@@ -340,9 +341,7 @@ export function FolderFileBrowser({
               placeholder="Folder name"
               value={folderName}
             />
-            <Button aria-label="Create folder" size="icon" type="submit" variant="ghost">
-              <Icon name="check" size={14} />
-            </Button>
+            <Button aria-label="Create folder" size="icon" type="submit" variant="ghost" icon="check" />
           </form>
         ) : null}
 
@@ -399,7 +398,7 @@ export function FolderFileBrowser({
                         </span>
                       </button>
                       <TreeMenu
-                        onDelete={() => deleteFolder(folder)}
+                        onDelete={() => setPendingDelete({ kind: "folder", folder, fileCount: files.length })}
                         onRename={() => startRenameFolder(folder)}
                       />
                     </div>
@@ -416,7 +415,7 @@ export function FolderFileBrowser({
                               item={item}
                               iconName={fileIconName}
                               key={item.id}
-                              onDelete={() => deleteFile(item)}
+                              onDelete={() => setPendingDelete({ kind: "file", item })}
                               onRename={() => startRenameFile(item)}
                               onSelect={() => selectFile(item)}
                               onUpdateDraft={setFileNameDraft}
@@ -437,7 +436,7 @@ export function FolderFileBrowser({
             </ul>
           )}
         </div>
-      </aside>
+      </ResizableSidebar>
 
       <main className="flex min-w-0 flex-1 flex-col bg-background">
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-4">
@@ -453,7 +452,7 @@ export function FolderFileBrowser({
             </button>
             <Icon name="chevron-right" size={12} />
             <span className="max-w-72 truncate text-foreground">{draft.title}</span>
-            {dirty ? <Pill tone="warning">unsaved</Pill> : null}
+            {dirty ? <Pill tone="warning">Unsaved</Pill> : null}
           </div>
 
           <div className="ml-auto flex items-center gap-1.5">
@@ -469,15 +468,13 @@ export function FolderFileBrowser({
               <Button
                 aria-label="Delete file"
                 disabled={!selected}
-                onClick={() => deleteFile()}
-                size="icon"
+                icon="trash"
+                onClick={() => selected && setPendingDelete({ kind: "file", item: selected })}
+                size="icon-xs"
                 variant="ghost"
-              >
-                <Icon name="trash" size={14} />
-              </Button>
+              />
             </Tooltip>
-            <Button disabled={!selected || !dirty} onClick={saveFile} size="md">
-              <Icon name="save" size={14} />
+            <Button disabled={!selected || !dirty} icon="save" onClick={saveFile} size="md">
               Save
             </Button>
           </div>
@@ -485,7 +482,7 @@ export function FolderFileBrowser({
 
         {selected ? (
           <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="grid shrink-0 gap-3 border-b border-border bg-panel-raised px-4 py-3 lg:grid-cols-[minmax(0,1fr)_220px]">
+            <div className="grid shrink-0 grid-cols-[repeat(auto-fit,minmax(min(100%,var(--editor-field-min)),1fr))] items-end gap-3 border-b border-border bg-panel-raised px-4 py-3">
               <Field label="File name">
                 <Input
                   className="h-8 text-sm font-medium"
@@ -528,27 +525,26 @@ export function FolderFileBrowser({
           />
         )}
       </main>
-    </div>
-  );
-}
 
-function SearchInput({
-  placeholder,
-  query,
-  setQuery
-}: {
-  placeholder: string;
-  query: string;
-  setQuery: (value: string) => void;
-}) {
-  return (
-    <div className="relative">
-      <Icon name="search" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" size={14} />
-      <Input
-        className="h-8 pl-7 text-xs"
-        onChange={(event) => setQuery(event.target.value)}
-        placeholder={placeholder}
-        value={query}
+      <ConfirmDialog
+        confirmLabel={pendingDelete?.kind === "folder" ? "Delete folder" : "Delete file"}
+        description={pendingDelete?.kind === "folder"
+          ? pendingDelete.fileCount > 0
+            ? `This also deletes ${pendingDelete.fileCount} ${pendingDelete.fileCount === 1 ? "file" : "files"} in “${pendingDelete.folder}”. This cannot be undone.`
+            : `“${pendingDelete.folder}” will be removed. This cannot be undone.`
+          : pendingDelete
+            ? `“${pendingDelete.item.title}” will be removed. This cannot be undone.`
+            : "This item will be removed. This cannot be undone."}
+        onConfirm={() => {
+          if (pendingDelete?.kind === "folder") deleteFolder(pendingDelete.folder);
+          if (pendingDelete?.kind === "file") deleteFile(pendingDelete.item);
+          setPendingDelete(null);
+        }}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+        open={pendingDelete !== null}
+        title={pendingDelete?.kind === "folder" ? "Delete this folder?" : "Delete this file?"}
       />
     </div>
   );
@@ -622,12 +618,11 @@ function TreeMenu({
       <DropdownMenuTrigger asChild>
         <Button
           aria-label="Actions"
-          className="h-6 w-6 opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
-          size="icon"
+          className="opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
+          size="icon-xs"
           variant="ghost"
-        >
-          <Icon name="more" size={14} />
-        </Button>
+          icon="more"
+        />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuItem onSelect={onRename}>
@@ -682,37 +677,5 @@ function FolderSelect({
       options={folders.map((folder) => ({ label: folder, value: folder }))}
       value={value}
     />
-  );
-}
-
-function NativeSelect({
-  ariaLabel,
-  className,
-  onChange,
-  options,
-  value
-}: {
-  ariaLabel: string;
-  className?: string;
-  onChange: (value: string) => void;
-  options: Array<{ label: string; value: string }>;
-  value: string;
-}) {
-  return (
-    <div className={cn("relative", className)}>
-      <select
-        aria-label={ariaLabel}
-        className="h-8 w-full appearance-none rounded-md border border-border bg-input px-2.5 pr-8 text-sm text-foreground outline-none transition-colors focus-visible:border-[var(--ring)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]/30"
-        onChange={(event) => onChange(event.target.value)}
-        value={value}
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-      <Icon name="chevron-right" className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rotate-90 text-muted-foreground" size={14} />
-    </div>
   );
 }

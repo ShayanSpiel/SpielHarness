@@ -13,6 +13,7 @@ export const fileTypeSchema = z.enum([
   "publish_package",
   "harness_role",
   "harness_skill",
+  "harness_workflow",
   "harness_workstream",
   "harness_eval",
   "harness_template",
@@ -20,56 +21,21 @@ export const fileTypeSchema = z.enum([
 ]);
 export type FileType = z.infer<typeof fileTypeSchema>;
 
-// ── Run / event primitives ─────────────────────────────────────
-export const runTypeSchema = z.enum([
-  "eval",
-  "content",
-  "ads",
-  "research",
-  "strategy",
-  "custom"
-]);
-
-export const runStatusSchema = z.enum([
-  "draft",
-  "running",
-  "waiting_human",
-  "completed",
-  "failed",
-  "cancelled"
-]);
-
-export const eventTypeSchema = z.enum([
-  "node_started",
-  "node_status",
-  "skill_started",
-  "skill_completed",
-  "human_input_requested",
-  "human_input_received",
-  "tool_call_started",
-  "tool_call_result",
-  "artifact_created",
-  "eval_score_updated",
-  "node_completed",
-  "run_completed",
-  "run_failed",
-  "run_cancelled"
-]);
-export type EventType = z.infer<typeof eventTypeSchema>;
+export const fileStatusSchema = z.enum(["draft", "active", "archived", "deleted"]);
+export type FileStatus = z.infer<typeof fileStatusSchema>;
 
 // ── Skill kinds ────────────────────────────────────────────────
 export const skillKindSchema = z.enum([
   "llm_call",
   "human_input",
   "eval",
-  "code",
   "http",
   "mcp_call",
   "knowledge_search"
 ]);
 export type SkillKind = z.infer<typeof skillKindSchema>;
 
-// ── Human input question (Claude-Code / Codex style) ───────────
+// ── Human input question ───────────────────────────────────────
 export const humanInputOptionSchema = z.object({
   id: z.string(),
   label: z.string(),
@@ -98,7 +64,26 @@ export const humanInputRequestSchema = z.object({
 });
 export type HumanInputRequest = z.infer<typeof humanInputRequestSchema>;
 
-// ── Skill definition ──────────────────────────────────────────
+// ── Eval rubric (the file-backed canonical schema) ─────────────
+export const evalRuleSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  type: z.enum(["contains", "missing", "min_words", "max_words", "regex", "llm_judge"]),
+  value: z.string(),
+  weight: z.number().default(10)
+});
+export type EvalRule = z.infer<typeof evalRuleSchema>;
+
+// ── Skill binding to a connection operation ────────────────────
+export const skillBindingSchema = z.object({
+  connectionId: z.string(),
+  operation: z.string(),
+  enabled: z.boolean().default(true),
+  confirmation: z.enum(["never", "on_write", "always"]).default("on_write")
+});
+export type SkillBinding = z.infer<typeof skillBindingSchema>;
+
+// ── Skill ──────────────────────────────────────────────────────
 export const skillSchema = z.object({
   id: z.string(),
   orgId: z.string(),
@@ -106,61 +91,36 @@ export const skillSchema = z.object({
   slug: z.string().min(1),
   description: z.string().default(""),
   kind: skillKindSchema,
-  status: z.enum(["active", "draft", "archived"]).default("active"),
+  status: fileStatusSchema.default("active"),
   auth: z.enum(["none", "api_key", "oauth"]).default("none"),
   sideEffect: z.enum(["none", "read", "write", "external"]).default("none"),
   inputSchema: z.string().default("{}"),
   outputSchema: z.string().default("{}"),
   implementation: z.string().default(""),
-  bindings: z.array(z.object({
-    connectionId: z.string(),
-    operation: z.string(),
-    enabled: z.boolean().default(true),
-    confirmation: z.enum(["never", "on_write", "always"]).default("on_write")
-  })).default([]),
-  // For human_input skills
+  bindings: z.array(skillBindingSchema).default([]),
   humanQuestions: z.array(humanInputQuestionSchema).optional(),
-  // For eval skills
-  evalRubrics: z
-    .array(
-      z.object({
-        id: z.string(),
-        label: z.string(),
-        type: z.enum(["contains", "missing", "min_words", "max_words", "regex", "llm_judge"]),
-        value: z.string(),
-        weight: z.number().default(10),
-        passThreshold: z.number().default(75)
-      })
-    )
-    .optional(),
+  evalRules: z.array(evalRuleSchema).optional(),
   overallThreshold: z.number().optional(),
   metadata: z.record(z.unknown()).default({}),
-  enabled: z.boolean().default(true),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional()
 });
 export type Skill = z.infer<typeof skillSchema>;
 
-// ── Role (agent) ───────────────────────────────────────────────
-export const artifactTypeSchema = z.enum([
-  "uploaded_file",
-  "url_snapshot",
-  "meeting_note",
-  "session_log",
-  "research_report",
-  "evidence_table",
-  "strategy_file",
-  "knowledge_chunk",
-  "brief",
-  "draft",
-  "ad_concept",
-  "eval_report",
-  "asset",
-  "publish_package",
-  "published_post"
-]);
-export type ArtifactType = z.infer<typeof artifactTypeSchema>;
+// ── Role contract (single contract per direction, role-owned) ──
+export const contractFormatSchema = z.enum(["markdown", "json"]);
+export type ContractFormat = z.infer<typeof contractFormatSchema>;
 
+export const roleContractSchema = z.object({
+  name: z.string().min(1),
+  format: contractFormatSchema.default("markdown"),
+  body: z.string().default(""),
+  required: z.boolean().default(true),
+  multiple: z.boolean().default(false)
+});
+export type RoleContract = z.infer<typeof roleContractSchema>;
+
+// ── Role ───────────────────────────────────────────────────────
 export const roleSchema = z.object({
   id: z.string(),
   orgId: z.string(),
@@ -168,63 +128,164 @@ export const roleSchema = z.object({
   description: z.string().default(""),
   prompt: z.string().min(1),
   modelId: z.string().nullable().default(null),
-  memoryPolicy: z.array(z.string()).default([]),
-  inputArtifactTypes: z.array(artifactTypeSchema).default([]),
-  outputArtifactTypes: z.array(artifactTypeSchema).default([]),
+  inputContract: roleContractSchema,
+  outputContract: roleContractSchema,
   skillIds: z.array(z.string()).default([]),
-  status: z.enum(["active", "draft", "archived"]).default("active"),
+  status: fileStatusSchema.default("active"),
   metadata: z.record(z.unknown()).default({}),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional()
 });
 export type Role = z.infer<typeof roleSchema>;
 
-// ── Workstream (graph) ─────────────────────────────────────────
-export const workstreamNodeSchema = z.object({
+// ── Workflow node (canonical shape used in runtime) ────────────
+export const loopConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  maxAttempts: z.number().default(3),
+  breakCondition: z.enum(["on_pass", "on_fail"]).default("on_pass"),
+  evalId: z.string().nullable().default(null)
+});
+export type LoopConfig = z.infer<typeof loopConfigSchema>;
+
+export const evalInputSourceSchema = z.object({
+  type: z.enum(["previous_output", "workflow_input", "node_output"]),
+  nodeId: z.string().optional()
+});
+export type EvalInputSource = z.infer<typeof evalInputSourceSchema>;
+
+export const workflowNodeSchema = z.object({
   id: z.string(),
-  nodeType: z.enum(["role", "eval"]).default("role"),
-  roleId: z.string(),
   title: z.string(),
-  x: z.number().default(0),
-  y: z.number().default(0),
+  roleId: z.string(),
   promptOverride: z.string().optional(),
+  humanQuestions: z.array(humanInputQuestionSchema).optional(),
   skillIds: z.array(z.string()).default([]),
   fileIds: z.array(z.string()).default([]),
-  inputType: z.string().default("any"),
-  outputType: z.string().default("any"),
-  loopConfig: z.object({
-    enabled: z.boolean().default(false),
-    maxAttempts: z.number().default(3),
-    breakCondition: z.enum(["on_pass", "on_fail"]).default("on_pass"),
-    evalId: z.string().nullable().default(null),
-    retryDelayMs: z.number().default(0)
-  }).optional(),
-  evalInput: z.object({
-    type: z.enum(["previous_output", "workflow_input", "node_output"]).default("previous_output"),
-    nodeId: z.string().optional()
-  }).optional()
+  inputContract: z.string().default("any"),
+  outputContract: z.string().default("any"),
+  position: z.object({ x: z.number().default(0), y: z.number().default(0) }).default({ x: 0, y: 0 }),
+  loopConfig: loopConfigSchema.optional(),
+  evalInput: evalInputSourceSchema.optional()
 });
+export type WorkflowNode = z.infer<typeof workflowNodeSchema>;
 
-export const workstreamEdgeSchema = z.object({
+export const workflowEdgeSchema = z.object({
   id: z.string(),
   source: z.string(),
   target: z.string()
 });
+export type WorkflowEdge = z.infer<typeof workflowEdgeSchema>;
 
-export const workstreamSchema = z.object({
+// ── Eval file (rubric definition, also runnable as workflow gate) ─
+export const loopConfigWithDelaySchema = loopConfigSchema.extend({
+  retryDelayMs: z.number().default(0)
+});
+export type LoopConfigWithDelay = z.infer<typeof loopConfigWithDelaySchema>;
+
+export const evalFileSchema = z.object({
   id: z.string(),
   orgId: z.string(),
   name: z.string().min(1),
   description: z.string().default(""),
-  status: z.enum(["active", "draft", "archived"]).default("active"),
-  nodes: z.array(workstreamNodeSchema).default([]),
-  edges: z.array(workstreamEdgeSchema).default([]),
+  rules: z.array(evalRuleSchema).default([]),
+  overallThreshold: z.number().default(75),
+  loopConfig: loopConfigWithDelaySchema.default({
+    enabled: false,
+    maxAttempts: 3,
+    breakCondition: "on_pass",
+    retryDelayMs: 0
+  }),
+  status: fileStatusSchema.default("active"),
+  metadata: z.record(z.unknown()).default({}),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional()
 });
-export type Workstream = z.infer<typeof workstreamSchema>;
+export type EvalFile = z.infer<typeof evalFileSchema>;
 
-// ── Run + events + artifacts ───────────────────────────────────
+// ── Workflow file (the saved DAG) ──────────────────────────────
+export const workflowFileSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  name: z.string().min(1),
+  description: z.string().default(""),
+  nodes: z.array(workflowNodeSchema).default([]),
+  edges: z.array(workflowEdgeSchema).default([]),
+  status: fileStatusSchema.default("active"),
+  metadata: z.record(z.unknown()).default({}),
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional()
+});
+export type WorkflowFile = z.infer<typeof workflowFileSchema>;
+
+// ── Run primitives ─────────────────────────────────────────────
+export const runTypeSchema = z.enum([
+  "chat",
+  "role",
+  "skill",
+  "eval",
+  "workflow"
+]);
+export type RunType = z.infer<typeof runTypeSchema>;
+
+export const runStatusSchema = z.enum([
+  "running",
+  "waiting_human",
+  "completed",
+  "failed",
+  "cancelled"
+]);
+export type RunStatus = z.infer<typeof runStatusSchema>;
+
+export const eventTypeSchema = z.enum([
+  "run_started",
+  "run_completed",
+  "run_failed",
+  "run_cancelled",
+  "node_started",
+  "node_completed",
+  "node_failed",
+  "node_skipped",
+  "node_retrying",
+  "skill_started",
+  "skill_completed",
+  "human_input_requested",
+  "human_input_received",
+  "tool_call_started",
+  "tool_call_result",
+  "artifact_created",
+  "eval_score_updated",
+  "text_delta",
+  "status"
+]);
+export type EventType = z.infer<typeof eventTypeSchema>;
+
+export const runEventSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  runId: z.string(),
+  type: eventTypeSchema,
+  sequence: z.number(),
+  nodeId: z.string().optional(),
+  nodeTitle: z.string().optional(),
+  skillId: z.string().optional(),
+  skillName: z.string().optional(),
+  message: z.string(),
+  payload: z.record(z.unknown()).default({}),
+  createdAt: z.string()
+});
+export type RunEvent = z.infer<typeof runEventSchema>;
+
+// ── Artifacts ──────────────────────────────────────────────────
+export const artifactTypeSchema = z.enum([
+  "draft",
+  "asset",
+  "evidence",
+  "eval_report",
+  "publish_package",
+  "artifact"
+]);
+export type ArtifactType = z.infer<typeof artifactTypeSchema>;
+
 export const artifactSchema = z.object({
   id: z.string(),
   orgId: z.string(),
@@ -232,64 +293,233 @@ export const artifactSchema = z.object({
   type: artifactTypeSchema,
   title: z.string(),
   body: z.string(),
-  parentArtifactIds: z.array(z.string()).default([]),
   metadata: z.record(z.unknown()).default({})
 });
 export type Artifact = z.infer<typeof artifactSchema>;
 
-export const runEventSchema = z.object({
-  id: z.string(),
-  orgId: z.string(),
-  runId: z.string(),
-  type: eventTypeSchema,
-  node: z.string().optional(),
-  skill: z.string().optional(),
-  message: z.string(),
-  payload: z.record(z.unknown()).default({}),
-  createdAt: z.string()
-});
-export type RunEvent = z.infer<typeof runEventSchema>;
+// ── Models (LLM provider configurations) ───────────────────────
+export const modelProviderSchema = z.enum([
+  "mistral",
+  "openai",
+  "anthropic",
+  "openai-compatible"
+]);
+export type ModelProviderName = z.infer<typeof modelProviderSchema>;
 
-export const runSchema = z.object({
-  id: z.string(),
-  orgId: z.string(),
-  workstreamId: z.string().nullable(),
-  type: runTypeSchema,
-  prompt: z.string(),
-  status: runStatusSchema,
-  inputs: z.record(z.unknown()).default({}),
-  outputs: z.record(z.unknown()).default({}),
-  humanInputs: z.record(z.unknown()).default({}),
-  metadata: z.record(z.unknown()).default({}),
-  createdAt: z.string().optional(),
-  updatedAt: z.string().optional(),
-  completedAt: z.string().nullable().optional()
-});
-export type Run = z.infer<typeof runSchema>;
-
-// ── Providers / models ─────────────────────────────────────────
-export const modelProviderSchema = z.object({
+export const modelProviderObjectSchema = z.object({
   id: z.string(),
   orgId: z.string(),
   name: z.string(),
-  kind: z.string(),
+  provider: modelProviderSchema,
+  model: z.string(),
   baseUrl: z.string().nullable().default(null),
-  secretRef: z.string().nullable().default(null),
-  enabled: z.boolean().default(true),
-  createdAt: z.string().optional(),
-  updatedAt: z.string().optional()
+  secretEnvKey: z.string().nullable().default(null),
+  config: z.record(z.unknown()).default({}),
+  enabled: z.boolean().default(true)
 });
-export type ModelProvider = z.infer<typeof modelProviderSchema>;
+export type ModelProvider = z.infer<typeof modelProviderObjectSchema>;
 
-export const modelSchema = z.object({
+export const modelSchema = modelProviderObjectSchema;
+export type Model = z.infer<typeof modelSchema>;
+
+// ── Connections (external integrations) ────────────────────────
+export const connectionKindSchema = z.enum(["oauth", "mcp", "api", "builtin"]);
+export type ConnectionKind = z.infer<typeof connectionKindSchema>;
+
+export const connectionStatusSchema = z.enum(["configured", "needs_secret", "disabled"]);
+export type ConnectionStatus = z.infer<typeof connectionStatusSchema>;
+
+export const connectionOperationSchema = z.object({
+  id: z.string(),
+  label: z.string().optional(),
+  effect: z.enum(["read", "write", "send", "destructive"]).default("read"),
+  method: z.string().optional(),
+  path: z.string().optional(),
+  inputParam: z.string().optional()
+});
+export type ConnectionOperation = z.infer<typeof connectionOperationSchema>;
+
+export const connectionSchema = z.object({
   id: z.string(),
   orgId: z.string(),
-  providerId: z.string(),
-  label: z.string(),
-  model: z.string(),
+  name: z.string(),
+  kind: connectionKindSchema,
+  status: connectionStatusSchema,
+  baseUrl: z.string().nullable().default(null),
+  secretEnvKey: z.string().nullable().default(null),
   config: z.record(z.unknown()).default({}),
-  enabled: z.boolean().default(true),
-  createdAt: z.string().optional(),
-  updatedAt: z.string().optional()
+  operations: z.array(connectionOperationSchema).default([]),
+  enabled: z.boolean().default(true)
 });
-export type Model = z.infer<typeof modelSchema>;
+export type Connection = z.infer<typeof connectionSchema>;
+
+// ── Chats ──────────────────────────────────────────────────────
+export const chatRoleSchema = z.enum(["user", "assistant", "system", "tool"]);
+export type ChatRole = z.infer<typeof chatRoleSchema>;
+
+export const chatSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  title: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+export type Chat = z.infer<typeof chatSchema>;
+
+export const chatMessageSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  chatId: z.string(),
+  role: chatRoleSchema,
+  body: z.string(),
+  metadata: z.record(z.unknown()).default({}),
+  createdAt: z.string()
+});
+export type ChatMessage = z.infer<typeof chatMessageSchema>;
+
+// ── File record (DB row, camelCase) ────────────────────────────
+export const fileRecordSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  folderId: z.string().nullable(),
+  fileType: fileTypeSchema,
+  status: fileStatusSchema,
+  title: z.string(),
+  body: z.string(),
+  contentFormat: z.string(),
+  metadata: z.record(z.unknown()),
+  currentVersion: z.number(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+export type FileRecord = z.infer<typeof fileRecordSchema>;
+
+// ── SSE frame shapes (the streaming protocol) ─────────────────
+export const sseFrameSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("run"), runId: z.string(), type: z.string() }),
+  z.object({ kind: z.literal("event"), event: runEventSchema }),
+  z.object({ kind: z.literal("artifact"), artifact: artifactSchema }),
+  z.object({ kind: z.literal("text"), text: z.string() }),
+  z.object({ kind: z.literal("status"), message: z.string() }),
+  z.object({ kind: z.literal("human_input"), request: humanInputRequestSchema }),
+  z.object({ kind: z.literal("error"), message: z.string() }),
+  z.object({ kind: z.literal("done"), runId: z.string(), status: runStatusSchema })
+]);
+export type SseFrame = z.infer<typeof sseFrameSchema>;
+
+// ── Parse a file row into a typed object based on file_type ────
+export function parseRoleFile(row: FileRecord): Role {
+  const m = row.metadata ?? {};
+  return {
+    id: row.id,
+    orgId: row.orgId,
+    name: row.title.replace(/\.\w+$/, ""),
+    description: String(m.description ?? ""),
+    prompt: row.body,
+    modelId: (m.modelId as string | null) ?? null,
+    inputContract: m.inputContract as Role["inputContract"] ?? defaultInputContract(),
+    outputContract: m.outputContract as Role["outputContract"] ?? defaultOutputContract(),
+    skillIds: (m.skillIds as string[]) ?? (m.skillSlugs as string[]) ?? [],
+    status: row.status === "active" ? "active" : row.status === "archived" ? "archived" : "draft",
+    metadata: m
+  };
+}
+
+export function parseSkillFile(row: FileRecord): Skill {
+  const m = row.metadata ?? {};
+  return {
+    id: row.id,
+    orgId: row.orgId,
+    name: row.title.replace(/\.\w+$/, ""),
+    slug: String(m.slug ?? row.id),
+    description: String(m.description ?? ""),
+    kind: (m.kind as Skill["kind"]) ?? "llm_call",
+    status: row.status === "active" ? "active" : row.status === "archived" ? "archived" : "draft",
+    auth: (m.auth as Skill["auth"]) ?? "none",
+    sideEffect: (m.sideEffect as Skill["sideEffect"]) ?? "none",
+    inputSchema: typeof m.inputSchema === "string" ? m.inputSchema : JSON.stringify(m.inputSchema ?? {}),
+    outputSchema: typeof m.outputSchema === "string" ? m.outputSchema : JSON.stringify(m.outputSchema ?? {}),
+    implementation: String(m.implementation ?? row.body),
+    bindings: (m.bindings as Skill["bindings"]) ?? [],
+    humanQuestions: (m.humanQuestions as Skill["humanQuestions"]) ?? undefined,
+    evalRules: (m.evalRules as Skill["evalRules"]) ?? (m.evalRubrics as Skill["evalRules"]) ?? undefined,
+    overallThreshold: (m.overallThreshold as number | undefined) ?? undefined,
+    metadata: m
+  };
+}
+
+export function parseEvalFile(row: FileRecord): EvalFile {
+  const m = row.metadata ?? {};
+  return {
+    id: row.id,
+    orgId: row.orgId,
+    name: row.title.replace(/\.\w+$/, ""),
+    description: String(m.description ?? row.body ?? ""),
+    rules: (m.rules as EvalFile["rules"]) ?? (m.evalRules as EvalFile["rules"]) ?? (m.rubrics as EvalFile["rules"]) ?? [],
+    overallThreshold: Number(m.overallThreshold ?? 75),
+    loopConfig: (m.loopConfig as EvalFile["loopConfig"]) ?? {
+      enabled: false,
+      maxAttempts: 3,
+      breakCondition: "on_pass",
+      retryDelayMs: 0
+    },
+    status: row.status === "active" ? "active" : row.status === "archived" ? "archived" : "draft",
+    metadata: m
+  };
+}
+
+export function parseWorkflowFile(row: FileRecord): WorkflowFile {
+  const m = row.metadata ?? {};
+  const rawNodes = (m.nodes as Array<Record<string, unknown>>) ?? [];
+  const rawEdges = (m.edges as Array<Record<string, unknown>>) ?? [];
+  return {
+    id: row.id,
+    orgId: row.orgId,
+    name: row.title.replace(/\.\w+$/, ""),
+    description: row.body,
+    nodes: rawNodes.map((n, i) => ({
+      id: String(n.id ?? `node-${i + 1}`),
+      title: String(n.title ?? `Step ${i + 1}`),
+      roleId: String(n.roleId ?? n.roleSlug ?? ""),
+      promptOverride: n.promptOverride || n.prompt ? String(n.promptOverride ?? n.prompt) : undefined,
+      humanQuestions: n.humanQuestions as WorkflowNode["humanQuestions"],
+      skillIds: (n.skillIds as string[]) ?? (n.skillSlugs as string[]) ?? [],
+      fileIds: (n.fileIds as string[]) ?? [],
+      inputContract: String(n.inputContract ?? n.input ?? "any"),
+      outputContract: String(n.outputContract ?? n.output ?? "any"),
+      position: (n.position as { x: number; y: number }) ?? {
+        x: typeof n.x === "number" ? n.x : 120 + i * 260,
+        y: typeof n.y === "number" ? n.y : 160
+      },
+      loopConfig: n.loopConfig as WorkflowNode["loopConfig"],
+      evalInput: n.evalInput as WorkflowNode["evalInput"]
+    })),
+    edges: rawEdges.map((e, i) => ({
+      id: String(e.id ?? `edge-${i + 1}`),
+      source: String(e.source),
+      target: String(e.target)
+    })),
+    status: row.status === "active" ? "active" : row.status === "archived" ? "archived" : "draft",
+    metadata: m
+  };
+}
+
+export function defaultInputContract(): RoleContract {
+  return {
+    name: "Input",
+    format: "markdown",
+    body: "Describe the request, context, constraints, source material, and success criteria this role needs before it starts.",
+    required: true,
+    multiple: false
+  };
+}
+
+export function defaultOutputContract(): RoleContract {
+  return {
+    name: "Output",
+    format: "markdown",
+    body: "Describe the exact deliverable this role must return, including structure, tone, required sections, and quality bar.",
+    required: true,
+    multiple: false
+  };
+}

@@ -1,270 +1,209 @@
 "use client";
 
-import type { Artifact, HumanInputRequest, RunEvent } from "@spielos/core";
-import type {
-  ChatModelAdapter,
-  ChatModelRunResult,
-  ThreadAssistantMessagePart
-} from "@assistant-ui/react";
 import { useMemo, useRef } from "react";
+import type { ChatModelAdapter, ChatModelRunResult, ThreadAssistantMessagePart } from "@assistant-ui/react";
 import { useRunContext } from "./run-context";
 import { useWorkspaceStore } from "./use-workspace-store";
+import type { HumanInputRequest, RunEvent, Artifact, RunStatus } from "@spielos/core";
 
-type StreamItem =
-  | {
-      kind: "run";
-      runId: string;
-      target?: { type: string; id?: string };
-      selectedContext?: Array<{ id: string; kind: string; title: string }>;
-    }
+type StreamFrame =
+  | { kind: "run"; runId: string; type: string }
   | { kind: "event"; event: RunEvent }
   | { kind: "artifact"; artifact: Artifact }
-  | { kind: "human_input"; request: HumanInputRequest }
-  | {
-      kind: "status";
-      status: {
-        phase: string;
-        nodeTitle?: string;
-        roleName?: string;
-        skillName?: string;
-        message: string;
-      };
-    }
   | { kind: "text"; text: string }
-  | { kind: "error"; message: string };
+  | { kind: "status"; message: string }
+  | { kind: "human_input"; request: HumanInputRequest }
+  | { kind: "error"; message: string }
+  | { kind: "done"; runId: string; status: string };
 
-function getMessageText(message: { content: readonly unknown[] }) {
+function getMessageText(message: { content: readonly unknown[] }): string {
   return message.content
-    .filter((part): part is { type: "text"; text: string } =>
-      typeof part === "object" &&
-      part !== null &&
-      (part as { type?: unknown }).type === "text" &&
-      typeof (part as { text?: unknown }).text === "string"
+    .filter(
+      (p): p is { type: "text"; text: string } =>
+        typeof p === "object" &&
+        p !== null &&
+        (p as { type?: unknown }).type === "text" &&
+        typeof (p as { text?: unknown }).text === "string"
     )
-    .map((part) => part.text)
+    .map((p) => p.text)
     .join("\n");
 }
 
-function isTerminal(event: RunEvent): boolean {
-  return event.type === "run_completed" || event.type === "run_failed" || event.type === "run_cancelled";
-}
-
-function chatProgress(event: RunEvent): string | null {
-  if (event.type === "node_started") return event.message;
-  if (event.type === "human_input_requested") return event.message;
-  if (event.type === "eval_score_updated") return event.message;
-  if (event.type === "run_failed") return `Run failed: ${event.message}`;
-  if (event.type === "run_completed") return null;
-  return null;
-}
-
-function shouldFlushText(text: string) {
-  return text.length >= 80 || /[\n.!?:;]\s*$/.test(text);
-}
-
 export function useSpielosChatAdapter(): ChatModelAdapter {
-  const store = useWorkspaceStore();
   const run = useRunContext();
-
-  const storeRef = useRef(store);
-  storeRef.current = store;
+  const store = useWorkspaceStore();
   const runRef = useRef(run);
   runRef.current = run;
-  const lastUserMsgId = useRef<string | null>(null);
+  const storeRef = useRef(store);
+  storeRef.current = store;
+  const inFlightMessages = useRef(new Set<string>());
+  return useMemo<ChatModelAdapter>(
+    () => ({
+      async *run({ messages, abortSignal }): AsyncGenerator<ChatModelRunResult, void> {
+        const lastUser = [...messages].reverse().find((m) => m.role === "user");
+        if (!lastUser) return;
+        const messageKey = lastUser.id;
+        if (inFlightMessages.current.has(messageKey)) return;
+        inFlightMessages.current.add(messageKey);
 
-  return useMemo(() => ({
-    async *run({ messages, abortSignal }): AsyncGenerator<ChatModelRunResult, void> {
-      const lastUser = [...messages].reverse().find((m) => m.role === "user");
-      if (!lastUser) return;
+        const text = getMessageText(lastUser);
+        const ctx = runRef.current;
+        const ws = storeRef.current;
 
-      // Skip if we already processed this exact user message
-      if (lastUser.id === lastUserMsgId.current) return;
-      lastUserMsgId.current = lastUser.id;
+        // Map context items to file ids.
+        const contextFileIds = ctx.contextItems
+          .filter((item) => item.kind === "file" || item.kind === "library" || item.kind === "knowledge" || item.kind === "prompt" || item.kind === "strategy")
+          .map((item) => item.id);
 
-      const text = getMessageText(lastUser);
-      const { contextItems } = runRef.current;
-
-      const contextRefs = contextItems.map((item) => ({
-        id: item.id,
-        kind: item.kind === "workstream" ? "workflow" : item.kind
-      }));
-
-      const currentRun = runRef.current;
-      currentRun.clearEvents();
-      currentRun.setHumanInputRequest(null);
-      currentRun.setActiveRunId(null);
-      currentRun.setActivity("Starting run...");
-      currentRun.setRunning(true);
-
-      const payload = {
-        prompt: text,
-        chatId: storeRef.current.activeChatId ?? undefined,
-        contextRefs,
-        messages: messages.map((message) => ({
-          role: message.role === "assistant" ? "assistant" as const : "user" as const,
-          content: getMessageText(message)
-        })).filter((message) => message.content.trim())
-      };
-
-      const response = await fetch("/api/runs/execute", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: abortSignal
-      });
-
-      if (!response.ok || !response.body) {
-        let message = `Run failed: HTTP ${response.status}`;
-        try {
-          const data = (await response.json()) as { error?: string };
-          if (data.error) message = data.error;
-        } catch {
-          /* ignore */
+        // Find first explicit target (role/skill/eval/workflow). Empty context is fine.
+        const explicit = ctx.contextItems.find((item) =>
+          ["role", "skill", "eval", "workflow"].includes(item.kind)
+        );
+        let type: "chat" | "role" | "skill" | "eval" | "workflow" = "chat";
+        let targetId: string | undefined;
+        if (explicit) {
+          type = explicit.kind as "role" | "skill" | "eval" | "workflow";
+          targetId = explicit.id;
         }
-        currentRun.setRunning(false);
-        yield {
-          content: [{ type: "text", text: message }] as unknown as readonly ThreadAssistantMessagePart[]
+        ctx.startRun(type);
+
+        const payload = {
+          prompt: text,
+          chatId: ws.activeChatId ?? undefined,
+          type,
+          targetId: type === "workflow" ? undefined : targetId,
+          workflowId: type === "workflow" ? targetId : undefined,
+          contextFileIds,
+          messages: messages
+            .map((m) => ({
+              role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
+              content: getMessageText(m)
+            }))
+            .filter((m) => m.content.trim())
         };
-        return;
-      }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let narrative = "";
-      let textBuffer = "";
-      let progressStarted = false;
-      const seen = new Set<string>();
-
-      const yieldCurrent = (): ChatModelRunResult => ({
-        content: [{ type: "text", text: narrative }] as unknown as readonly ThreadAssistantMessagePart[]
-      });
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (abortSignal.aborted) {
-            try { await reader.cancel(); } catch { /* ignore */ }
-            break;
-          }
-          buffer += decoder.decode(value, { stream: true });
-          const parts = buffer.split("\n\n");
-          buffer = parts.pop() ?? "";
-          for (const part of parts) {
-            const line = part.split("\n").find((entry) => entry.startsWith("data: "));
-            if (!line) continue;
-            let item: StreamItem;
-            try {
-              item = JSON.parse(line.slice(6)) as StreamItem;
-            } catch {
-              continue;
-            }
-            let changed = true;
-            if (item.kind === "run") {
-              if (textBuffer) {
-                narrative += textBuffer;
-                textBuffer = "";
-              }
-              currentRun.setActiveRunId(item.runId);
-              currentRun.setRunTitle(text.slice(0, 80) || "Run");
-              narrative += "Run started.";
-              progressStarted = true;
-            } else if (item.kind === "status") {
-              if (textBuffer) {
-                narrative += textBuffer;
-                textBuffer = "";
-              }
-              currentRun.setActivity(item.status.message);
-              if (item.status.phase === "node_started" || item.status.phase === "generating") {
-                const label = [
-                  item.status.nodeTitle ? `Step: ${item.status.nodeTitle}` : null,
-                  item.status.roleName ? `Role: ${item.status.roleName}` : null,
-                  item.status.skillName ? `Skill: ${item.status.skillName}` : null
-                ].filter(Boolean).join(" · ");
-                const next = label ? `${item.status.message}\n${label}` : item.status.message;
-                if (!narrative.includes(next)) {
-                  narrative += (narrative ? "\n" : "") + next;
-                  progressStarted = true;
-                }
-              }
-            } else if (item.kind === "event") {
-              if (textBuffer) {
-                narrative += textBuffer;
-                textBuffer = "";
-              }
-              currentRun.appendEvent(item.event);
-              if (!seen.has(item.event.id)) {
-                seen.add(item.event.id);
-                const progress = chatProgress(item.event);
-                if (progress) {
-                  narrative += (narrative ? "\n" : "") + progress;
-                  progressStarted = true;
-                }
-              }
-              if (isTerminal(item.event)) {
-                currentRun.setActivity(null);
-                currentRun.setRunning(false);
-                const s = storeRef.current;
-                if (s.activeChatId) s.touchChat(s.activeChatId);
-              }
-            } else if (item.kind === "artifact") {
-              if (textBuffer) {
-                narrative += textBuffer;
-                textBuffer = "";
-              }
-              currentRun.appendArtifact(item.artifact);
-              const s = storeRef.current;
-              if (s.activeChatId) {
-                s.appendArtifact(s.activeChatId, item.artifact);
-              }
-              narrative += `\n\nOutput: ${item.artifact.title}\n${item.artifact.body.slice(0, 1200)}`;
-            } else if (item.kind === "human_input") {
-              if (textBuffer) {
-                narrative += textBuffer;
-                textBuffer = "";
-              }
-              currentRun.setActivity(null);
-              currentRun.setRunning(false);
-              currentRun.setHumanInputRequest(item.request);
-              narrative += `\n\nQuestion: ${item.request.header ?? "Input requested"}\nAwaiting your answer.`;
-            } else if (item.kind === "text") {
-              if (progressStarted && narrative && !narrative.endsWith("\n\n")) narrative += "\n\n";
-              progressStarted = false;
-              textBuffer += item.text;
-              if (shouldFlushText(textBuffer)) {
-                narrative += textBuffer;
-                textBuffer = "";
-              } else {
-                changed = false;
-              }
-            } else if (item.kind === "error") {
-              if (textBuffer) {
-                narrative += textBuffer;
-                textBuffer = "";
-              }
-              currentRun.setActivity(null);
-              currentRun.setRunning(false);
-              narrative += `\n\nError: ${item.message}`;
-            }
-            if (changed) yield yieldCurrent();
-          }
-        }
-      } finally {
-        if (abortSignal.aborted && runRef.current.activeRunId) {
-          fetch(`/api/runs/${runRef.current.activeRunId}/cancel`, { method: "POST" }).catch((error) => {
-            console.warn("Failed to persist run cancellation:", error);
+        let response: Response;
+        try {
+          response = await fetch("/api/runs/execute", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            signal: abortSignal
           });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Network error";
+          ctx.setRunStatus(abortSignal.aborted ? "cancelled" : "failed");
+          inFlightMessages.current.delete(messageKey);
+          yield {
+            content: [{ type: "text", text: `Run failed: ${message}` }] as unknown as readonly ThreadAssistantMessagePart[]
+          };
+          return;
         }
-        if (textBuffer) {
-          narrative += textBuffer;
-          textBuffer = "";
-        }
-        runRef.current.setActivity(null);
-        runRef.current.setRunning(false);
-      }
 
-      yield yieldCurrent();
-    }
-  }), []);
+        if (!response.ok || !response.body) {
+          let message = `Run failed: HTTP ${response.status}`;
+          try {
+            const data = (await response.json()) as { error?: string };
+            if (data.error) message = data.error;
+          } catch {
+            // ignore
+          }
+          ctx.setRunStatus("failed");
+          inFlightMessages.current.delete(messageKey);
+          yield {
+            content: [{ type: "text", text: message }] as unknown as readonly ThreadAssistantMessagePart[]
+          };
+          return;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let narrative = "";
+        let terminalStatus: RunStatus | null = null;
+
+        const yieldCurrent = (): ChatModelRunResult => ({
+          content: [{ type: "text", text: narrative }] as unknown as readonly ThreadAssistantMessagePart[]
+        });
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (abortSignal.aborted) {
+              try {
+                await reader.cancel();
+              } catch {
+                // ignore
+              }
+              break;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split("\n\n");
+            buffer = parts.pop() ?? "";
+            for (const part of parts) {
+              const line = part.split("\n").find((entry) => entry.startsWith("data: "));
+              if (!line) continue;
+              let item: StreamFrame;
+              try {
+                item = JSON.parse(line.slice(6)) as StreamFrame;
+              } catch {
+                continue;
+              }
+              if (item.kind === "run") {
+                ctx.setActiveRunId(item.runId);
+              } else if (item.kind === "status") {
+                ctx.setActivity(item.message);
+              } else if (item.kind === "event") {
+                ctx.appendEvent(item.event);
+                if (item.event.type === "run_completed") terminalStatus = "completed";
+                if (item.event.type === "run_failed") terminalStatus = "failed";
+                if (item.event.type === "run_cancelled") terminalStatus = "cancelled";
+              } else if (item.kind === "artifact") {
+                ctx.appendArtifact(item.artifact);
+              } else if (item.kind === "human_input") {
+                ctx.setHumanInputRequest(item.request);
+                ctx.setRunStatus("waiting_human");
+                terminalStatus = "waiting_human";
+              } else if (item.kind === "text") {
+                narrative += item.text;
+              } else if (item.kind === "error") {
+                ctx.setActivity(item.message);
+                ctx.setRunStatus("failed");
+                terminalStatus = "failed";
+              } else if (item.kind === "done") {
+                const next = item.status as RunStatus;
+                if (["running", "waiting_human", "completed", "failed", "cancelled"].includes(next)) {
+                  ctx.setRunStatus(next);
+                  terminalStatus = next;
+                }
+              }
+              yield yieldCurrent();
+            }
+          }
+        } finally {
+          if (!terminalStatus) {
+            const interruptedStatus: RunStatus = abortSignal.aborted ? "cancelled" : "failed";
+            ctx.setRunStatus(interruptedStatus);
+          }
+          inFlightMessages.current.delete(messageKey);
+          const activeRunId = runRef.current.activeRunId;
+          if (
+            abortSignal.aborted &&
+            activeRunId &&
+            terminalStatus !== "completed" &&
+            terminalStatus !== "failed" &&
+            terminalStatus !== "cancelled"
+          ) {
+            fetch(`/api/runs/${activeRunId}/cancel`, { method: "POST" }).catch(() => {
+              // ignore
+            });
+          }
+        }
+
+        yield yieldCurrent();
+      }
+    }),
+    []
+  );
 }

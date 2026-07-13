@@ -2,7 +2,7 @@
 
 import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { useMemo, useState, useRef, useEffect } from "react";
-import { Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, EmptyState, Field, Input, PageHeader, Pill, ToggleRow, Tooltip, cn, toast } from "@spielos/design-system";
+import { Button, ConfirmDialog, EmptyState, Field, Input, ListItem, PageHeader, Pill, ToggleRow, Tooltip, cn, toast } from "@spielos/design-system";
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { AppShell } from "../../components/app-shell";
 import { SidebarListPanel } from "../../components/sidebar-list-panel";
@@ -12,35 +12,34 @@ import { GraphCanvas } from "./graph-canvas";
 import { NodeInspector, roleContractName } from "./node-inspector";
 import { CANVAS_CONFIG, NODE_DIMENSIONS } from "./workflow-canvas-config";
 
-function blankWorkstream(): WorkstreamDefinition {
+function blankWorkstream(): Omit<WorkstreamDefinition, "id" | "orgId" | "createdAt" | "updatedAt"> {
   return {
-    id: `wf_${crypto.randomUUID()}`,
-    title: "New Workflow",
+    name: "New Workflow",
     description: "Custom role-based workflow.",
     status: "draft",
     nodes: [],
     edges: [],
-    updatedAt: new Date().toISOString(),
+    metadata: {}
   };
 }
 
 function computeNextPosition(nodes: WorkstreamNode[]): { x: number; y: number } {
   if (nodes.length === 0) return { x: 40, y: 40 };
   const last = nodes[nodes.length - 1];
-  let nextX = last.x + NODE_DIMENSIONS.width + CANVAS_CONFIG.nodeGap;
-  let nextY = last.y;
+  let nextX = last.position.x + NODE_DIMENSIONS.width + CANVAS_CONFIG.nodeGap;
+  let nextY = last.position.y;
   if (nextX + NODE_DIMENSIONS.width > 1200) {
     nextX = 40;
-    nextY = last.y + NODE_DIMENSIONS.height + CANVAS_CONFIG.nodeGap;
+    nextY = last.position.y + NODE_DIMENSIONS.height + CANVAS_CONFIG.nodeGap;
   }
   return { x: nextX, y: nextY };
 }
 
 export default function WorkflowsPage() {
   const store = useWorkspaceStore();
-  const [selectedId, setSelectedId] = useState<string | null>(store.workstreams[0]?.id ?? null);
-  const selected = store.workstreams.find((entry) => entry.id === selectedId) ?? null;
-  const { draft, setDraft, dirty, reset, markSaved } = useDirty<WorkstreamDefinition | Omit<WorkstreamDefinition, "id" | "updatedAt">>(
+  const [selectedId, setSelectedId] = useState<string | null>(store.workflows[0]?.id ?? null);
+  const selected = store.workflows.find((entry) => entry.id === selectedId) ?? null;
+  const { draft, setDraft, dirty, reset, markSaved } = useDirty<WorkstreamDefinition | Omit<WorkstreamDefinition, "id" | "orgId" | "createdAt" | "updatedAt">>(
     selected ?? blankWorkstream()
   );
   const [query, setQuery] = useState("");
@@ -49,6 +48,7 @@ export default function WorkflowsPage() {
   const [runLog, setRunLog] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const undoStack = useRef<string[]>([]);
   const redoStack = useRef<string[]>([]);
@@ -100,45 +100,76 @@ export default function WorkflowsPage() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return store.workstreams;
-    return store.workstreams.filter((workstream) =>
-      [workstream.title, workstream.description].some((value) => value.toLowerCase().includes(q))
+    if (!q) return store.workflows;
+    return store.workflows.filter((workflow) =>
+      [workflow.name, workflow.description].some((value) => value.toLowerCase().includes(q))
     );
-  }, [query, store.workstreams]);
+  }, [query, store.workflows]);
 
-  function selectWorkstream(workstream: WorkstreamDefinition) {
-    setSelectedId(workstream.id);
-    reset(workstream);
+  function selectWorkflow(workflow: WorkstreamDefinition) {
+    setSelectedId(workflow.id);
+    reset(workflow as unknown as Omit<WorkstreamDefinition, "id" | "orgId" | "createdAt" | "updatedAt">);
     setSelectedNodeId(null);
     setRunLog([]);
   }
 
-  function createWorkstream() {
-    const created = store.addWorkstream(blankWorkstream());
-    setSelectedId(created.id);
-    reset(created);
-    setSelectedNodeId(null);
-    setRunLog([]);
+  async function createWorkflow() {
+    if (creating) return;
+    setCreating(true);
+    try {
+      const created = await store.addWorkflow(blankWorkstream() as Parameters<typeof store.addWorkflow>[0]);
+      setSelectedId(created.id);
+      reset(created as unknown as Omit<WorkstreamDefinition, "id" | "orgId" | "createdAt" | "updatedAt">);
+      setSelectedNodeId(null);
+      setRunLog([]);
+      toast.success("Workflow created");
+    } catch {
+      toast.error("Failed to create workflow");
+    } finally {
+      setCreating(false);
+    }
   }
 
-  async function save() {
+  async function save(): Promise<string | null> {
     setSaving(true);
     try {
-      await store.updateWorkstream((draft as WorkstreamDefinition).id, draft as Partial<WorkstreamDefinition>);
+      if (!selectedId) {
+        const created = await store.addWorkflow(draft as Parameters<typeof store.addWorkflow>[0]);
+        setSelectedId(created.id);
+        reset(created);
+        setSelectedNodeId(null);
+        toast.success("Workflow created");
+        return created.id;
+      }
+      await store.updateWorkflow(selectedId, draft as Partial<WorkstreamDefinition>);
       markSaved();
       toast.success("Workflow saved");
-      return true;
+      return selectedId;
     } catch {
       toast.error("Failed to save workflow");
-      return false;
+      return null;
     } finally {
       setSaving(false);
     }
   }
 
-  function remove() {
-    store.deleteWorkstream((draft as WorkstreamDefinition).id);
-    createWorkstream();
+  async function remove() {
+    if (!selectedId) return;
+    const id = selectedId;
+    try {
+      await store.deleteWorkflow(id);
+      const next = store.workflows.find((workflow) => workflow.id !== id);
+      if (next) selectWorkflow(next);
+      else {
+        setSelectedId(null);
+        reset(blankWorkstream());
+        setSelectedNodeId(null);
+        setRunLog([]);
+      }
+      toast.success("Workflow deleted");
+    } catch {
+      toast.error("Failed to delete workflow");
+    }
   }
 
   function addRoleNode(roleId: string, x?: number, y?: number) {
@@ -148,16 +179,13 @@ export default function WorkflowsPage() {
     const pos = x !== undefined && y !== undefined ? { x, y } : computeNextPosition(draft.nodes);
     const node: WorkstreamNode = {
       id: `node_${crypto.randomUUID()}`,
-      nodeType: "role",
       roleId,
       title: role.name,
-      x: pos.x,
-      y: pos.y,
-      prompt: "",
+      position: { x: pos.x, y: pos.y },
       skillIds: [],
       fileIds: [],
-      input: roleContractName(role, "inputs", "Role input"),
-      output: roleContractName(role, "outputs", "Role output")
+      inputContract: roleContractName(role, "inputs", "Role input"),
+      outputContract: roleContractName(role, "outputs", "Role output")
     };
     setDraft((current) => ({ ...current, nodes: [...current.nodes, node] }));
     setSelectedNodeId(node.id);
@@ -171,16 +199,13 @@ export default function WorkflowsPage() {
     const pos = x !== undefined && y !== undefined ? { x, y } : computeNextPosition(draft.nodes);
     const node: WorkstreamNode = {
       id: `node_${crypto.randomUUID()}`,
-      nodeType: "eval",
       roleId: "runtime.eval",
       title: `QA: ${evalFile.name}`,
-      x: pos.x,
-      y: pos.y,
-      prompt: "",
+      position: { x: pos.x, y: pos.y },
       skillIds: [evalFile.id],
       fileIds: [],
-      input: "previous_output",
-      output: "Eval report",
+      inputContract: "previous_output",
+      outputContract: "Eval report",
       loopConfig: { ...evalFile.loopConfig, evalId: evalFile.id },
       evalInput: { type: "previous_output" }
     };
@@ -256,9 +281,13 @@ export default function WorkflowsPage() {
 
   async function runWorkflow() {
     if (draft.nodes.length === 0 || draft.status !== "active" || running) return;
-    if (dirty && !(await save())) return;
+    let workflowId = selectedId;
+    if (dirty || !workflowId) {
+      workflowId = await save();
+      if (!workflowId) return;
+    }
     setRunning(true);
-    setRunLog(["Starting workflow execution..."]);
+    setRunLog([]);
     try {
       const allFileIds = new Set<string>();
       for (const node of draft.nodes) {
@@ -268,9 +297,10 @@ export default function WorkflowsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt: `Execute workflow "${draft.title}": ${draft.description}`,
-          contextRefs: Array.from(allFileIds).map((id) => ({ id, kind: "knowledge" })),
-          target: "id" in draft ? { type: "workflow", id: draft.id } : undefined
+          prompt: `Execute workflow "${draft.name}": ${draft.description}`,
+          type: "workflow",
+          workflowId,
+          contextFileIds: Array.from(allFileIds)
         })
       });
       if (!response.ok || !response.body) {
@@ -294,7 +324,7 @@ export default function WorkflowsPage() {
           try {
             const item = JSON.parse(line.slice(6));
             if (item.kind === "event") {
-              const nodeName = item.event.node ?? "";
+              const nodeName = item.event.nodeTitle ?? "";
               const stepLabel = nodeName ? `${nodeName}: ${item.event.message}` : item.event.message;
               setRunLog((prev) => {
                 if (prev[prev.length - 1] === stepLabel) return prev;
@@ -307,11 +337,15 @@ export default function WorkflowsPage() {
               output += item.text;
             } else if (item.kind === "error") {
               setRunLog((prev) => [...prev, `Error: ${item.message}`]);
+            } else if (item.kind === "done") {
+              if (typeof item.message === "string" && item.message.trim()) {
+                setRunLog((prev) => [...prev, item.message]);
+              }
             }
           } catch { /* skip malformed */ }
         }
       }
-      setRunLog((prev) => [...prev, `Workflow complete.${output ? `\n\n${output.trim().slice(0, 500)}` : ""}`]);
+      if (output.trim()) setRunLog((prev) => [...prev, output.trim().slice(0, 500)]);
     } catch (error) {
       setRunLog((prev) => [...prev, `ERROR: ${error instanceof Error ? error.message : "unknown"}`]);
     } finally {
@@ -345,8 +379,9 @@ export default function WorkflowsPage() {
         <div className="flex min-h-0 flex-1">
           <SidebarListPanel
             title="Workflows"
-            count={store.workstreams.length}
-            onNew={createWorkstream}
+            count={store.workflows.length}
+            newBusy={creating}
+            onNew={createWorkflow}
             newTooltip="New workflow"
             searchValue={query}
             onSearchChange={setQuery}
@@ -356,24 +391,15 @@ export default function WorkflowsPage() {
               <EmptyState className="py-10" description="No workflows match this search." title="No matches" />
             ) : (
               <ul className="grid gap-1">
-                {filtered.map((workstream) => (
-                  <li key={workstream.id}>
-                    <button
-                      className={cn(
-                        "w-full rounded-md border px-2 py-2 text-left transition-colors",
-                        workstream.id === selectedId ? "border-border bg-selected" : "border-transparent hover:border-border hover:bg-hover"
-                      )}
-                      onClick={() => selectWorkstream(workstream)}
-                      type="button"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="truncate text-sm font-medium text-foreground">{workstream.title}</span>
-                        <Pill className="ml-auto">{workstream.nodes.length} steps</Pill>
-                      </div>
-                      <p className="line-clamp-2 text-2xs text-muted-foreground">{workstream.description}</p>
-                    </button>
-                  </li>
-                ))}
+                {filtered.map((workflow) => <ListItem
+                  active={workflow.id === selectedId}
+                  description={workflow.description}
+                  icon={ENTITY_ICONS.workflow}
+                  key={workflow.id}
+                  metadata={<Pill>{workflow.nodes.length} steps</Pill>}
+                  onClick={() => selectWorkflow(workflow)}
+                  title={workflow.name}
+                />)}
               </ul>
             )}
           </SidebarListPanel>
@@ -382,56 +408,40 @@ export default function WorkflowsPage() {
               <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                 <span>Workflows</span>
                 <Icon name="chevron-right" size={12} />
-                <span className="max-w-72 truncate text-foreground">{draft.title}</span>
+                <span className="max-w-72 truncate text-foreground">{draft.name}</span>
                 <Pill tone={draft.status === "active" ? "success" : "default"}>
-                  {draft.status === "active" ? "enabled" : "disabled"}
+                  {draft.status === "active" ? "Enabled" : "Disabled"}
                 </Pill>
               </div>
               <div className="ml-auto flex items-center gap-1.5">
                 <Button
+                  icon="play"
+                  loading={running}
                   onClick={runWorkflow}
                   size="md"
                   variant="outline"
-                  disabled={running || draft.nodes.length === 0 || draft.status !== "active"}
+                  disabled={draft.nodes.length === 0 || draft.status !== "active"}
                 >
-                  {running ? <Icon name="loader" size={14} className="animate-spin" /> : <Icon name="play" size={14} />}
-                  {running ? "Running..." : "Run"}
+                  Run
                 </Button>
                 {!isNew ? (
                   <Tooltip content="Delete workflow" side="bottom">
-                    <Button aria-label="Delete workflow" onClick={() => setConfirmDelete(true)} size="icon" variant="ghost">
-                      <Icon name="trash" size={14} />
-                    </Button>
+                    <Button aria-label="Delete workflow" icon="trash" onClick={() => setConfirmDelete(true)} size="icon-xs" variant="ghost" />
                   </Tooltip>
                 ) : null}
-                <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
-                  <DialogContent hideClose aria-describedby={undefined}>
-                    <DialogHeader>
-                      <DialogTitle>Delete workflow</DialogTitle>
-                      <DialogDescription>
-                        Are you sure you want to delete &ldquo;{draft.title}&rdquo;? This action cannot be undone.
-                      </DialogDescription>
-                    </DialogHeader>
-                    <DialogFooter>
-                      <Button onClick={() => setConfirmDelete(false)} size="md" variant="ghost">Cancel</Button>
-                      <Button onClick={() => { setConfirmDelete(false); remove(); }} size="md" variant="primary">Delete</Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-                <Button disabled={!dirty || saving} onClick={save} size="md" variant={dirty ? "primary" : "outline"}>
-                  {saving ? <Icon name="loader" size={14} className="animate-spin" /> : <Icon name="save" size={14} />}
+                <Button disabled={!dirty} icon="save" loading={saving} onClick={save} size="md" variant={dirty ? "primary" : "outline"}>
                   Save
                 </Button>
               </div>
             </div>
             <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                <div className="grid w-full shrink-0 items-end gap-3 border-b border-border bg-panel-raised px-4 py-3 xl:grid-cols-[minmax(0,1fr)_180px]">
+                <div className="grid w-full shrink-0 grid-cols-[repeat(auto-fit,minmax(min(100%,var(--editor-field-min)),1fr))] items-end gap-3 border-b border-border bg-panel-raised px-4 py-3">
                   <Field label="Workflow name">
                     <Input
                       className="h-8 text-sm font-medium"
-                      onChange={(e) => setDraft((current) => ({ ...current, title: e.target.value }))}
-                      value={draft.title}
+                      onChange={(e) => setDraft((current) => ({ ...current, name: e.target.value }))}
+                      value={draft.name}
                     />
                   </Field>
                   <Field label="Enabled">
@@ -514,6 +524,17 @@ export default function WorkflowsPage() {
             </section>
           </main>
         </div>
+        <ConfirmDialog
+          confirmLabel="Delete workflow"
+          description={`Runs will no longer be able to execute ${draft.name}. Existing run history is not changed.`}
+          onConfirm={async () => {
+            setConfirmDelete(false);
+            await remove();
+          }}
+          onOpenChange={setConfirmDelete}
+          open={confirmDelete}
+          title={`Delete ${draft.name}?`}
+        />
       </div>
     </AppShell>
   );

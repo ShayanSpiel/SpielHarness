@@ -1,6 +1,6 @@
 "use client";
 
-import { Icon } from "@spielos/design-system/components";
+import { EVENT_ICONS, Icon } from "@spielos/design-system/components";
 import {
   ActionBarPrimitive,
   AssistantRuntimeProvider,
@@ -12,23 +12,47 @@ import {
   useMessagePartText
 } from "@assistant-ui/react";
 import {
+  type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState
 } from "react";
+import { createPortal } from "react-dom";
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import ReactMarkdown from "react-markdown";
-import { Button, Tooltip, cn } from "@spielos/design-system";
+import {
+  Button,
+  ChoiceButton,
+  Notice,
+  Panel,
+  Pill,
+  StatusIcon,
+  Tooltip,
+  cn,
+  toast
+} from "@spielos/design-system";
 import remarkGfm from "remark-gfm";
 import { useSpielosChatAdapter } from "../../lib/chat-adapter";
 import { useRunContext } from "../../lib/run-context";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
+import { buildObjectReferences, mentionText, type ObjectReference } from "../../lib/object-references";
+import { getTextAroundCursor } from "../mention-textarea";
+import { MentionDropdown } from "../mention-dropdown";
 import { ContextChips } from "./context-chips";
 import { ContextPicker } from "./context-picker";
-import { useChatMentionAdapter, spielosDirectiveFormatter } from "./chat-mentions";
-import type { HumanInputOption, HumanInputQuestion } from "@spielos/core";
+import type { HumanInputQuestion, HumanInputRequest, RunEvent, RunStatus } from "@spielos/core";
+import {
+  compactRunEvents,
+  isFailureEvent,
+  isStartEvent,
+  isSuccessEvent,
+  isWaitingEvent,
+  orderRunEvents
+} from "../../lib/run-events";
 
 function ComposerAddContext() {
   const run = useRunContext();
@@ -76,90 +100,509 @@ function ComposerCancel() {
   );
 }
 
-function ComposerTriggerPopoverUI() {
-  const mention = useChatMentionAdapter();
+function setNativeTextareaValue(textarea: HTMLTextAreaElement | null, value: string) {
+  if (!textarea) return;
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+  setter?.call(textarea, value);
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function answerDraft(question: HumanInputQuestion, answer: unknown): string {
+  if (question.kind === "text") return typeof answer === "string" ? answer : "";
+  const optionIds = new Set(question.options?.map((option) => option.id) ?? []);
+  if (question.kind === "single") {
+    return typeof answer === "string" && !optionIds.has(answer) ? answer : "";
+  }
+  if (question.kind === "multi" && Array.isArray(answer)) {
+    return answer.filter((value): value is string => typeof value === "string" && !optionIds.has(value)).join(", ");
+  }
+  return "";
+}
+
+function useHumanInputFlow(
+  request: HumanInputRequest | null,
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>
+) {
+  const run = useRunContext();
+  const [answers, setAnswers] = useState<Record<string, unknown>>({});
+  const [step, setStep] = useState(0);
+  const [draft, setDraft] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setAnswers({});
+    setStep(0);
+    setDraft("");
+    setSubmitting(false);
+    setError(null);
+    setNativeTextareaValue(textareaRef.current, "");
+  }, [request?.id, textareaRef]);
+
+  const question = request?.questions[step] ?? null;
+  const acceptsText = Boolean(
+    question && (question.kind === "text" || ((question.kind === "single" || question.kind === "multi") && question.allowCustom))
+  );
+
+  const savedAnswer = question ? answers[question.id] : undefined;
+  const canAdvance = Boolean(
+    question &&
+      (question.kind === "none" ||
+        (question.kind === "text" && draft.trim()) ||
+        (question.kind === "single" && (typeof savedAnswer === "string" || (question.allowCustom && draft.trim()))) ||
+        (question.kind === "multi" &&
+          ((Array.isArray(savedAnswer) && savedAnswer.length > 0) || (question.allowCustom && draft.trim()))))
+  );
+
+  const clearDraft = useCallback(() => {
+    setDraft("");
+    setNativeTextareaValue(textareaRef.current, "");
+  }, [textareaRef]);
+
+  const selectOption = useCallback((optionId: string) => {
+    if (!question) return;
+    setAnswers((current) => {
+      if (question.kind === "multi") {
+        const selected = Array.isArray(current[question.id]) ? current[question.id] as string[] : [];
+        return {
+          ...current,
+          [question.id]: selected.includes(optionId)
+            ? selected.filter((id) => id !== optionId)
+            : [...selected, optionId]
+        };
+      }
+      return { ...current, [question.id]: optionId };
+    });
+    clearDraft();
+  }, [clearDraft, question]);
+
+  const submitAnswers = useCallback(async (finalAnswers: Record<string, unknown>) => {
+    if (!request || !run.activeRunId) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/runs/${run.activeRunId}/reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId: request.id, answers: finalAnswers })
+      });
+      if (!response.ok || !response.body) {
+        let message = `Unable to continue (${response.status}).`;
+        try {
+          const body = await response.json() as { error?: string };
+          if (body.error) message = body.error;
+        } catch {
+          // Keep the transport message.
+        }
+        throw new Error(message);
+      }
+
+      run.setHumanInputRequest(null);
+      run.setRunStatus("running");
+      run.setActivity(null);
+      clearDraft();
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let terminalStatus: RunStatus | null = null;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          const line = frame.split("\n").find((entry) => entry.startsWith("data: "));
+          if (!line) continue;
+          const item = JSON.parse(line.slice(6)) as {
+            kind: string;
+            runId?: string;
+            event?: RunEvent;
+            artifact?: import("@spielos/core").Artifact;
+            request?: HumanInputRequest;
+            text?: string;
+            message?: string;
+            status?: string;
+          };
+          if (item.kind === "run" && item.runId) run.setActiveRunId(item.runId);
+          if (item.kind === "event" && item.event) {
+            run.appendEvent(item.event);
+            if (item.event.type === "run_completed") terminalStatus = "completed";
+            if (item.event.type === "run_failed") terminalStatus = "failed";
+            if (item.event.type === "run_cancelled") terminalStatus = "cancelled";
+          }
+          if (item.kind === "artifact" && item.artifact) run.appendArtifact(item.artifact);
+          if (item.kind === "human_input" && item.request) {
+            run.setHumanInputRequest(item.request);
+            run.setRunStatus("waiting_human");
+            terminalStatus = "waiting_human";
+          }
+          if (item.kind === "status" && item.message) run.setActivity(item.message);
+          if (item.kind === "text" && item.text) run.appendContinuationText(item.text);
+          if (
+            item.kind === "done" &&
+            item.status &&
+            ["running", "waiting_human", "completed", "failed", "cancelled"].includes(item.status)
+          ) {
+            terminalStatus = item.status as RunStatus;
+            run.setRunStatus(terminalStatus);
+          }
+          if (item.kind === "error") throw new Error(item.message ?? "Unable to resume the run.");
+        }
+      }
+      if (!terminalStatus) run.setRunStatus("failed");
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "Unable to resume the run.";
+      setError(message);
+      run.setRunStatus("failed");
+      toast.error("The run could not continue", { description: message });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [clearDraft, request, run]);
+
+  const advance = useCallback(async () => {
+    if (!request || !question || !canAdvance || submitting) return;
+    let value = answers[question.id];
+    const custom = draft.trim();
+    if (question.kind === "text") value = custom;
+    if (question.kind === "single" && custom) value = custom;
+    if (question.kind === "multi" && custom) {
+      const selected = Array.isArray(value) ? value : [];
+      value = [...selected, custom];
+    }
+    const nextAnswers = { ...answers, [question.id]: value };
+    setAnswers(nextAnswers);
+    if (step < request.questions.length - 1) {
+      const nextQuestion = request.questions[step + 1];
+      const nextDraft = answerDraft(nextQuestion, nextAnswers[nextQuestion.id]);
+      setStep((current) => current + 1);
+      setDraft(nextDraft);
+      setNativeTextareaValue(textareaRef.current, nextDraft);
+      return;
+    }
+    await submitAnswers(nextAnswers);
+  }, [answers, canAdvance, draft, question, request, step, submitAnswers, submitting, textareaRef]);
+
+  const back = useCallback(() => {
+    if (step === 0 || submitting) return;
+    const previousQuestion = request?.questions[step - 1];
+    if (!previousQuestion) return;
+    const previousDraft = answerDraft(previousQuestion, answers[previousQuestion.id]);
+    setStep((current) => current - 1);
+    setDraft(previousDraft);
+    setNativeTextareaValue(textareaRef.current, previousDraft);
+  }, [answers, request, step, submitting, textareaRef]);
+
+  return {
+    request,
+    question,
+    answers,
+    step,
+    draft,
+    setDraft,
+    submitting,
+    error,
+    acceptsText,
+    canAdvance,
+    selectOption,
+    advance,
+    back
+  };
+}
+
+type HumanInputFlow = ReturnType<typeof useHumanInputFlow>;
+
+function HumanInputPrompt({ flow }: { flow: HumanInputFlow }) {
+  const { request, question } = flow;
+  if (!request || !question) return null;
+  const selected = flow.answers[question.id];
+  const finalStep = flow.step === request.questions.length - 1;
 
   return (
-    <ComposerPrimitive.Unstable_TriggerPopover
-      char="@"
-      adapter={mention}
-      className="z-50"
+    <Panel
+      aria-labelledby="human-input-title"
+      aria-modal="false"
+      className="mb-2 overflow-hidden bg-panel-strong shadow-popover"
+      role="dialog"
     >
-      <ComposerPrimitive.Unstable_TriggerPopover.Directive
-        formatter={spielosDirectiveFormatter}
-      />
-      <ComposerPrimitive.Unstable_TriggerPopoverCategories>
-        {(categories) =>
-          categories.map((cat) => (
-            <ComposerPrimitive.Unstable_TriggerPopoverCategoryItem
-              key={cat.id}
-              categoryId={cat.id}
-            >
-              {cat.label}
-            </ComposerPrimitive.Unstable_TriggerPopoverCategoryItem>
-          ))
-        }
-      </ComposerPrimitive.Unstable_TriggerPopoverCategories>
-      <ComposerPrimitive.Unstable_TriggerPopoverItems>
-        {(items) =>
-          items.map((item) => (
-            <ComposerPrimitive.Unstable_TriggerPopoverItem
-              key={item.id}
-              item={item}
-            >
-              {item.label}
-            </ComposerPrimitive.Unstable_TriggerPopoverItem>
-          ))
-        }
-      </ComposerPrimitive.Unstable_TriggerPopoverItems>
-    </ComposerPrimitive.Unstable_TriggerPopover>
+      <div className="flex items-center gap-2.5 border-b border-border px-3 py-2.5">
+        <StatusIcon icon="user" tone="warning" size={14} />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-xs font-semibold text-foreground" id="human-input-title">
+            {request.header ?? "Input required"}
+          </div>
+        </div>
+        {request.questions.length > 1 ? (
+          <Pill tone="warning">{flow.step + 1} / {request.questions.length}</Pill>
+        ) : null}
+      </div>
+      <div className="px-3 py-3">
+        <div className="text-sm font-medium leading-5 text-foreground">{question.question}</div>
+        {question.options?.length ? (
+          <div
+            aria-label={question.question}
+            className="mt-2.5 grid gap-1.5"
+            role={question.kind === "single" ? "radiogroup" : "group"}
+          >
+            {question.options.map((option) => {
+              const isSelected = question.kind === "multi"
+                ? Array.isArray(selected) && selected.includes(option.id)
+                : selected === option.id;
+              return (
+                <ChoiceButton
+                  description={option.description}
+                  disabled={flow.submitting}
+                  key={option.id}
+                  onClick={() => flow.selectOption(option.id)}
+                  selected={isSelected}
+                  selectionMode={question.kind === "multi" ? "multiple" : "single"}
+                >
+                  {option.label}
+                </ChoiceButton>
+              );
+            })}
+          </div>
+        ) : null}
+        {flow.acceptsText ? (
+          <div className="mt-2 text-2xs text-muted-foreground">
+            {question.placeholder ?? (question.options?.length ? "Or type a custom answer below." : "Type your answer below, then continue.")}
+          </div>
+        ) : null}
+        {flow.error ? <Notice className="mt-2.5" tone="destructive">{flow.error}</Notice> : null}
+      </div>
+      <div className="flex items-center justify-between border-t border-border bg-panel-raised px-3 py-2">
+        <Button disabled={flow.step === 0 || flow.submitting} onClick={flow.back} size="sm" type="button" variant="ghost">
+          <Icon name="arrow-left" size={12} />
+          Back
+        </Button>
+        <Button disabled={!flow.canAdvance || flow.submitting} onClick={() => void flow.advance()} size="sm" type="button">
+          {flow.submitting ? <Icon name="loader" className="animate-spin" size={12} /> : null}
+          {finalStep ? "Confirm" : "Next"}
+          {!finalStep ? <Icon name="arrow-right" size={12} /> : null}
+        </Button>
+      </div>
+    </Panel>
   );
 }
 
 function Composer() {
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const run = useRunContext();
+  const store = useWorkspaceStore();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerShellRef = useRef<HTMLDivElement>(null);
+  const mentionPortalRef = useRef<HTMLDivElement>(null);
+  const human = useHumanInputFlow(run.humanInputRequest, textareaRef);
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionAtIndex, setMentionAtIndex] = useState(-1);
+
+  const allItems = useMemo(
+    () => buildObjectReferences({
+      items: store.items,
+      roles: store.roles,
+      skills: store.skills,
+      evalFiles: store.evalFiles,
+      workstreams: store.workflows
+    }),
+    [store.items, store.roles, store.skills, store.evalFiles, store.workflows]
+  );
+
+  const filteredItems = useMemo(() => {
+    if (!mentionQuery) return allItems;
+    const q = mentionQuery.toLowerCase();
+    return allItems.filter(
+      (ref) =>
+        ref.title.toLowerCase().includes(q) ||
+        ref.kind.toLowerCase().includes(q) ||
+        ref.subtitle.toLowerCase().includes(q)
+    );
+  }, [allItems, mentionQuery]);
+
+  const closeMention = useCallback(() => {
+    setMentionOpen(false);
+    setMentionQuery("");
+    setMentionAtIndex(-1);
+  }, []);
+
+  const openMention = useCallback((query: string, atIndex: number) => {
+    setMentionQuery(query);
+    setMentionAtIndex(atIndex);
+    setMentionOpen(true);
+  }, []);
+
+  const handleComposerKeyUp = useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (human.request) return;
+    const textarea = event.currentTarget;
+    const cursorPos = textarea.selectionStart;
+    const state = getTextAroundCursor(textarea.value, cursorPos);
+    if (state) {
+      openMention(state.query, state.atIndex);
+    } else {
+      closeMention();
+    }
+  }, [human.request, openMention, closeMention]);
+
+  const handleComposerKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (human.request) {
+      if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+        event.preventDefault();
+        void human.advance();
+      }
+      return;
+    }
+    if (mentionOpen) {
+      if (["ArrowDown", "ArrowUp", "Enter", "Tab"].includes(event.key)) {
+        event.preventDefault();
+        const listbox = mentionPortalRef.current?.querySelector("[role='listbox']");
+        if (listbox) {
+          listbox.dispatchEvent(new KeyboardEvent("keydown", { key: event.key, bubbles: true }));
+        }
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeMention();
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       const form = event.currentTarget.closest("form") as HTMLFormElement | null;
       form?.requestSubmit();
     }
-  };
+  }, [human, mentionOpen, closeMention]);
+
+  const handleComposerClick = useCallback((event: React.MouseEvent<HTMLTextAreaElement>) => {
+    if (human.request) return;
+    const textarea = event.currentTarget;
+    const cursorPos = textarea.selectionStart;
+    const state = getTextAroundCursor(textarea.value, cursorPos);
+    if (state) {
+      openMention(state.query, state.atIndex);
+    } else {
+      closeMention();
+    }
+  }, [human.request, openMention, closeMention]);
+
+  const handleSubmit = useCallback((event: FormEvent<HTMLFormElement>) => {
+    if (!human.request) return;
+    event.preventDefault();
+    void human.advance();
+  }, [human]);
+
+  const insertMention = useCallback((ref: ObjectReference) => {
+    const textarea = textareaRef.current;
+    if (!textarea || mentionAtIndex === -1) return;
+    const mention = mentionText(ref);
+    const before = textarea.value.substring(0, mentionAtIndex);
+    const after = textarea.value.substring(textarea.selectionStart);
+    const newValue = `${before}${mention} ${after}`;
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype, "value"
+    )?.set;
+    nativeSetter?.call(textarea, newValue);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    const pos = mentionAtIndex + mention.length + 1;
+    textarea.setSelectionRange(pos, pos);
+    textarea.focus();
+    closeMention();
+  }, [mentionAtIndex, closeMention]);
+
+  useEffect(() => {
+    if (!mentionOpen) return;
+    function handle(e: MouseEvent) {
+      const textarea = textareaRef.current;
+      const portal = mentionPortalRef.current;
+      const target = e.target as Node;
+      if (textarea && portal && !textarea.contains(target) && !portal.contains(target)) {
+        closeMention();
+      }
+    }
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [mentionOpen, closeMention]);
 
   return (
-    <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-      <ComposerPrimitive.Root className="aui-composer relative flex w-full flex-col gap-1.5">
-        <ContextChips items={run.contextItems} onRemove={run.removeContext} />
-        <div
-          data-slot="aui-composer-shell"
-          className="flex w-full flex-col gap-1 overflow-hidden rounded-xl border border-border bg-panel-raised p-2 shadow-[var(--shadow-panel)] transition-colors focus-within:border-foreground/40"
-        >
-          <ComposerPrimitive.Input
-            autoFocus
-            className="min-h-9 w-full resize-none bg-transparent px-2 py-1.5 text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
-            enterKeyHint="send"
-            placeholder="Message the team… (type @ to mention)"
-            rows={1}
-            onKeyDown={handleKeyDown}
-          />
-          <div className="flex items-center justify-between px-1">
+    <ComposerPrimitive.Root className="aui-composer relative flex w-full flex-col gap-1.5" onSubmit={handleSubmit}>
+      <HumanInputPrompt flow={human} />
+      <ContextChips items={run.contextItems} onRemove={run.removeContext} />
+      <div
+        ref={composerShellRef}
+        data-slot="aui-composer-shell"
+        className={cn(
+          "flex w-full flex-col gap-1 overflow-hidden rounded-md border bg-panel-raised p-2 shadow-panel transition-colors",
+          "border-border focus-within:border-[var(--focus-border)] focus-within:ring-2 focus-within:ring-[var(--focus-ring)]"
+        )}
+      >
+        <ComposerPrimitive.Input
+          ref={textareaRef}
+          autoFocus
+          className="min-h-9 w-full resize-none bg-transparent px-2 py-1.5 text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
+          enterKeyHint="send"
+          disabled={Boolean(human.request && !human.acceptsText)}
+          placeholder={human.request
+            ? human.question?.placeholder ?? (human.acceptsText ? "Type your answer…" : "Choose an option above")
+            : "Message the team… (type @ to mention)"}
+          rows={1}
+          onChange={(event) => {
+            if (human.request) human.setDraft(event.currentTarget.value);
+          }}
+          onClick={handleComposerClick}
+          onKeyDown={handleComposerKeyDown}
+          onKeyUp={handleComposerKeyUp}
+        />
+        <div className="flex items-center justify-between px-1">
+          {human.request ? (
+            <Pill tone="warning"><Icon name="user" size={10} /> Awaiting input</Pill>
+          ) : (
             <ComposerAddContext />
-            {isRunning ? <ComposerCancel /> : <ComposerSend />}
-          </div>
+          )}
+          {human.request ? (
+            human.acceptsText ? (
+              <Button
+                aria-label={human.step === human.request.questions.length - 1 ? "Confirm answer" : "Next question"}
+                disabled={!human.canAdvance || human.submitting}
+                onClick={() => void human.advance()}
+                size="icon"
+                type="button"
+              >
+                <Icon name={human.step === human.request.questions.length - 1 ? "check" : "arrow-right"} size={16} />
+              </Button>
+            ) : <span />
+          ) : isRunning ? <ComposerCancel /> : <ComposerSend />}
         </div>
-        <ComposerTriggerPopoverUI />
-      </ComposerPrimitive.Root>
-    </ComposerPrimitive.Unstable_TriggerPopoverRoot>
+      </div>
+      {!human.request && mentionOpen && composerShellRef.current && createPortal(
+        <div
+          ref={mentionPortalRef}
+          className="fixed z-50"
+          style={{
+            bottom: window.innerHeight - composerShellRef.current.getBoundingClientRect().top + 4,
+            left: composerShellRef.current.getBoundingClientRect().left + 8,
+            width: Math.min(composerShellRef.current.getBoundingClientRect().width - 16, 320)
+          }}
+        >
+          <MentionDropdown
+            items={filteredItems}
+            onSelect={insertMention}
+            searchQuery={mentionQuery}
+          />
+        </div>,
+        document.body
+      )}
+    </ComposerPrimitive.Root>
   );
 }
 
 function MessageError() {
   return (
-    <div className="mt-1.5 rounded-md border border-foreground bg-foreground/5 px-3 py-2 text-xs text-foreground">
+    <Notice className="mt-1.5" tone="destructive">
       Something went wrong. Try again.
-    </div>
+    </Notice>
   );
 }
 
@@ -168,23 +611,17 @@ function ActionBar() {
     <ActionBarPrimitive.Root className="flex items-center gap-0.5">
       <ActionBarPrimitive.Copy asChild>
         <Tooltip content="Copy" side="top">
-          <Button aria-label="Copy" size="icon" variant="ghost">
-            <Icon name="copy" size={14} />
-          </Button>
+          <Button aria-label="Copy" icon="copy" size="icon-xs" variant="ghost" />
         </Tooltip>
       </ActionBarPrimitive.Copy>
       <ActionBarPrimitive.Reload asChild>
         <Tooltip content="Regenerate" side="top">
-          <Button aria-label="Regenerate" size="icon" variant="ghost">
-            <Icon name="refresh" size={14} />
-          </Button>
+          <Button aria-label="Regenerate" icon="refresh" size="icon-xs" variant="ghost" />
         </Tooltip>
       </ActionBarPrimitive.Reload>
       <ActionBarPrimitive.Edit asChild>
         <Tooltip content="Edit" side="top">
-          <Button aria-label="Edit" size="icon" variant="ghost">
-            <Icon name="edit" size={14} />
-          </Button>
+          <Button aria-label="Edit" icon="edit" size="icon-xs" variant="ghost" />
         </Tooltip>
       </ActionBarPrimitive.Edit>
     </ActionBarPrimitive.Root>
@@ -265,14 +702,14 @@ function UserMessageText() {
 
 function UserMessage() {
   return (
-    <MessagePrimitive.Root className="fade-in slide-in-from-bottom-1 relative grid w-full grid-cols-[1fr_auto] gap-x-3 animate-in duration-150">
-      <div className="min-w-0 max-w-[85%] overflow-hidden rounded-xl border border-border bg-panel-strong px-3 py-2 text-sm leading-relaxed text-foreground">
+    <MessagePrimitive.Root className="group fade-in slide-in-from-bottom-1 relative grid w-full grid-cols-[1fr_auto] gap-x-3 animate-in duration-[var(--duration)]">
+      <div className="min-w-0 max-w-[85%] overflow-hidden rounded-md bg-panel-strong px-3 py-2 text-sm leading-relaxed text-foreground">
         <MessagePrimitive.Parts components={{ Text: UserMessageText }} />
         <div className="mt-1.5 flex items-center justify-end gap-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
           <ActionBar />
         </div>
       </div>
-      <div className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-foreground text-background">
+      <div className="flex h-7 w-7 items-center justify-center rounded-md bg-foreground text-background">
         <Icon name="user" size={14} />
       </div>
     </MessagePrimitive.Root>
@@ -313,7 +750,7 @@ function MarkdownPart() {
         th: ({ children }) => <th className="border border-border bg-panel-raised px-2 py-1.5 font-semibold text-foreground-strong">{children}</th>,
         td: ({ children }) => <td className="border border-border px-2 py-1.5 align-top text-foreground">{children}</td>,
         code: ({ children }) => (
-          <code className="rounded-sm border border-border bg-panel-raised px-1 py-0.5 font-mono text-[12px] text-foreground">
+          <code className="rounded-sm border border-border bg-panel-raised px-1 py-0.5 font-mono text-xs text-foreground">
             {children}
           </code>
         ),
@@ -329,25 +766,107 @@ function MarkdownPart() {
   );
 }
 
+function RoleAvatar({ roleId, roleName }: { roleId: string; roleName: string }) {
+  const store = useWorkspaceStore();
+  const role = store.roles.find((entry) => entry.id === roleId);
+  const configuredIcon = role?.metadata?.icon;
+  const initials = roleName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
+  return (
+    <div
+      aria-label={roleName}
+      className="flex h-7 w-7 items-center justify-center rounded-md bg-selected text-3xs font-semibold text-foreground-strong"
+      title={roleName}
+    >
+      {typeof configuredIcon === "string" ? <Icon name={configuredIcon} size={14} /> : initials || <Icon name="bot" size={14} />}
+    </div>
+  );
+}
+
+function RunActivityTimeline() {
+  const run = useRunContext();
+  if (run.runType === "chat") {
+    if (!run.running) return null;
+    const nativeActivity = [...orderRunEvents(run.events)].reverse().find(isStartEvent);
+    return (
+      <div className="mb-2 flex h-6 items-center gap-2 text-xs text-muted-foreground" aria-live="polite">
+        <StatusIcon busy icon="circle-dot" tone="info" size={12} />
+        {nativeActivity?.message ? <span>{nativeActivity.message}</span> : <span className="sr-only">Response in progress</span>}
+      </div>
+    );
+  }
+  if (run.running && run.events.length === 0) {
+    return (
+      <div className="mb-2 flex h-6 items-center" aria-live="polite">
+        <StatusIcon busy icon="circle-dot" tone="info" size={12} />
+        <span className="sr-only">Waiting for runtime events</span>
+      </div>
+    );
+  }
+  if (run.events.length === 0 && run.status === "idle") return null;
+
+  const items = compactRunEvents(run.events);
+  const activeItemId = run.running
+    ? [...items].reverse().find(isStartEvent)?.id
+    : null;
+
+  if (items.length === 0) return null;
+
+  return (
+    <div className="mb-3 text-xs" aria-live="polite">
+      <div className="ml-[5px] border-l border-border/70 pl-4">
+          {items.map((event) => {
+          const active = event.id === activeItemId;
+          const failed = isFailureEvent(event);
+          const waiting = isWaitingEvent(event);
+          const success = isSuccessEvent(event);
+          const tone = failed ? "destructive" : waiting ? "warning" : success ? "success" : active ? "info" : "neutral";
+          const icon = EVENT_ICONS[event.type as keyof typeof EVENT_ICONS] ?? "circle-dot";
+          return (
+            <div className="flex min-h-6 min-w-0 items-center gap-2 py-0.5 text-2xs" key={event.id}>
+              <StatusIcon busy={active} icon={icon} tone={tone} size={11} />
+              <span className={cn(
+                "min-w-0 truncate text-muted-foreground",
+                active && "text-foreground",
+                failed && "text-destructive",
+                waiting && "text-warning"
+              )}>
+                {event.message}
+              </span>
+              {event.skillName && event.type === "tool_call_result" ? (
+                <span className="ml-auto shrink-0 rounded-full bg-selected px-2 py-0.5 text-3xs text-muted-foreground">
+                  {event.skillName}
+                </span>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function AssistantMessage() {
   const run = useRunContext();
-  const isRunning = useAuiState((s) => s.thread.isRunning);
+  const isLatest = useAuiState((s) => s.thread.messages.at(-1)?.id === s.message.id);
+  const actor = isLatest && run.running ? run.activeActor : null;
   return (
-    <MessagePrimitive.Root className="fade-in slide-in-from-bottom-1 relative grid w-full grid-cols-[auto_1fr] gap-x-3 animate-in duration-150">
-      <div className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-panel text-foreground">
-        <Icon name="bot" size={14} />
-      </div>
+    <MessagePrimitive.Root className="group fade-in slide-in-from-bottom-1 relative grid w-full grid-cols-[auto_1fr] gap-x-3 animate-in duration-[var(--duration)]">
+      {actor ? <RoleAvatar roleId={actor.roleId} roleName={actor.roleName} /> : (
+        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-panel-raised text-foreground">
+          <Icon name="bot" size={14} />
+        </div>
+      )}
       <div className="min-w-0 overflow-hidden leading-relaxed">
         <div className="flex items-center gap-2 text-2xs font-medium text-muted-foreground">
-          <span>Assistant</span>
-          {isRunning && run.activity ? (
-            <span className="inline-flex min-w-0 items-center gap-1 rounded-full bg-panel-raised px-1.5 py-0.5 text-xs text-muted-foreground">
-              <span className="h-1.5 w-1.5 shrink-0 animate-ping rounded-full bg-foreground" />
-              <span className="truncate">{run.activity}</span>
-            </span>
-          ) : null}
+          <span>{actor?.roleName ?? "Assistant"}</span>
         </div>
         <div className="mt-1">
+          {isLatest ? <RunActivityTimeline /> : null}
           <MessagePrimitive.Parts components={{ Text: MarkdownPart }} />
         </div>
         <div className="mt-2 flex items-center gap-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
@@ -361,200 +880,20 @@ function AssistantMessage() {
   );
 }
 
-function HumanInputRequestMessage() {
+function ContinuationResponse() {
   const run = useRunContext();
-  const request = run.humanInputRequest;
-  const [answers, setAnswers] = useState<Record<string, unknown>>({});
-  const [submitted, setSubmitted] = useState(false);
-
-  useEffect(() => {
-    setAnswers({});
-    setSubmitted(false);
-  }, [request?.id]);
-
-  if (!request) return null;
-
-  function setAnswer(id: string, value: unknown) {
-    setAnswers((current) => ({ ...current, [id]: value }));
-  }
-
-  async function submit() {
-    if (!request) return;
-    setSubmitted(true);
-    try {
-      const response = await fetch(`/api/runs/${run.activeRunId}/reply`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requestId: request.id, answers })
-      });
-      if (!response.ok || !response.body) throw new Error(`Resume failed (${response.status})`);
-      run.setHumanInputRequest(null);
-      run.setRunning(true);
-      run.setActivity("Resuming run...");
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split("\n\n");
-        buffer = frames.pop() ?? "";
-        for (const frame of frames) {
-          const line = frame.split("\n").find((entry) => entry.startsWith("data: "));
-          if (!line) continue;
-          const item = JSON.parse(line.slice(6)) as {
-            kind: string;
-            event?: import("@spielos/core").RunEvent;
-            artifact?: import("@spielos/core").Artifact;
-            request?: import("@spielos/core").HumanInputRequest;
-            status?: { message: string };
-            message?: string;
-          };
-          if (item.kind === "event" && item.event) run.appendEvent(item.event);
-          if (item.kind === "artifact" && item.artifact) run.appendArtifact(item.artifact);
-          if (item.kind === "human_input" && item.request) run.setHumanInputRequest(item.request);
-          if (item.kind === "status" && item.status) run.setActivity(item.status.message);
-          if (item.kind === "error") throw new Error(item.message ?? "Resume failed");
-        }
-      }
-      run.setActivity(null);
-      run.setRunning(false);
-    } catch {
-      setSubmitted(false);
-      run.setActivity(null);
-      run.setRunning(false);
-    }
-  }
-
-  const hasAnswers = request.questions.some((q) => q.kind !== "none");
-
+  if (!run.continuationText) return null;
   return (
-    <div className="rounded-xl border border-border bg-panel p-4">
-      <div className="mb-2 flex items-center gap-2">
-        <Icon name="user" className="text-muted-foreground" size={14} />
-        <span className="text-xs font-semibold text-foreground">
-          {request.header ?? "The team needs your input"}
-        </span>
+    <div className="grid w-full grid-cols-[auto_1fr] gap-x-3">
+      <div className="flex h-7 w-7 items-center justify-center rounded-md bg-panel-raised text-foreground">
+        <Icon name="bot" size={14} />
       </div>
-      <div className="grid gap-4">
-        {request.questions.map((question) => (
-          <QuestionField
-            answers={answers}
-            key={question.id}
-            question={question}
-            setAnswer={setAnswer}
-            submitted={submitted}
-          />
-        ))}
-        <div className="flex items-center justify-end">
-          <Button
-            disabled={submitted}
-            onClick={submit}
-            size="md"
-            variant="primary"
-          >
-            <Icon name="arrow-up" size={14} />
-            {hasAnswers ? "Send answers" : "Continue"}
-          </Button>
-        </div>
+      <div className="min-w-0">
+        <div className="mb-1 text-2xs font-medium text-muted-foreground">Assistant</div>
+        <ReactMarkdown className="prose-chat text-sm leading-7 text-foreground" remarkPlugins={[remarkGfm]}>
+          {run.continuationText}
+        </ReactMarkdown>
       </div>
-    </div>
-  );
-}
-
-function QuestionField({
-  question,
-  answers,
-  setAnswer,
-  submitted
-}: {
-  question: HumanInputQuestion;
-  answers: Record<string, unknown>;
-  setAnswer: (id: string, value: unknown) => void;
-  submitted: boolean;
-}) {
-  return (
-    <div className="grid gap-2">
-      <div className="text-[12px] font-medium text-foreground">{question.question}</div>
-      {question.kind === "single" ? (
-        <div className="grid gap-1.5">
-          {question.options?.map((option: HumanInputOption) => (
-            <button
-              className={cn(
-                "rounded-md border px-2.5 py-1.5 text-left text-[12px] transition-colors",
-                answers[question.id] === option.id
-                  ? "border-foreground-strong bg-selected"
-                  : "border-border bg-background hover:bg-hover"
-              )}
-              disabled={submitted}
-              key={option.id}
-              onClick={() => setAnswer(question.id, option.id)}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-          {question.allowCustom ? (
-            <textarea
-              className="min-h-16 resize-none rounded-md border border-border bg-background px-3 py-2 text-[12px] outline-none focus-visible:border-[var(--ring)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]/30"
-              disabled={submitted}
-              onChange={(e) => setAnswer(question.id, e.target.value || `custom:${question.id}`)}
-              placeholder="Or write your own…"
-              value={typeof answers[question.id] === "string" ? (answers[question.id] as string) : ""}
-            />
-          ) : null}
-        </div>
-      ) : null}
-      {question.kind === "multi" ? (
-        <div className="grid gap-1.5">
-          {question.options?.map((option: HumanInputOption) => {
-            const selected = Array.isArray(answers[question.id])
-              ? (answers[question.id] as string[]).includes(option.id)
-              : false;
-            return (
-              <button
-                className={cn(
-                  "rounded-md border px-2.5 py-1.5 text-left text-[12px] transition-colors",
-                  selected
-                    ? "border-foreground-strong bg-selected"
-                    : "border-border bg-background hover:bg-hover"
-                )}
-                disabled={submitted}
-                key={option.id}
-                onClick={() => {
-                  const current = Array.isArray(answers[question.id])
-                    ? (answers[question.id] as string[])
-                    : [];
-                  setAnswer(
-                    question.id,
-                    current.includes(option.id)
-                      ? current.filter((id) => id !== option.id)
-                      : [...current, option.id]
-                  );
-                }}
-                type="button"
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-      {question.kind === "text" ? (
-        <textarea
-          className="min-h-20 resize-none rounded-md border border-border bg-background px-3 py-2 text-[12px] outline-none focus-visible:border-[var(--ring)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]/30"
-          disabled={submitted}
-          onChange={(e) => setAnswer(question.id, e.target.value)}
-          placeholder="Type your answer…"
-          value={(answers[question.id] as string) ?? ""}
-        />
-      ) : null}
-      {question.kind === "none" ? (
-        <p className="text-2xs text-muted-foreground">
-          No answer needed. Hit Continue to proceed.
-        </p>
-      ) : null}
     </div>
   );
 }
@@ -569,30 +908,22 @@ function Message() {
 }
 
 function WelcomeScreen() {
-  const store = useWorkspaceStore();
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-4 text-center">
-      <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-panel">
+      <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-md bg-selected text-foreground-strong">
         <Icon name="reading-glass" size={18} />
       </div>
       <h1 className="text-xl font-semibold tracking-tight text-foreground">
-        What should the marketing team do?
+        How can I help?
       </h1>
       <p className="mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
-        Press <kbd className="rounded border border-border bg-panel-raised px-1.5 py-0.5 font-mono text-2xs">⌘K</kbd> for search, or{" "}
-        <kbd className="rounded border border-border bg-panel-raised px-1.5 py-0.5 font-mono text-2xs">+</kbd> below
-        to add roles, skills, library files, or workstreams to this run.
+        Ask a question or start a conversation. Attach a role, skill, file, eval, or workflow only when you want the assistant to use it.
       </p>
       <div className="mt-6 max-w-md space-y-2">
         <p className="text-sm text-muted-foreground">
-          Select roles or a workstream from <kbd className="rounded border border-border bg-panel-raised px-1.5 py-0.5 font-mono text-3xs">⌘K</kbd> to start.
+          Press <kbd className="rounded border border-border bg-panel-raised px-1.5 py-0.5 font-mono text-3xs">⌘K</kbd> to explore the workspace.
         </p>
       </div>
-      {store.roles.length === 0 ? (
-        <div className="mt-3 max-w-md rounded-lg border border-dashed border-border bg-panel-raised/40 px-3 py-2 text-2xs text-muted-foreground">
-          No agents in the harness yet. Create one in <a className="underline" href="/roles">/roles</a>.
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -604,7 +935,7 @@ function ChatRuntimeProvider({ children }: { children: ReactNode }) {
     if (!store.activeChatId) return [];
     return (store.messages[store.activeChatId] ?? []).map((message) => ({
       id: message.id,
-      role: message.role,
+      role: message.role === "tool" ? "assistant" : message.role,
       content: message.body,
       createdAt: new Date(message.createdAt)
     }));
@@ -618,14 +949,6 @@ function ChatThreadInner() {
   const isEmpty = useAuiState(
     (s) => s.thread.messages.length === 0 && !s.thread.isRunning
   );
-  const isRunning = useAuiState((s) => s.thread.isRunning);
-
-  useEffect(() => {
-    if (isRunning) run.setRunning(true);
-  }, [isRunning, run]);
-
-  // Inject the human input question as a chat message when one is requested
-  const hasHumanInput = Boolean(run.humanInputRequest);
 
   return (
     <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col">
@@ -643,12 +966,12 @@ function ChatThreadInner() {
                 </div>
               )}
             </ThreadPrimitive.Messages>
-            {hasHumanInput ? <HumanInputRequestMessage /> : null}
+            <ContinuationResponse />
           </div>
         </div>
       </ThreadPrimitive.Viewport>
-      <div className="shrink-0 border-t border-border bg-panel-raised">
-        <div className="mx-auto w-full max-w-3xl px-4 py-3">
+      <div className="pointer-events-none shrink-0 bg-transparent px-0 pt-6">
+        <div className="pointer-events-auto mx-auto w-full max-w-3xl px-4 pb-3">
           <Composer />
           <div className="mt-2 flex items-center justify-between text-2xs text-muted-foreground">
             <div className="flex items-center gap-1.5">

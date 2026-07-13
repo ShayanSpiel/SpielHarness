@@ -1,16 +1,20 @@
 import type { Model, ModelProvider } from "@spielos/core";
-import { mistralAdapter } from "./mistral.ts";
 import type { ChatAdapter, ChatRequest, ChatResponse } from "./types.ts";
+import { mistralAdapter } from "./mistral.ts";
+import { openaiAdapter } from "./openai.ts";
+import { anthropicAdapter } from "./anthropic.ts";
 
 const REGISTRY: Record<string, ChatAdapter> = {
   mistral: mistralAdapter,
-  openai: mistralAdapter,
-  "openai-compatible": mistralAdapter
+  openai: openaiAdapter,
+  "openai-compatible": openaiAdapter,
+  anthropic: anthropicAdapter
 };
 
-export function adapterForProvider(provider: ModelProvider): ChatAdapter {
-  const adapter = REGISTRY[provider.kind.toLowerCase()];
-  if (!adapter) throw new Error(`No chat adapter is registered for provider kind "${provider.kind}".`);
+export function adapterForProvider(provider: ModelProvider | { provider: string }): ChatAdapter {
+  const key = ("provider" in provider ? provider.provider : (provider as ModelProvider).provider).toLowerCase();
+  const adapter = REGISTRY[key];
+  if (!adapter) throw new Error(`No chat adapter is registered for provider "${key}".`);
   return adapter;
 }
 
@@ -36,19 +40,9 @@ export async function* streamChat(
 ): AsyncGenerator<string, ChatResponse, void> {
   const adapter = adapterForProvider(provider);
   if (adapter.stream) {
-    return yield* adapter.stream({
-      provider,
-      model,
-      messages,
-      ...opts
-    });
+    return yield* adapter.stream({ provider, model, messages, ...opts });
   }
-  const response = await adapter.chat({
-    provider,
-    model,
-    messages,
-    ...opts
-  });
+  const response = await adapter.chat({ provider, model, messages, ...opts });
   yield response.content;
   return response;
 }

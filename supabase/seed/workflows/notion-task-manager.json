@@ -1,0 +1,64 @@
+{
+  "title": "Notion Task Manager",
+  "description": "Takes a strategy brief or user request and creates structured tasks in Notion. Exercises Notion create/update/search.",
+  "nodes": [
+    {
+      "id": "ask-tasks",
+      "title": "Describe Tasks",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Ask the user: what tasks should be created? Suggest: (A) Create tasks from a strategy brief I'll paste, (B) Set up a content calendar in Notion, (C) Create a campaign task list with deadlines, (D) Custom task list.",
+      "input": "user_request",
+      "output": "task_input",
+      "x": 80,
+      "y": 200
+    },
+    {
+      "id": "parse",
+      "title": "Parse Tasks",
+      "skillSlugs": ["llm.generate"],
+      "prompt": "Parse the user's request into structured tasks. Each task needs: title, description, priority (high/medium/low), status (to-do), and assignee if specified.",
+      "input": "task_input",
+      "output": "task_list",
+      "x": 340,
+      "y": 200
+    },
+    {
+      "id": "notion-create",
+      "title": "Create in Notion",
+      "roleSlug": "notion-admin",
+      "skillSlugs": ["notion.create", "notion.search"],
+      "prompt": "Find the Task Database in Notion, then create a page for each task with the correct properties. Return the page URLs.",
+      "input": "task_list",
+      "output": "notion_tasks",
+      "x": 600,
+      "y": 200
+    },
+    {
+      "id": "ask-review",
+      "title": "Review Tasks",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Show the user the created Notion tasks with their URLs. Ask: (A) Looks good, (B) Add more tasks, (C) Edit specific tasks, (D) Delete and redo.",
+      "input": "notion_tasks",
+      "output": "review",
+      "x": 860,
+      "y": 200
+    },
+    {
+      "id": "notion-update",
+      "title": "Apply Updates",
+      "roleSlug": "notion-admin",
+      "skillSlugs": ["notion.update"],
+      "prompt": "Apply any user-requested updates to the Notion tasks.",
+      "input": "review",
+      "output": "final_status",
+      "x": 1120,
+      "y": 200
+    }
+  ],
+  "edges": [
+    { "id": "ask-parse", "source": "ask-tasks", "target": "parse" },
+    { "id": "parse-create", "source": "parse", "target": "notion-create" },
+    { "id": "create-review", "source": "notion-create", "target": "ask-review" },
+    { "id": "review-update", "source": "ask-review", "target": "notion-update" }
+  ]
+}

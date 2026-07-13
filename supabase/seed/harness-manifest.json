@@ -1,43 +1,48 @@
 {
-  "system/orchestrator-prompt.md": { "fileType": "prompt", "prompt": true, "systemRole": "orchestrator" },
-  "system/strategy-brief-prompt.md": { "fileType": "prompt", "prompt": true },
-  "system/post-command.md": { "fileType": "prompt", "prompt": true },
-  "agents/strategist.md": { "skillSlugs": ["llm.generate", "knowledge.search", "icp-world-simulator"] },
-  "agents/writer.md": { "skillSlugs": ["llm.generate", "template.apply", "rag.file.read"] },
-  "agents/editor.md": { "skillSlugs": ["llm.generate", "pipeline-gate-evaluator", "grounding-evaluator", "rag.file.read"] },
+  "system/audience.md": { "fileType": "strategy", "slug": "audience", "folder": "Strategy" },
+  "system/offer.md": { "fileType": "strategy", "slug": "offer", "folder": "Strategy" },
+  "system/voice.md": { "fileType": "strategy", "slug": "voice", "folder": "Strategy" },
+  "system/methodology.md": { "fileType": "strategy", "slug": "methodology", "folder": "Strategy" },
+  "system/strategy-brief-prompt.md": { "fileType": "prompt", "slug": "strategy-brief-prompt", "folder": "Strategy" },
+
+  "system/draft-schema.md": { "fileType": "strategy", "slug": "draft-schema", "folder": "Template Prompts" },
+  "system/session-schema.md": { "fileType": "strategy", "slug": "session-schema", "folder": "Template Prompts" },
+  "system/examples.md": { "fileType": "knowledge", "slug": "examples", "folder": "Template Prompts" },
+
+  "system/rules.md": { "fileType": "strategy", "slug": "rules", "folder": "System Prompts" },
+  "system/orchestrator-prompt.md": { "fileType": "prompt", "slug": "orchestrator-prompt", "systemRole": "orchestrator", "folder": "System Prompts" },
+  "system/post-command.md": { "fileType": "prompt", "slug": "post-command", "folder": "System Prompts" },
+
+  "agents/researcher.md": { "skillSlugs": ["duckduckgo.search", "knowledge.search", "rag.file.read"] },
+  "agents/strategist.md": { "skillSlugs": ["llm.generate", "icp-world-simulator", "template.picker"] },
+  "agents/writer.md": { "skillSlugs": ["llm.generate", "voice.match", "template.apply"] },
+  "agents/editor.md": { "skillSlugs": ["llm.generate", "pipeline-gate-evaluator", "grounding-evaluator"] },
   "agents/publisher.md": { "skillSlugs": ["ask-the-user", "publish-package-builder"] },
-  "agents/researcher.md": { "skillSlugs": ["web.search", "knowledge.search", "rag.file.read"] },
-  "agents/ads-planner.md": { "skillSlugs": ["llm.generate", "web.search"] },
+  "agents/analyst.md": { "skillSlugs": ["analytics.report", "knowledge.search", "llm.generate"] },
+  "agents/notion-admin.md": { "skillSlugs": ["notion.search", "notion.read", "notion.create", "notion.update"] },
+  "agents/gmail-agent.md": { "skillSlugs": ["gmail.search", "gmail.read", "gmail.draft", "gmail.send"] },
 
   "skills/ask-the-user.md": { "slug": "ask-the-user", "kind": "human_input" },
   "skills/icp-world-simulator.md": { "slug": "icp-world-simulator", "kind": "llm_call" },
   "skills/knowledge-search.md": { "slug": "knowledge.search", "kind": "knowledge_search" },
   "skills/rag-file-read.md": { "slug": "rag.file.read", "kind": "knowledge_search" },
-  "skills/web-search.md": { "slug": "web.search", "kind": "http", "status": "draft" },
+  "skills/duckduckgo-search.md": { "slug": "duckduckgo.search", "kind": "http" },
   "skills/llm-generate.md": { "slug": "llm.generate", "kind": "llm_call" },
   "skills/template-apply.md": { "slug": "template.apply", "kind": "llm_call" },
+  "skills/template-picker.md": { "slug": "template.picker", "kind": "llm_call" },
+  "skills/voice-match.md": { "slug": "voice.match", "kind": "llm_call" },
   "skills/publish-package-builder.md": { "slug": "publish-package-builder", "kind": "llm_call" },
+  "skills/content-calendar.md": { "slug": "content-calendar", "kind": "llm_call" },
+  "skills/notion.search.md": { "slug": "notion.search", "kind": "http" },
+  "skills/notion.read.md": { "slug": "notion.read", "kind": "http" },
+  "skills/notion.create.md": { "slug": "notion.create", "kind": "http" },
+  "skills/notion.update.md": { "slug": "notion.update", "kind": "http" },
+  "skills/gmail.search.md": { "slug": "gmail.search", "kind": "http" },
+  "skills/gmail.read.md": { "slug": "gmail.read", "kind": "http" },
+  "skills/gmail.draft.md": { "slug": "gmail.draft", "kind": "http" },
+  "skills/gmail.send.md": { "slug": "gmail.send", "kind": "http" },
+  "skills/analytics.report.md": { "slug": "analytics.report", "kind": "http" },
 
-  "skills/pipeline-gate-evaluator.md": {
-    "slug": "pipeline-gate-evaluator",
-    "kind": "eval",
-    "overallThreshold": 75,
-    "evalRubrics": [
-      { "id": "rubric-em-dash", "label": "No Em Dashes", "type": "missing", "value": "—", "weight": 15, "passThreshold": 100 },
-      { "id": "rubric-banned-phrases", "label": "No Banned Phrases", "type": "missing", "value": "Like if you agree,Share if this resonates,Follow for more,TOFU,MOFU,BOFU", "weight": 25, "passThreshold": 100 },
-      { "id": "rubric-frontmatter", "label": "Required Frontmatter", "type": "contains", "value": "title,platform,reader,pain,belief,point,meaning,proof,status,source", "weight": 35, "passThreshold": 80 },
-      { "id": "rubric-char-count", "label": "Char Count Limit", "type": "max_words", "value": "280", "weight": 25, "passThreshold": 90 }
-    ]
-  },
-  "skills/grounding-evaluator.md": {
-    "slug": "grounding-evaluator",
-    "kind": "eval",
-    "overallThreshold": 75,
-    "evalRubrics": [
-      { "id": "rubric-icp-markers", "label": "ICP Markers Present", "type": "contains", "value": "session,traffic,engagement,attention,distribution,placement", "weight": 30, "passThreshold": 70 },
-      { "id": "rubric-no-buildlog", "label": "No Build-Log Language", "type": "missing", "value": "test,adapter,shim,IDE,git,doctor,pipeline,vault", "weight": 25, "passThreshold": 100 },
-      { "id": "rubric-point-contradicts", "label": "Point Contradicts Belief", "type": "contains", "value": "engineered,placed,not", "weight": 25, "passThreshold": 75 },
-      { "id": "rubric-meaning-voice", "label": "Meaning in ICP Voice", "type": "contains", "value": "I", "weight": 20, "passThreshold": 80 }
-    ]
-  }
+  "evals/pipeline-gate-evaluator.json": { "slug": "pipeline-gate-evaluator", "kind": "eval" },
+  "evals/grounding-evaluator.json": { "slug": "grounding-evaluator", "kind": "eval" }
 }

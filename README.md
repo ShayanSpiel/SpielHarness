@@ -1,6 +1,6 @@
 # SpielOS
 
-SpielOS is a file-backed AI marketing team harness. Roles, skills, evals, templates, workflows, prompts, strategy, and knowledge are stored as rows in the `files` table and loaded into the Next.js app as editable harness items.
+SpielOS is a file-backed AI assistant and workflow harness. Roles, skills, evals, templates, workflows, prompts, strategy, and knowledge are stored as rows in the `files` table and loaded into the Next.js app as editable harness items. The bundled starter content targets marketing operations, but the runtime is domain-independent.
 
 ## Structure
 
@@ -28,8 +28,14 @@ npm run lint
 npm run build
 ```
 
-Set `MISTRAL_API_KEY` to enable the Director chat model. Without it, the app should fail clearly instead of pretending an LLM run happened.
+Set `MISTRAL_API_KEY` for the environment-backed plain-chat fallback and optionally `MISTRAL_MODEL` to override its model id. Enabled database model records take precedence. Plain chat does not require a selected workflow, role, skill, eval, or context file.
 
 ## Starter Harness
 
-The seed corpus includes basic marketing roles, free/basic skills, two workflows, eval rubrics, templates, and strategy prompts. Each item is isolated as its own seed file and becomes its own harness `files` row.
+The seed corpus includes editable marketing roles, skills, workflows, eval rubrics, templates, and strategy prompts. Each item is isolated as its own seed file and becomes its own harness `files` row.
+
+## Runtime lifecycle
+
+Durable run statuses are `running`, `waiting_human`, `completed`, `failed`, and `cancelled`; `idle` is client-only. Runtime events are the source of truth for execution activity. The chat renders concise inline activity while the Events inspector retains the complete ordered timeline.
+
+This repository is buildable but is not ready for public multi-tenant deployment. Application authentication and authorization, durable worker execution, transactional credit enforcement, and server-owned integration credentials remain release blockers. See `docs/production-readiness-audit.md` for the current assessment.

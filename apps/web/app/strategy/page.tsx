@@ -29,7 +29,7 @@ export default function StrategyPage() {
 
         <FolderFileBrowser
           title="Prompts"
-          itemKind="prompts"
+          itemKind="prompt"
           defaultFolders={PROMPT_DEFAULT_FOLDERS}
           fileExtension=".md"
           fileIconName="task"

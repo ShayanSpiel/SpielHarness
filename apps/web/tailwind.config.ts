@@ -61,7 +61,8 @@ const config: Config = {
       },
       fontSize: {
         "3xs": ["var(--font-size-3xs)", { lineHeight: "var(--leading-normal)" }],
-        "2xs": ["var(--font-size-2xs)", { lineHeight: "var(--leading-normal)" }]
+        "2xs": ["var(--font-size-2xs)", { lineHeight: "var(--leading-normal)" }],
+        editor: ["var(--font-size-editor)", { lineHeight: "var(--leading-relaxed)" }]
       }
     }
   },

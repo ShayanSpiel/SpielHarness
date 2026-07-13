@@ -17,7 +17,7 @@ export const SelectTrigger = forwardRef<
     <SelectPrimitive.Trigger
       ref={ref}
       className={cn(
-        "inline-flex h-8 w-full items-center justify-between gap-2 rounded-md border border-border bg-input px-2.5 text-sm text-foreground transition-colors duration-[var(--duration)] placeholder:text-muted-foreground hover:border-border-strong focus-visible:border-[var(--ring)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]/30 disabled:pointer-events-none disabled:opacity-50",
+        "inline-flex h-8 w-full items-center justify-between gap-2 rounded-md border border-border bg-input px-2.5 text-sm text-foreground transition-colors duration-[var(--duration)] placeholder:text-muted-foreground hover:border-border-strong focus-visible:border-[var(--focus-border)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:pointer-events-none disabled:border-[var(--disabled-border)] disabled:bg-[var(--disabled-surface)] disabled:text-[var(--disabled-foreground)]",
         className
       )}
       {...props}
@@ -60,7 +60,7 @@ export const SelectItem = forwardRef<
     <SelectPrimitive.Item
       ref={ref}
       className={cn(
-        "relative flex w-full cursor-default select-none items-center rounded-sm py-1.5 pl-7 pr-2 text-sm outline-none transition-colors duration-[var(--duration)] focus:bg-selected focus:text-foreground-strong data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+        "relative flex w-full cursor-default select-none items-center rounded-sm py-1.5 pl-7 pr-2 text-sm outline-none transition-colors duration-[var(--duration)] focus:bg-selected focus:text-foreground-strong data-[disabled]:pointer-events-none data-[disabled]:text-[var(--disabled-foreground)]",
         className
       )}
       {...props}

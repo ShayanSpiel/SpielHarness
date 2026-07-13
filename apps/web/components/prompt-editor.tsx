@@ -1,8 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Button, Pill, Tooltip, cn } from "@spielos/design-system";
-import { Icon } from "@spielos/design-system/components";
+import { Button, Pill, Tooltip } from "@spielos/design-system";
 import { MentionTextarea } from "./mention-textarea";
 
 function parseJson(value: string): { valid: true; formatted: string } | { valid: false; error: string } {
@@ -53,32 +52,24 @@ export function PromptEditor({
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-panel-raised px-3">
-        <button
-          className={cn(
-            "flex h-6 items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors",
-            !isJson
-              ? "bg-selected text-foreground-strong"
-              : "text-muted-foreground hover:bg-hover hover:text-foreground"
-          )}
+        <Button
+          icon="prompt"
           onClick={() => !isJson || toggleFormat()}
+          size="sm"
           type="button"
+          variant={!isJson ? "subtle" : "ghost"}
         >
-          <Icon name="prompt" size={12} />
           Markdown
-        </button>
-        <button
-          className={cn(
-            "flex h-6 items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors",
-            isJson
-              ? "bg-selected text-foreground-strong"
-              : "text-muted-foreground hover:bg-hover hover:text-foreground"
-          )}
+        </Button>
+        <Button
+          icon="prompt-json"
           onClick={() => isJson || toggleFormat()}
+          size="sm"
           type="button"
+          variant={isJson ? "subtle" : "ghost"}
         >
-          <Icon name="prompt-json" size={12} />
           JSON
-        </button>
+        </Button>
 
         <div className="mx-1 h-4 w-px bg-border" />
 
@@ -93,9 +84,7 @@ export function PromptEditor({
 
         {isJson ? (
           <Tooltip content="Format JSON" side="bottom">
-            <Button aria-label="Format JSON" className="ml-auto" onClick={formatJson} size="icon" type="button" variant="ghost">
-              <Icon name="code" size={14} />
-            </Button>
+            <Button aria-label="Format JSON" className="ml-auto" icon="code" onClick={formatJson} size="icon-xs" type="button" variant="ghost" />
           </Tooltip>
         ) : null}
       </div>

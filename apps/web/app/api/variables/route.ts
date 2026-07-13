@@ -1,6 +1,19 @@
-import { errorResponse, getOrg, HttpError, requireOrgRole, requireSupabase } from "../../../lib/server";
+import {
+  createWorkspaceVariable,
+  deleteWorkspaceVariable,
+  listWorkspaceVariables
+} from "@spielos/db";
+import { errorResponse, getOrg, HttpError, requireAdmin, requireWrite } from "../../../lib/server";
 
-function toClient(row: Record<string, unknown>) {
+function toClient(row: {
+  id: string;
+  org_id: string;
+  name: string;
+  kind: string;
+  value: string | null;
+  description: string;
+  enabled: boolean;
+}) {
   const secret = row.kind === "secret_ref";
   const envKey = secret && typeof row.value === "string" ? row.value : null;
   return {
@@ -18,36 +31,50 @@ function toClient(row: Record<string, unknown>) {
 export async function GET() {
   try {
     const org = await getOrg();
-    const supabase = requireSupabase(org);
-    const { data, error } = await supabase.from("workspace_variables").select("*").eq("org_id", org.orgId).order("name");
-    if (error) throw error;
-    return Response.json({ variables: (data ?? []).map(toClient) });
-  } catch (err) { return errorResponse(err); }
+    const variables = await listWorkspaceVariables(org.sql, org.orgId);
+    return Response.json({ variables: variables.map(toClient) });
+  } catch (err) {
+    return errorResponse(err);
+  }
 }
 
 export async function POST(request: Request) {
   try {
     const org = await getOrg();
-    requireOrgRole(org, ["owner", "admin"]);
-    const supabase = requireSupabase(org);
-    const body = await request.json() as Record<string, unknown>;
+    requireWrite(org);
+    const body = (await request.json()) as {
+      name: string;
+      kind?: "variable" | "secret_ref";
+      value?: string | null;
+      envKey?: string | null;
+      description?: string;
+      enabled?: boolean;
+    };
     if (!body.name) throw new HttpError(400, "name is required");
-    const value = body.kind === "secret_ref" ? body.envKey : body.value;
-    const { data, error } = await supabase.from("workspace_variables").insert({ org_id: org.orgId, name: body.name, kind: body.kind ?? "variable", value: value ?? null, description: body.description ?? "", enabled: body.enabled ?? true }).select().single();
-    if (error) throw error;
-    return Response.json({ variable: toClient(data) }, { status: 201 });
-  } catch (err) { return errorResponse(err); }
+    const value = body.kind === "secret_ref" ? body.envKey ?? null : body.value ?? null;
+    const row = await createWorkspaceVariable(org.sql, org.orgId, {
+      name: body.name,
+      kind: body.kind ?? "variable",
+      value,
+      description: body.description ?? "",
+      enabled: body.enabled ?? true
+    });
+    return Response.json({ variable: toClient(row) }, { status: 201 });
+  } catch (err) {
+    return errorResponse(err);
+  }
 }
 
 export async function DELETE(request: Request) {
   try {
     const org = await getOrg();
-    requireOrgRole(org, ["owner", "admin"]);
-    const supabase = requireSupabase(org);
+    requireAdmin(org);
     const id = new URL(request.url).searchParams.get("id");
     if (!id) throw new HttpError(400, "id is required");
-    const { error } = await supabase.from("workspace_variables").delete().eq("id", id).eq("org_id", org.orgId);
-    if (error) throw error;
+    const ok = await deleteWorkspaceVariable(org.sql, org.orgId, id);
+    if (!ok) throw new HttpError(404, "Variable not found");
     return Response.json({ ok: true });
-  } catch (err) { return errorResponse(err); }
+  } catch (err) {
+    return errorResponse(err);
+  }
 }

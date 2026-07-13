@@ -1,94 +1,130 @@
-import { errorResponse, getOrg, HttpError, requireOrgRole, requireSupabase } from "../../../lib/server";
+import {
+  createModel,
+  deleteModel,
+  listModels,
+  updateModel
+} from "@spielos/db";
+import type { Model, ModelProvider } from "@spielos/core";
+import { errorResponse, getOrg, HttpError, requireAdmin } from "../../../lib/server";
 
-function clientModel(row: Record<string, unknown> & { model_providers?: Record<string, unknown> | Record<string, unknown>[] }) {
-  const provider = Array.isArray(row.model_providers) ? row.model_providers[0] : row.model_providers;
+const ALLOWED_PROVIDERS = ["mistral", "openai", "anthropic", "openai-compatible"];
+
+function toClient(row: {
+  id: string;
+  org_id: string;
+  name: string;
+  provider: string;
+  model: string;
+  base_url: string | null;
+  secret_env_key: string | null;
+  config: Record<string, unknown>;
+  enabled: boolean;
+}): Model {
+  const allowed = ["mistral", "openai", "anthropic", "openai-compatible"] as const;
+  const provider = (allowed.find((k) => k === row.provider) ?? "openai-compatible") as ModelProvider["provider"];
   return {
     id: row.id,
-    provider: provider?.name ?? "Provider",
-    label: row.label,
+    orgId: row.org_id,
+    name: row.name,
+    provider,
     model: row.model,
-    baseUrl: provider?.base_url ?? "",
-    enabled: row.enabled !== false
+    baseUrl: row.base_url,
+    secretEnvKey: row.secret_env_key,
+    config: row.config ?? {},
+    enabled: row.enabled
   };
 }
 
 export async function GET() {
   try {
     const org = await getOrg();
-    const supabase = requireSupabase(org);
-    const { data, error } = await supabase.from("models")
-      .select("id, label, model, config, enabled, provider_id, model_providers(id, name, base_url, metadata)")
-      .eq("org_id", org.orgId)
-      .order("label");
-    if (error) throw error;
-    return Response.json({ models: (data ?? []).map((row) => clientModel(row as never)) });
-  } catch (error) {
-    return errorResponse(error);
+    const models = await listModels(org.sql, org.orgId);
+    return Response.json({ models: models.map(toClient) });
+  } catch (err) {
+    return errorResponse(err);
   }
 }
 
 export async function POST(request: Request) {
   try {
     const org = await getOrg();
-    requireOrgRole(org, ["owner", "admin"]);
-    const supabase = requireSupabase(org);
-    const body = await request.json() as { id?: string; provider?: string; label?: string; model?: string; baseUrl?: string; enabled?: boolean };
-    if (!body.provider?.trim() || !body.label?.trim() || !body.model?.trim()) throw new HttpError(400, "provider, label, and model are required");
-    let { data: provider } = await supabase.from("model_providers").select("id").eq("org_id", org.orgId).eq("name", body.provider.trim()).maybeSingle();
-    if (!provider) {
-      const { data, error } = await supabase.from("model_providers").insert({
-        org_id: org.orgId,
-        name: body.provider.trim(),
-        base_url: body.baseUrl?.trim() || null,
-        metadata: { kind: body.provider.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") },
-        enabled: true
-      }).select("id").single();
-      if (error) throw error;
-      provider = data;
+    requireAdmin(org);
+    const body = (await request.json()) as {
+      id?: string;
+      name: string;
+      provider: string;
+      model: string;
+      baseUrl?: string | null;
+      secretEnvKey?: string | null;
+      config?: Record<string, unknown>;
+      enabled?: boolean;
+    };
+    if (!body.name || !body.provider || !body.model) {
+      throw new HttpError(400, "name, provider, and model are required");
     }
-    const { data, error } = await supabase.from("models").insert({
-      ...(body.id ? { id: body.id } : {}), org_id: org.orgId, provider_id: provider.id,
-      label: body.label.trim(), model: body.model.trim(), enabled: body.enabled ?? true
-    }).select("id, label, model, config, enabled, provider_id, model_providers(id, name, base_url, metadata)").single();
-    if (error) throw error;
-    return Response.json({ model: clientModel(data as never) }, { status: 201 });
-  } catch (error) {
-    return errorResponse(error);
+    if (!ALLOWED_PROVIDERS.includes(body.provider)) {
+      throw new HttpError(400, "unsupported provider");
+    }
+    const row = await createModel(org.sql, org.orgId, {
+      id: body.id,
+      name: body.name,
+      provider: body.provider,
+      model: body.model,
+      baseUrl: body.baseUrl ?? null,
+      secretEnvKey: body.secretEnvKey ?? null,
+      config: body.config ?? {},
+      enabled: body.enabled ?? true
+    });
+    return Response.json({ model: toClient(row) }, { status: 201 });
+  } catch (err) {
+    return errorResponse(err);
   }
 }
 
 export async function PUT(request: Request) {
   try {
     const org = await getOrg();
-    requireOrgRole(org, ["owner", "admin"]);
-    const supabase = requireSupabase(org);
-    const body = await request.json() as { id?: string; label?: string; model?: string; enabled?: boolean };
+    requireAdmin(org);
+    const body = (await request.json()) as {
+      id: string;
+      name?: string;
+      provider?: string;
+      model?: string;
+      baseUrl?: string | null;
+      secretEnvKey?: string | null;
+      config?: Record<string, unknown>;
+      enabled?: boolean;
+    };
     if (!body.id) throw new HttpError(400, "id is required");
-    const patch: Record<string, unknown> = {};
-    if (body.label !== undefined) patch.label = body.label.trim();
-    if (body.model !== undefined) patch.model = body.model.trim();
-    if (body.enabled !== undefined) patch.enabled = body.enabled;
-    const { data, error } = await supabase.from("models").update(patch)
-      .eq("id", body.id).eq("org_id", org.orgId)
-      .select("id, label, model, config, enabled, provider_id, model_providers(id, name, base_url, metadata)").single();
-    if (error) throw error;
-    return Response.json({ model: clientModel(data as never) });
-  } catch (error) {
-    return errorResponse(error);
+    if (body.provider !== undefined && !ALLOWED_PROVIDERS.includes(body.provider)) {
+      throw new HttpError(400, "unsupported provider");
+    }
+    const row = await updateModel(org.sql, org.orgId, body.id, {
+      name: body.name,
+      provider: body.provider,
+      model: body.model,
+      baseUrl: body.baseUrl,
+      secretEnvKey: body.secretEnvKey,
+      config: body.config,
+      enabled: body.enabled
+    });
+    if (!row) throw new HttpError(404, "Model not found");
+    return Response.json({ model: toClient(row) });
+  } catch (err) {
+    return errorResponse(err);
   }
 }
 
 export async function DELETE(request: Request) {
   try {
     const org = await getOrg();
-    requireOrgRole(org, ["owner", "admin"]);
-    const supabase = requireSupabase(org);
+    requireAdmin(org);
     const id = new URL(request.url).searchParams.get("id");
     if (!id) throw new HttpError(400, "id is required");
-    const { error } = await supabase.from("models").delete().eq("id", id).eq("org_id", org.orgId);
-    if (error) throw error;
+    const ok = await deleteModel(org.sql, org.orgId, id);
+    if (!ok) throw new HttpError(404, "Model not found");
     return Response.json({ ok: true });
-  } catch (error) {
-    return errorResponse(error);
+  } catch (err) {
+    return errorResponse(err);
   }
 }

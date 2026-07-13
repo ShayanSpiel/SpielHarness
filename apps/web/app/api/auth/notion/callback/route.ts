@@ -1,8 +1,9 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { upsertConnection } from "@spielos/db";
 import { encryptConnectionSecret } from "../../../../../lib/connection-secrets";
 import { loadIntegrationCatalog } from "../../../../../lib/integration-catalog";
-import { getOrg, requireSupabase } from "../../../../../lib/server";
+import { getOrg } from "../../../../../lib/server";
 
 function baseUrl() { return process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"; }
 
@@ -25,11 +26,16 @@ export async function GET(request: Request) {
     const preset = (await loadIntegrationCatalog()).find((item) => item.id === "notion");
     if (!preset) throw new Error("Notion preset is missing.");
     const org = await getOrg();
-    const supabase = requireSupabase(org);
     const account = token.workspace_name ?? token.workspace_id ?? "Notion workspace";
     const credential = encryptConnectionSecret({ provider: "notion", accessToken: token.access_token, workspaceId: token.workspace_id, botId: token.bot_id });
-    const { error } = await supabase.from("connections").upsert({ org_id: org.orgId, name: `${preset.name} — ${account}`, kind: "oauth", status: "configured", config: { presetId: preset.id, icon: preset.icon, logo: preset.logo, description: preset.description, account, oauthCredential: credential }, operations: preset.operations, enabled: true, deleted_at: null }, { onConflict: "org_id,name" });
-    if (error) throw error;
+    await upsertConnection(org.sql, org.orgId, {
+      name: `${preset.name} — ${account}`,
+      kind: "oauth",
+      status: "configured",
+      config: { presetId: preset.id, icon: preset.icon, logo: preset.logo, description: preset.description, account, oauthCredential: credential },
+      operations: preset.operations as unknown as Array<Record<string, unknown>>,
+      enabled: true
+    });
     const response = NextResponse.redirect(`${baseUrl()}/settings?tab=connections&connected=Notion`);
     response.cookies.delete("notion_oauth_state");
     return response;

@@ -27,15 +27,15 @@ export function ContractFlow({
       >
         <Icon name={open ? "chevron-down" : "chevron-right"} className="text-muted-foreground shrink-0" size={13} />
         <Icon name="workflow-alt" className="text-muted-foreground shrink-0" size={13} />
-        <span className="text-[11px] font-medium text-muted-foreground min-w-0 truncate">
+        <span className="text-2xs font-medium text-muted-foreground min-w-0 truncate">
           Input &rarr; Output
         </span>
-        <span className="ml-auto text-[10px] text-muted-foreground/60 shrink-0 truncate">
+        <span className="ml-auto text-3xs text-muted-foreground/60 shrink-0 truncate">
           {inputLabel} &rarr; {outputLabel}
         </span>
         {roleId && roleId !== "runtime.eval" && (
           <a
-            className="shrink-0 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+            className="shrink-0 text-3xs text-muted-foreground hover:text-foreground transition-colors"
             href="/roles"
             onClick={(e) => e.stopPropagation()}
           >
@@ -46,12 +46,12 @@ export function ContractFlow({
       {open && (
         <div className="grid gap-2 border-t border-border p-2">
           <div className="overflow-hidden rounded-md bg-panel-raised px-2 py-1.5">
-            <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            <div className="text-3xs font-medium uppercase tracking-wider text-muted-foreground">
               Input
             </div>
             <div className="mt-0.5 break-words text-xs text-foreground">{inputLabel}</div>
             {inputDetail && (
-              <div className="mt-1 break-words whitespace-pre-wrap rounded-sm bg-background px-1.5 py-1 text-[11px] text-muted-foreground leading-relaxed max-h-48 overflow-y-auto">
+              <div className="mt-1 break-words whitespace-pre-wrap rounded-sm bg-background px-1.5 py-1 text-2xs text-muted-foreground leading-relaxed max-h-48 overflow-y-auto">
                 {inputDetail}
               </div>
             )}
@@ -60,12 +60,12 @@ export function ContractFlow({
             <Icon name="arrow-down" size={13} />
           </div>
           <div className="overflow-hidden rounded-md bg-panel-raised px-2 py-1.5">
-            <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            <div className="text-3xs font-medium uppercase tracking-wider text-muted-foreground">
               Output
             </div>
             <div className="mt-0.5 break-words text-xs text-foreground">{outputLabel}</div>
             {outputDetail && (
-              <div className="mt-1 break-words whitespace-pre-wrap rounded-sm bg-background px-1.5 py-1 text-[11px] text-muted-foreground leading-relaxed max-h-48 overflow-y-auto">
+              <div className="mt-1 break-words whitespace-pre-wrap rounded-sm bg-background px-1.5 py-1 text-2xs text-muted-foreground leading-relaxed max-h-48 overflow-y-auto">
                 {outputDetail}
               </div>
             )}

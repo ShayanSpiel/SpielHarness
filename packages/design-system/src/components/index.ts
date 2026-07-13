@@ -1,6 +1,9 @@
 "use client";
 
 export { Button, type ButtonProps } from "./button";
+export { AppToaster } from "./app-toaster";
+export { ChoiceButton, type ChoiceButtonProps } from "./choice-button";
+export { ConfirmDialog, type ConfirmDialogProps } from "./confirm-dialog";
 export { Icon, type IconProps } from "./icons";
 export {
   ENTITY_ICONS,
@@ -52,8 +55,18 @@ export {
   DropdownMenuTrigger
 } from "./dropdown-menu";
 export { EmptyState } from "./empty-state";
+export { Notice, type NoticeProps } from "./notice";
 export { Divider, Field, Kbd, VisuallyHidden } from "./field";
 export { Input, Textarea, type TextareaProps } from "./input";
+export {
+  Inspector,
+  InspectorBody,
+  InspectorEmptyState,
+  InspectorFooter,
+  InspectorHeader,
+  InspectorSection,
+  InspectorTabs,
+} from "./inspector";
 export { ListItem, type ListItemProps } from "./list-item";
 export { NativeSelect, type NativeSelectProps, type NativeSelectOption } from "./native-select";
 export { NavTabs, type NavTab, type NavTabsProps } from "./nav-tabs";
@@ -69,8 +82,11 @@ export {
   SelectValue
 } from "./select";
 export { SearchInput, type SearchInputProps } from "./search-input";
+export { ResizableSidebar, type ResizableSidebarProps } from "./resizable-sidebar";
+export { ActionRow, type ActionRowProps } from "./action-row";
 export { SidebarListPanel } from "./sidebar-list-panel";
 export { Switch } from "./switch";
+export { StatusIcon, type StatusIconProps, type StatusTone } from "./status-icon";
 export { ToggleRow } from "./toggle-row";
 export { Tabs, TabsContent, TabsList, TabsTrigger } from "./tabs";
 export { ThemeToggle } from "./theme-toggle";
