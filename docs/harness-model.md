@@ -9,6 +9,17 @@ SpielOS is a customizable, role-based assistant and workflow harness. The starte
 - Runtime: runs, run events, human inputs, outputs, generated file links, and evaluation artifacts are runtime records. Runtime state is not stored inside role, skill, or workflow definitions.
 - Secrets: credentials are resolved server-side from environment variables or secret refs. API responses expose only redacted status.
 
+## User-facing content boundary
+
+Strategy and prompts are one Strategy workspace. Folders provide the distinction: `Strategy` contains audience, offer, positioning, voice, and methodology, while `Prompts` contains system prompts and reusable instruction components such as schemas and rules. They remain separate internal file types because the runtime renders strategy as context and prompts as instructions; that implementation distinction must not become peer UI tabs.
+
+Files is a separate page with exactly two tabs:
+
+- Library contains local, file-backed source text, references, canonical examples, saved content, templates, and generated outputs. Real metadata folders such as `Library`, `Templates`, and `Outputs` may organize populated content inside this tab.
+- Files contains Google Drive integration records. Drive records are never moved, renamed, seeded, or deleted by local workspace organization.
+
+Folders come from real file metadata. The UI does not manufacture empty folder catalogs or additional content tabs. Seeded roles may declare `contextSlugs`; the execution resolver converts those stable slugs to file ids and attaches the resolved strategy, prompt, library, and template files to applicable workflow nodes alongside user-selected context.
+
 ## Domain Boundaries
 
 - Roles are executable team members. A role owns its prompt, model selection, input/output contracts, memory policy, and assigned skills.
@@ -66,4 +77,4 @@ Plain chat completes through the same run API without building a workflow graph.
 - Skill: create a `harness_skill` file with `metadata.skill=true`, a `kind`, input/output schemas, side-effect metadata, and operation references where needed.
 - Role: create a `harness_role` file with prompt body and role metadata including `skillIds`, model id, input types, and output types.
 - Evaluation: create a `harness_eval` file with rubric metadata. It can be run directly or saved as an eval skill.
-- Workflow: create a `harness_workstream` file whose nodes reference role ids. Keep workflow configuration small.
+- Workflow: create a `harness_workflow` file whose nodes reference role ids or stable role slugs. Keep workflow configuration small.

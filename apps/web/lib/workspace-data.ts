@@ -64,6 +64,7 @@ const TYPE_TO_KIND: Record<string, WorkspaceItemKind> = {
   artifact: "library",
   evidence: "library",
   asset: "library",
+  eval_report: "library",
   publish_package: "library",
   harness_template: "library",
   harness_role: "roles",
@@ -88,13 +89,6 @@ export function fileRecordToItem(file: FileRecord): WorkspaceItem | null {
   };
 }
 
-export const DEFAULT_LIBRARY_FOLDERS = [
-  "Sessions",
-  "Notes",
-  "Evidence",
-  "Drafts",
-  "Content",
-  "Assets",
-  "Published",
-  "Learnings"
-];
+export function generatedFileFolder(): string {
+  return "Outputs";
+}

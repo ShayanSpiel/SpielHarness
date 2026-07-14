@@ -322,6 +322,7 @@ export default function RolesPage() {
                     </div>
                   </div>
                   <RichEditor
+                    className="flex min-h-0 flex-1 flex-col"
                     mono
                     onChange={(v) => setDraft((current) => ({ ...current, prompt: v }))}
                     value={draft.prompt}

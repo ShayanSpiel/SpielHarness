@@ -6,7 +6,12 @@
 - Prefer adding editable seed files under `supabase/seed` for starter content.
 - Keep file-backed harness ids executable. UI roles and skills may be `files` rows, so run APIs must resolve from `files` as well as legacy `roles` and `tools` tables.
 - Keep API responses in the shape consumed by the frontend. `/api/harness/files` returns camelCase client rows.
-- Do not reintroduce a `/harness` page or nav item. Harness resources are managed through Roles, Skills, Workstreams, Evals, Strategy, and Knowledge.
+- Do not reintroduce a `/harness` page or nav item. Harness resources are managed through Roles, Skills, Workstreams, Evals, Strategy, and Files.
+- Strategy and prompts are one user-facing Strategy workspace, organized by folders. Keep the internal `strategy` and `prompt` file types because runtime rendering differs, but never split them into peer page tabs or move them into Files.
+- Files has exactly two tabs: Library for local file-backed content and Files for Google Drive. Do not add Knowledge, Drive, output-type, or other peer tabs.
+- Seed folders must describe real populated content groupings. The canonical Strategy folders are `Strategy` and `Prompts`; local reference content starts in `Library`; generated files start in `Outputs`. Do not add decorative default folders that render empty.
+- Role `contextSlugs` are the file-backed source of default strategy, prompt, knowledge, and template context. Keep every slug resolvable from the seed manifest or template filenames.
+- Google Drive records belong only to the Files tab and are external read-only context. Seed synchronization and local folder cleanup must never modify Drive files.
 
 ## Verification
 

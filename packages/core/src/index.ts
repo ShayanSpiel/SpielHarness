@@ -484,7 +484,7 @@ export function parseWorkflowFile(row: FileRecord): WorkflowFile {
       promptOverride: n.promptOverride || n.prompt ? String(n.promptOverride ?? n.prompt) : undefined,
       humanQuestions: n.humanQuestions as WorkflowNode["humanQuestions"],
       skillIds: (n.skillIds as string[]) ?? (n.skillSlugs as string[]) ?? [],
-      fileIds: (n.fileIds as string[]) ?? [],
+      fileIds: (n.fileIds as string[]) ?? (n.fileSlugs as string[]) ?? [],
       inputContract: String(n.inputContract ?? n.input ?? "any"),
       outputContract: String(n.outputContract ?? n.output ?? "any"),
       position: (n.position as { x: number; y: number }) ?? {

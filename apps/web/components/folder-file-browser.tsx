@@ -30,8 +30,10 @@ import type { WorkspaceItem, WorkspaceItemKind as WorkspaceKind } from "../lib/w
 
 type FolderFileBrowserProps = {
   title: string;
-  itemKind: WorkspaceKind;
+  sidebarId?: string;
+  itemKind: WorkspaceKind | WorkspaceKind[];
   defaultFolders: string[];
+  folderKinds?: Record<string, WorkspaceKind>;
   fileExtension: string;
   fileIconName?: string;
   folderIconName?: string;
@@ -56,8 +58,10 @@ function sortByTitle(a: WorkspaceItem, b: WorkspaceItem) {
 
 export function FolderFileBrowser({
   title,
+  sidebarId,
   itemKind,
   defaultFolders,
+  folderKinds,
   fileExtension,
   fileIconName = "file-text",
   folderIconName = "folder",
@@ -71,23 +75,31 @@ export function FolderFileBrowser({
   emptyStateDescription = "Create or select a file from the folder tree to start editing."
 }: FolderFileBrowserProps) {
   const store = useWorkspaceStore();
+  const itemKinds = useMemo(
+    () => Array.isArray(itemKind) ? itemKind : [itemKind],
+    [itemKind]
+  );
   const resourceItems = useMemo(
     () =>
       store.items
-        .filter((item) => item.kind === itemKind)
+        .filter((item) => itemKinds.includes(item.kind))
         .map((item) => ({ ...item, folder: item.folder ?? defaultFolders[0] ?? "Notes" }))
         .sort(sortByTitle),
-    [store.items, itemKind, defaultFolders]
+    [store.items, itemKinds, defaultFolders]
   );
   const [localFolders, setLocalFolders] = useState<string[]>([]);
+  const [localFolderKinds, setLocalFolderKinds] = useState<Record<string, WorkspaceKind>>({});
   const folders = useMemo(() => {
     const seen = new Set<string>();
     const itemFolders = resourceItems
       .map((item) => item.folder)
       .filter((folder): folder is string => Boolean(folder));
+    const fallbackFolders = resourceItems.length === 0 && localFolders.length === 0
+      ? defaultFolders.slice(0, 1)
+      : [];
     const source = useSharedFolders
-      ? [...store.libraryFolders, ...defaultFolders, ...itemFolders, ...localFolders]
-      : [...defaultFolders, ...itemFolders, ...localFolders];
+      ? [...store.libraryFolders, ...itemFolders, ...localFolders, ...fallbackFolders]
+      : [...itemFolders, ...localFolders, ...fallbackFolders];
     return source.filter((folder) => {
       if (seen.has(folder)) return false;
       seen.add(folder);
@@ -119,7 +131,7 @@ export function FolderFileBrowser({
   function emptyDraft(folder: string): WorkspaceItem {
     return {
       id: "new",
-      kind: itemKind,
+      kind: folderKinds?.[folder] ?? localFolderKinds[folder] ?? itemKinds[0],
       title: `Untitled${fileExtension}`,
       body: "",
       folder,
@@ -181,6 +193,12 @@ export function FolderFileBrowser({
     if (!clean) return;
     if (useSharedFolders) store.addLibraryFolder(clean);
     else setLocalFolders((current) => current.includes(clean) ? current : [...current, clean]);
+    const inheritedKind =
+      folderKinds?.[selectedFolder] ??
+      localFolderKinds[selectedFolder] ??
+      resourceItems.find((item) => item.folder === selectedFolder)?.kind ??
+      itemKinds[0];
+    setLocalFolderKinds((current) => ({ ...current, [clean]: inheritedKind }));
     setSelectedFolder(clean);
     setExpandedFolders((current) => new Set(current).add(clean));
     setFolderName("");
@@ -208,6 +226,13 @@ export function FolderFileBrowser({
             store.updateItem(item.id, { folder: clean })
           );
       }
+      setLocalFolderKinds((current) => {
+        const kind = current[editingFolder];
+        if (!kind) return current;
+        const next = { ...current, [clean]: kind };
+        delete next[editingFolder];
+        return next;
+      });
       setSelectedFolder((current) => (current === editingFolder ? clean : current));
       setDraft((current) =>
         current.folder === editingFolder ? { ...current, folder: clean } : current
@@ -228,6 +253,12 @@ export function FolderFileBrowser({
       .forEach((item) => store.deleteItem(item.id));
     if (useSharedFolders) store.deleteLibraryFolder(folder, null);
     else setLocalFolders((current) => current.filter((entry) => entry !== folder));
+    setLocalFolderKinds((current) => {
+      if (!current[folder]) return current;
+      const next = { ...current };
+      delete next[folder];
+      return next;
+    });
     const nextFolder = folders.find((entry) => entry !== folder) ?? defaultFolders[0] ?? "Notes";
     const nextFile = resourceItems.find((item) => item.folder !== folder) ?? null;
     setSelectedFolder(nextFolder);
@@ -239,7 +270,6 @@ export function FolderFileBrowser({
     const folder = selectedFolder || folders[0] || defaultFolders[0] || "Notes";
     const created = await store.addItem({
       ...emptyDraft(folder),
-      kind: itemKind,
       title: `Untitled${fileExtension}`
     });
     setExpandedFolders((current) => new Set(current).add(folder));
@@ -283,8 +313,8 @@ export function FolderFileBrowser({
   }
 
   return (
-    <div className="flex min-h-0 flex-1">
-      <ResizableSidebar sidebarId={`files-${itemKind}`} title={folderSectionLabel}>
+    <div className="flex min-h-0 flex-1 overflow-hidden">
+      <ResizableSidebar sidebarId={sidebarId ?? `files-${itemKinds.join("-")}`} title={folderSectionLabel}>
         <div className="border-b border-border p-3 md:hidden">
           <SearchInput onChange={setQuery} placeholder={searchPlaceholder} value={query} />
         </div>
@@ -298,23 +328,19 @@ export function FolderFileBrowser({
               <Button
                 aria-label="New folder"
                 onClick={() => setCreatingFolder(true)}
-                size="sm"
+                size="icon-xs"
                 variant="ghost"
                 icon="folder-plus"
-              >
-                Category
-              </Button>
+              />
             </Tooltip>
-            <Tooltip content="New file" side="bottom">
+            <Tooltip content={`New ${newFileLabel.toLowerCase()}`} side="bottom">
               <Button
-                aria-label="New file"
+                aria-label={`New ${newFileLabel.toLowerCase()}`}
                 onClick={createFile}
-                size="sm"
+                size="icon-xs"
                 variant="ghost"
                 icon="plus"
-              >
-                {newFileLabel}
-              </Button>
+              />
             </Tooltip>
           </div>
         </div>
@@ -440,7 +466,7 @@ export function FolderFileBrowser({
 
       <main className="flex min-w-0 flex-1 flex-col bg-background">
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-4">
-          <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-xs text-muted-foreground">
             <span>{title}</span>
             <Icon name="chevron-right" size={12} />
             <button
@@ -455,7 +481,7 @@ export function FolderFileBrowser({
             {dirty ? <Pill tone="warning">Unsaved</Pill> : null}
           </div>
 
-          <div className="ml-auto flex items-center gap-1.5">
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
             {showStatusSelect ? (
               <StatusSelect
                 value={draft.status}

@@ -12,7 +12,9 @@ There is no authenticated request identity yet. `apps/web/lib/server.ts` resolve
 
 ## File-backed harness
 
-`files` is the editable source of truth for knowledge, strategy, prompts, artifacts, roles, skills, workflows, evals, and templates. Harness behavior lives in file bodies and metadata; seed content lives under `supabase/seed`.
+`files` is the editable source of truth for local library content, strategy, prompts, artifacts, roles, skills, workflows, evals, and templates. Harness behavior lives in file bodies and metadata; seed content lives under `supabase/seed`.
+
+`metadata.seedFolder` is the client-visible local organization field. Seed synchronization assigns it from the manifest and removes empty database folder rows after file moves. Internal `strategy` and `prompt` types share the Strategy page and are distinguished by folders. Internal `knowledge` and generated content types share the local Library tab. Google Drive records appear only in the separate Files tab and are loaded through a read-only adapter.
 
 - `file_versions` snapshots title/body/metadata changes.
 - `file_relations` indexes role-skill and workflow-file references.

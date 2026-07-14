@@ -1,4 +1,8 @@
-# Example 1
+# Writing Examples
+
+Canonical rhythm and structure references used by the Strategist and Writer. These are evidence-backed patterns, not templates to copy verbatim.
+
+## Example 1
 
 Thread:
 
@@ -67,7 +71,7 @@ On to the next experiment.
 Why it works:
 It starts with a strong claim, then immediately breaks into real constraints and personal reset. No fluff setup. It shows an experiment, shows failure, then shows a measurable outcome (300 visits, 6:58 duration). The structure feels like a live system being debugged, not advice being taught.
 
-# Example 2
+## Example 2
 
 Post:
 
@@ -92,7 +96,7 @@ If no one is already talking about it, I don't post.
 Why it works:
 Single idea. Clear pivot point. The contrast ("failed → changed one variable → new behavior") makes the learning feel real, not theoretical. It reads like an experiment log, not a strategy explanation.
 
-# Example 3
+## Example 3
 
 Post X:
 
@@ -113,7 +117,7 @@ I inserted a system into an existing wave.
 Why it works:
 It reframes success away from content creation and toward timing + distribution entry. It removes ego ("I didn't create it") and replaces it with system thinking ("I entered the wave").
 
-# Example 4
+## Example 4
 
 Post:
 
@@ -136,7 +140,7 @@ That's the only variable that changed.
 Why it works:
 Extremely concrete. It isolates a single variable change. That's what makes it feel like a real experiment instead of storytelling. The repetition of "no X" builds constraint clarity.
 
-# Example 5
+## Example 5
 
 Post:
 
@@ -155,7 +159,7 @@ Entry point is.
 Why it works:
 One idea only. No expansion. No justification overload. It states a contrarian position cleanly, then anchors it with a simple mechanism shift (writing vs entry point).
 
-# Example 6 (vulnerability — session-mode confessional)
+## Example 6 (vulnerability — session-mode confessional)
 
 Post:
 
@@ -180,7 +184,7 @@ Note: I built this for myself first. The fact that it became a methodology was a
 Why it works:
 Confessional opening ("I spent two years refusing to post"). The reader recognizes themselves. The "identity, not skill" reframe is the aha. The "I built this for myself first" close is a self-deprecating note that re-anchors the post in lived experience, not advice.
 
-# Example 7 (paradigm — professional theory)
+## Example 7 (paradigm — professional theory)
 
 Post:
 
@@ -207,7 +211,7 @@ Note: the post is not the asset. The flow is.
 Why it works:
 Paradigm-shifting opener ("The X era is over"). The reader feels a frame shift before they read the body. The "implications are larger than they sound" pivot is the aha. The 3-bullet list proves the new frame without being preachy. The Note: close is a single-sentence crystallizer.
 
-# Example 8 (reader-problem first — perception-shift)
+## Example 8 (reader-problem first — perception-shift)
 
 Post:
 
@@ -228,7 +232,7 @@ A bookmark is a dead end. A session log is alive.
 Why it works:
 Opens with the reader's problem (the pile), not the author's experience. The rhetorical question and concrete image (graveyard, books from 2015, notebooks with one page) make the reader see their own situation. The "the problem is not X, it's Y" reframe is the aha. The close contrasts two mental models (bookmark vs session log) without telling the reader what to do.
 
-# How to pick an example for a draft
+## How to pick an example for a draft
 
 Match the Belief → Point shape in the brief to the rhetorical shape of the example:
 

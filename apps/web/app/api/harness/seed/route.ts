@@ -3,8 +3,11 @@ import path from "node:path";
 import {
   createFile,
   createFolder,
+  deleteEmptyPlaceholderFiles,
+  deleteEmptyFolders,
   findFolderByName,
   listHarnessFiles,
+  organizeUnfolderedGeneratedFiles,
   updateFile,
   audit
 } from "@spielos/db";
@@ -19,6 +22,9 @@ type ManifestEntry = {
   kind?: string;
   systemRole?: string;
   skillSlugs?: string[];
+  contextSlugs?: string[];
+  auth?: "none" | "api_key" | "oauth";
+  sideEffect?: "none" | "read" | "write" | "external";
   folder?: string;
 };
 
@@ -49,8 +55,9 @@ const FOLDER_ORDER: Record<string, number> = {
   Workflows: 40,
   Templates: 50,
   Strategy: 60,
-  "Template Prompts": 65,
-  "System Prompts": 70
+  Prompts: 70,
+  Library: 80,
+  Outputs: 90
 };
 
 function folderNameFor(
@@ -63,7 +70,7 @@ function folderNameFor(
   if (entry?.folder) return entry.folder;
 
   const folderKey = relPath.split(path.sep)[0] ?? "";
-  return FOLDER_BY_SEED_DIR[folderKey] ?? "Knowledge";
+  return FOLDER_BY_SEED_DIR[folderKey] ?? (fileType === "prompt" ? "Prompts" : fileType === "strategy" ? "Strategy" : "Library");
 }
 
 function titleFromFile(fileName: string, body: string): string {
@@ -75,6 +82,25 @@ function titleFromFile(fileName: string, body: string): string {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function descriptionFromMarkdown(body: string): string {
+  const lines = body.split(/\r?\n/);
+  const parts: string[] = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || line.startsWith("```") || line.startsWith("---")) {
+      if (parts.length > 0) break;
+      continue;
+    }
+    if (/^[-*+]\s/.test(line) || /^\d+[.)]\s/.test(line)) {
+      if (parts.length > 0) break;
+      continue;
+    }
+    parts.push(line);
+    if (parts.join(" ").length >= 220) break;
+  }
+  return parts.join(" ").slice(0, 280);
 }
 
 function classify(
@@ -116,10 +142,14 @@ function classify(
   if (fileType === "harness_workflow") metadata.workstream = true;
   if (fileType === "harness_template") metadata.template = true;
   if (fileType === "harness_eval") metadata.eval = true;
-  if (fileType === "prompt" || fileType === "strategy" || fileType === "knowledge") {
-    metadata.prompt = true;
-  }
+  if (fileType === "prompt") metadata.prompt = true;
+  if (fileType === "strategy") metadata.strategy = true;
+  if (fileType === "knowledge") metadata.knowledge = true;
   if (entry?.kind) metadata.kind = entry.kind;
+  if (entry?.systemRole) metadata.systemRole = entry.systemRole;
+  if (entry?.auth) metadata.auth = entry.auth;
+  if (entry?.sideEffect) metadata.sideEffect = entry.sideEffect;
+  if (entry?.contextSlugs) metadata.contextSlugs = entry.contextSlugs;
 
   return { fileType, metadata };
 }
@@ -198,6 +228,7 @@ async function walk(
 
     const metadata = withoutUndefined({
       ...classifiedMetadata,
+      description: descriptionFromMarkdown(body) || undefined,
       seed: true,
       seedPath: rel,
       seedFolder: folderName
@@ -213,6 +244,7 @@ async function walk(
         title = parsed.name ?? fileName.replace(/\.[^.]+$/, "");
         finalMetadata = withoutUndefined({
           ...metadata,
+          description: parsed.description,
           rules: parsed.rules ?? parsed.rubrics,
           overallThreshold: parsed.overallThreshold,
           loopConfig: parsed.loopConfig
@@ -273,7 +305,8 @@ function applyManifestToRole(
       ...file,
       metadata: {
         ...file.metadata,
-        skillSlugs: entry.skillSlugs
+        skillSlugs: entry.skillSlugs,
+        contextSlugs: entry.contextSlugs ?? []
       }
     };
   }
@@ -350,10 +383,17 @@ export async function POST() {
       }
     }
 
+    const removedPlaceholders = await deleteEmptyPlaceholderFiles(org.sql, org.orgId);
+    const organizedGeneratedFiles = await organizeUnfolderedGeneratedFiles(org.sql, org.orgId);
+    const removedEmptyFolders = await deleteEmptyFolders(org.sql, org.orgId);
+
     return Response.json({
-      message: `Seed sync complete. Inserted ${seeded}, updated ${updated}.`,
+      message: `Seed sync complete. Inserted ${seeded}, updated ${updated}, organized ${organizedGeneratedFiles} outputs, removed ${removedPlaceholders} empty placeholders and ${removedEmptyFolders} empty folders.`,
       seeded,
-      updated
+      updated,
+      organizedGeneratedFiles,
+      removedPlaceholders,
+      removedEmptyFolders
     });
   } catch (err) {
     return errorResponse(err);

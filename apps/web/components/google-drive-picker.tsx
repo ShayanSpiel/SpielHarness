@@ -195,14 +195,14 @@ export function GoogleDrivePicker() {
         </Tooltip>
       </div>
 
-      <div className="flex min-h-0 flex-1 overflow-y-auto">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         <ResizableSidebar defaultWidth={SIDEBAR.LIST.NARROW_DEFAULT} sidebarId="google-drive" title="Google Drive">
           <div className="flex h-10 items-center gap-2 border-b border-border px-3">
             <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Google Drive
             </span>
             {status.account && (
-              <span className="ml-auto text-2xs text-muted-foreground truncate max-w-[120px]">
+              <span className="ml-auto min-w-0 truncate text-2xs text-muted-foreground">
                 {status.account}
               </span>
             )}
@@ -253,27 +253,28 @@ export function GoogleDrivePicker() {
             <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]">
               <div className="flex h-9 items-center gap-2 border-b border-border bg-panel-raised px-3 text-2xs">
                 <Icon name={getFileIcon(selectedFile.mimeType)} size={12} />
-                <span className="font-medium text-foreground">{selectedFile.name}</span>
+                <span className="min-w-0 truncate font-medium text-foreground">{selectedFile.name}</span>
                 {selectedFile.size && (
-                  <span className="text-muted-foreground">{formatFileSize(selectedFile.size)}</span>
+                  <span className="hidden shrink-0 text-muted-foreground xl:inline">{formatFileSize(selectedFile.size)}</span>
                 )}
                 {selectedFile.modifiedTime && (
-                  <span className="text-muted-foreground">{formatDate(selectedFile.modifiedTime)}</span>
+                  <span className="hidden shrink-0 text-muted-foreground xl:inline">{formatDate(selectedFile.modifiedTime)}</span>
                 )}
-                <div className="ml-auto flex items-center gap-2">
+                <div className="ml-auto flex shrink-0 items-center gap-1">
                   <Button
+                    aria-label="Import to workspace"
                     onClick={() => importToWorkspace(selectedFile)}
                     size="sm"
                     variant="outline"
                     icon="plus"
                     loading={importing}
                   >
-                    Import to workspace
+                    <span className="hidden xl:inline">Import to workspace</span>
                   </Button>
                   {selectedFile.webViewLink && (
-                    <Button asChild size="sm" variant="link">
-                      <a href={selectedFile.webViewLink} rel="noopener noreferrer" target="_blank">
-                        Open in Drive
+                    <Button asChild icon="external-link" size="sm" variant="link">
+                      <a aria-label="Open in Drive" href={selectedFile.webViewLink} rel="noopener noreferrer" target="_blank">
+                        <span className="hidden xl:inline">Open in Drive</span>
                       </a>
                     </Button>
                   )}

@@ -29,7 +29,7 @@ export function AppToaster() {
           title: "font-medium leading-5",
           description: "mt-0.5 text-xs leading-4 text-muted-foreground",
           icon: "mt-0.5 shrink-0",
-          closeButton: "rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]",
+          closeButton: "rounded-sm !text-muted-foreground !border-border transition-colors hover:!text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]",
           actionButton: "rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground",
           cancelButton: "rounded-md bg-panel px-2 py-1 text-xs font-medium text-foreground"
         }

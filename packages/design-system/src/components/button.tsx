@@ -1,6 +1,6 @@
 "use client";
 
-import { Slot } from "@radix-ui/react-slot";
+import { Slot, Slottable } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
 import { forwardRef, type ButtonHTMLAttributes } from "react";
 import { cn } from "../index";
@@ -71,7 +71,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       {loading || icon ? (
         <Icon name={loading ? "loader" : icon!} className={loading ? "animate-spin" : undefined} size={iconSize} />
       ) : null}
-      {children}
+      <Slottable>{children}</Slottable>
     </Comp>
   );
 });

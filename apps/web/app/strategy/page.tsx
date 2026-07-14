@@ -5,18 +5,14 @@ import { PageHeader } from "@spielos/design-system";
 import { AppShell } from "../../components/app-shell";
 import { FolderFileBrowser } from "../../components/folder-file-browser";
 import { PromptEditor } from "../../components/prompt-editor";
+import type { WorkspaceItemKind } from "../../lib/workspace-data";
 
-const PROMPT_DEFAULT_FOLDERS = [
-  "System Prompts",
-  "Strategy Prompts",
-  "Reusable Blocks",
-  "Experiments",
-  "Brand",
-  "Audience",
-  "Offer",
-  "Voice",
-  "Positioning"
-];
+const STRATEGY_ITEM_KINDS: WorkspaceItemKind[] = ["strategy", "prompt"];
+const STRATEGY_FOLDERS = ["Strategy", "Prompts"];
+const STRATEGY_FOLDER_KINDS: Record<string, WorkspaceItemKind> = {
+  Strategy: "strategy",
+  Prompts: "prompt"
+};
 
 export default function StrategyPage() {
   return (
@@ -28,15 +24,17 @@ export default function StrategyPage() {
         />
 
         <FolderFileBrowser
-          title="Prompts"
-          itemKind="prompt"
-          defaultFolders={PROMPT_DEFAULT_FOLDERS}
+          title="Strategy"
+          sidebarId="strategy-content"
+          itemKind={STRATEGY_ITEM_KINDS}
+          defaultFolders={STRATEGY_FOLDERS}
+          folderKinds={STRATEGY_FOLDER_KINDS}
           fileExtension=".md"
-          fileIconName="task"
+          fileIconName="file-text"
           folderIconName="prompt-folder"
-          folderSectionLabel="Prompts"
-          newFileLabel="Prompt"
-          searchPlaceholder="Search prompts"
+          folderSectionLabel="Strategy"
+          newFileLabel="Document"
+          searchPlaceholder="Search strategy and prompts"
           showStatusSelect={false}
           renderEditor={({ value, onChange, fileName, onRename }) => (
             <PromptEditor
@@ -46,7 +44,7 @@ export default function StrategyPage() {
               value={value}
             />
           )}
-          emptyStateDescription="Create or select a system or strategy prompt. Role prompts stay on Roles."
+          emptyStateDescription="Create strategy and reusable prompts in one folder-based workspace. Role prompts stay on Roles."
         />
       </div>
     </AppShell>

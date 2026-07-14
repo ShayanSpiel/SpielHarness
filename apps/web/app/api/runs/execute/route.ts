@@ -12,6 +12,7 @@ import {
 } from "@spielos/db";
 import { errorResponse, getOrg, HttpError, requireWrite } from "../../../../lib/server";
 import { resolveExecution, type ExecuteBody } from "../../../../lib/execution-service";
+import { generatedFileFolder } from "../../../../lib/workspace-data";
 import { streamChatRun, streamRun, type RunCheckpoint, type RunYield } from "@spielos/graph";
 import type { Artifact, RunEvent, RunStatus } from "@spielos/core";
 
@@ -157,7 +158,12 @@ export async function POST(request: Request) {
               body: artifact.body,
               fileType: artifact.type === "artifact" ? "artifact" : artifact.type,
               status: "active",
-              metadata: { ...artifact.metadata, runId: run.id, runtimeArtifactId: artifact.id }
+              metadata: {
+                ...artifact.metadata,
+                runId: run.id,
+                runtimeArtifactId: artifact.id,
+                seedFolder: generatedFileFolder()
+              }
             });
             await linkRunOutputFile(org.sql, org.orgId, run.id, file.id);
           } catch (err) {

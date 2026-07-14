@@ -1,82 +1,52 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import { cn } from "@spielos/design-system";
+import { useState } from "react";
+import { NavTabs, PageHeader } from "@spielos/design-system";
 import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
-import { PageHeader } from "@spielos/design-system";
 import { AppShell } from "../../components/app-shell";
 import { FolderFileBrowser } from "../../components/folder-file-browser";
 import { LibraryFilesSection } from "../../components/library-files-section";
 import { DocumentEditor } from "../../components/document-editor";
+import type { WorkspaceItemKind } from "../../lib/workspace-data";
 
-type KnowledgeSection = "files" | "library";
+type FilesSection = "library" | "files";
 
-const SECTION_LABELS: Record<KnowledgeSection, string> = {
-  files: "Files",
-  library: "Library"
-};
-
-const SECTION_ICONS: Record<KnowledgeSection, string> = {
-  files: "cloud",
-  library: "folder"
-};
-
-const LIBRARY_DEFAULT_FOLDERS = [
-  "Sessions",
-  "Notes",
-  "Evidence",
-  "Learnings",
-  "Templates"
+const FILES_TABS = [
+  { id: "library", label: "Library", icon: "archive" },
+  { id: "files", label: "Files", icon: "cloud" }
 ];
+const LIBRARY_ITEM_KINDS: WorkspaceItemKind[] = ["knowledge", "library"];
+const LIBRARY_DEFAULT_FOLDERS = ["Library"];
 
-export default function KnowledgePage() {
-  const [activeSection, setActiveSection] = useState<KnowledgeSection>("library");
+export default function FilesPage() {
+  const [activeSection, setActiveSection] = useState<FilesSection>("library");
   const [libraryKey, setLibraryKey] = useState(0);
-
-  const sections: KnowledgeSection[] = useMemo(() => ["files", "library"], []);
 
   return (
     <AppShell>
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
         <PageHeader
-          icon={<Icon name={ENTITY_ICONS.knowledge} size={14} />}
-          title="Knowledge"
+          icon={<Icon name={ENTITY_ICONS.file} size={14} />}
+          title="Files"
         />
 
-        <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-panel-raised px-3">
-          {sections.map((section) => {
-            const active = activeSection === section;
-            return (
-              <button
-                key={section}
-                className={cn(
-                  "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors",
-                  active
-                    ? "bg-selected text-foreground-strong"
-                    : "text-muted-foreground hover:bg-hover hover:text-foreground"
-                )}
-                onClick={() => {
-                  setActiveSection(section);
-                  if (section === "library") {
-                    setLibraryKey((k) => k + 1);
-                  }
-                }}
-                type="button"
-              >
-                <Icon name={SECTION_ICONS[section]} size={14} />
-                {SECTION_LABELS[section]}
-              </button>
-            );
-          })}
-        </div>
+        <NavTabs
+          tabs={FILES_TABS}
+          value={activeSection}
+          onChange={(value) => {
+            setActiveSection(value as FilesSection);
+            if (value === "library") setLibraryKey((current) => current + 1);
+          }}
+        />
 
         {activeSection === "files" ? (
           <LibraryFilesSection />
         ) : (
           <FolderFileBrowser
-            key={libraryKey}
+            key={`library-${libraryKey}`}
             title="Library"
-            itemKind="library"
+            sidebarId="local-library"
+            itemKind={LIBRARY_ITEM_KINDS}
             defaultFolders={LIBRARY_DEFAULT_FOLDERS}
             fileExtension=".md"
             useSharedFolders
@@ -84,7 +54,7 @@ export default function KnowledgePage() {
             renderEditor={({ value, onChange }) => (
               <DocumentEditor onChange={onChange} value={value} />
             )}
-            emptyStateDescription="Create or select a file from the Library folder tree to start editing."
+            emptyStateDescription="Local source text, saved articles, emails, references, and generated outputs appear here. Google Drive remains in Files."
           />
         )}
       </div>

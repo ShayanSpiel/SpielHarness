@@ -23,7 +23,7 @@ export function createSql(connectionString: string): Sql {
     max: 10,
     idle_timeout: 30,
     connect_timeout: 10,
-    prepare: true,
+    prepare: false,
     ssl,
     connection,
     transform: { undefined: null }
@@ -197,6 +197,53 @@ export async function softDeleteFile(sql: Sql, orgId: string, id: string): Promi
     returning id
   `;
   return rows.length > 0;
+}
+
+export async function deleteEmptyPlaceholderFiles(sql: Sql, orgId: string): Promise<number> {
+  const rows = await sql<{ id: string }[]>`
+    update files as file
+    set status = 'deleted', deleted_at = now()
+    where file.org_id = ${orgId}
+      and file.deleted_at is null
+      and file.status = 'draft'
+      and file.file_type in ('knowledge', 'strategy', 'prompt', 'draft')
+      and file.title ~* '^untitled(?:\.[a-z0-9]+)?$'
+      and btrim(file.body) = ''
+      and coalesce(file.metadata ->> 'seed', 'false') <> 'true'
+      and not exists (
+        select 1 from file_relations relation
+        where relation.org_id = ${orgId}
+          and (relation.source_file_id = file.id or relation.target_file_id = file.id)
+      )
+      and not exists (
+        select 1 from run_input_files input
+        where input.org_id = ${orgId} and input.file_id = file.id
+      )
+      and not exists (
+        select 1 from run_output_files output
+        where output.org_id = ${orgId} and output.file_id = file.id
+      )
+    returning file.id
+  `;
+  return rows.length;
+}
+
+export async function organizeUnfolderedGeneratedFiles(sql: Sql, orgId: string): Promise<number> {
+  const rows = await sql<{ id: string }[]>`
+    update files as file
+    set metadata = jsonb_set(
+      coalesce(file.metadata, '{}'::jsonb),
+      '{seedFolder}',
+      to_jsonb('Outputs'::text),
+      true
+    )
+    where file.org_id = ${orgId}
+      and file.deleted_at is null
+      and file.file_type in ('artifact', 'draft', 'evidence', 'asset', 'eval_report', 'publish_package')
+      and nullif(btrim(file.metadata ->> 'seedFolder'), '') is null
+    returning file.id
+  `;
+  return rows.length;
 }
 
 export async function fileHasIncomingReferences(
@@ -692,8 +739,10 @@ export async function updateConnection(
   patch: {
     name?: string;
     kind?: string;
+    status?: string;
     baseUrl?: string | null;
     secretEnvKey?: string | null;
+    config?: Record<string, unknown>;
     operations?: Array<Record<string, unknown>>;
     enabled?: boolean;
   }
@@ -702,8 +751,10 @@ export async function updateConnection(
     update connections
     set name = coalesce(${patch.name ?? null}, name),
         kind = coalesce(${patch.kind ?? null}, kind),
+        status = coalesce(${patch.status ?? null}, status),
         base_url = ${patch.baseUrl === undefined ? sql`base_url` : patch.baseUrl},
         secret_env_key = ${patch.secretEnvKey === undefined ? sql`secret_env_key` : patch.secretEnvKey},
+        config = ${patch.config === undefined ? sql`config` : json(patch.config)},
         operations = ${patch.operations === undefined ? sql`operations` : json(patch.operations)},
         enabled = coalesce(${patch.enabled ?? null}, enabled)
     where org_id = ${orgId} and id = ${id}
@@ -825,6 +876,24 @@ export async function createFolder(
     returning *
   `;
   return rows[0];
+}
+
+export async function deleteEmptyFolders(sql: Sql, orgId: string): Promise<number> {
+  const rows = await sql<{ id: string }[]>`
+    update folders as folder
+    set deleted_at = now()
+    where folder.org_id = ${orgId}
+      and folder.deleted_at is null
+      and not exists (
+        select 1
+        from files
+        where files.org_id = ${orgId}
+          and files.folder_id = folder.id
+          and files.status <> 'deleted'
+      )
+    returning folder.id
+  `;
+  return rows.length;
 }
 
 export async function linkRunOutputFile(

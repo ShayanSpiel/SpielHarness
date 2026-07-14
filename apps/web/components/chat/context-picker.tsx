@@ -1,6 +1,6 @@
 "use client";
 
-import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
+import { Icon, CONTEXT_KIND_ICONS, ENTITY_ICONS } from "@spielos/design-system/components";
 import {
   type FormEvent,
   useEffect,
@@ -18,15 +18,16 @@ type Section = {
   label: string;
   icon: ReactNode;
   blurb: string;
+  kinds: string[];
 };
 
 const SECTIONS: Section[] = [
-  { id: "role", label: "Roles", icon: <Icon name={ENTITY_ICONS.role} size={14} />, blurb: "Agents that will collaborate" },
-  { id: "skill", label: "Skills", icon: <Icon name={ENTITY_ICONS.skill} size={14} />, blurb: "Callable capabilities the team can use" },
-  { id: "workflow", label: "Workflows", icon: <Icon name={ENTITY_ICONS.workflow} size={14} />, blurb: "Multi-step graphs" },
-  { id: "eval", label: "Evals", icon: <Icon name={ENTITY_ICONS.eval} size={14} />, blurb: "Rubrics for scoring content, prompts, and workflows" },
-  { id: "prompt", label: "Prompts", icon: <Icon name={ENTITY_ICONS.prompt} size={14} />, blurb: "Reusable system and strategy instructions" },
-  { id: "knowledge", label: "Knowledge", icon: <Icon name={ENTITY_ICONS.knowledge} size={14} />, blurb: "Strategy, files, and evidence" }
+  { id: "role", label: "Roles", icon: <Icon name={ENTITY_ICONS.role} size={14} />, blurb: "Agents that will collaborate", kinds: ["role"] },
+  { id: "skill", label: "Skills", icon: <Icon name={ENTITY_ICONS.skill} size={14} />, blurb: "Callable capabilities the team can use", kinds: ["skill"] },
+  { id: "workflow", label: "Workflows", icon: <Icon name={ENTITY_ICONS.workflow} size={14} />, blurb: "Multi-step graphs", kinds: ["workflow"] },
+  { id: "eval", label: "Evals", icon: <Icon name={ENTITY_ICONS.eval} size={14} />, blurb: "Rubrics for scoring content, prompts, and workflows", kinds: ["eval"] },
+  { id: "strategy", label: "Strategy", icon: <Icon name={ENTITY_ICONS.strategy} size={14} />, blurb: "Strategy documents and reusable prompts", kinds: ["strategy", "prompt"] },
+  { id: "files", label: "Files", icon: <Icon name={ENTITY_ICONS.file} size={14} />, blurb: "Local library content and saved outputs", kinds: ["knowledge", "library"] }
 ];
 
 type Candidate = {
@@ -69,14 +70,14 @@ export function ContextPicker() {
         return store.workflows
           .filter((w) => w.status === "active")
           .map((w) => ({ id: w.id, kind: "workflow", title: w.name, subtitle: `${w.nodes.length} steps · ${w.edges.length} edges` }));
-      case "prompt":
+      case "strategy":
         return store.items
-          .filter((item) => item.kind === "prompt" && item.status !== "archived")
-          .map((item) => ({ id: item.id, kind: "prompt", title: item.title, subtitle: item.folder ?? "Prompt" }));
-      case "knowledge":
+          .filter((item) => ["strategy", "prompt"].includes(item.kind) && item.status !== "archived")
+          .map((item) => ({ id: item.id, kind: item.kind, title: item.title, subtitle: item.folder ?? "Strategy" }));
+      case "files":
         return store.items
-          .filter((item) => ["strategy", "knowledge", "library"].includes(item.kind) && item.status !== "archived")
-          .map((item) => ({ id: item.id, kind: "knowledge", title: item.title, subtitle: item.folder ?? item.kind }));
+          .filter((item) => ["knowledge", "library"].includes(item.kind) && item.status !== "archived")
+          .map((item) => ({ id: item.id, kind: item.kind, title: item.title, subtitle: item.folder ?? "Library" }));
       default:
         return [];
     }
@@ -164,7 +165,7 @@ export function ContextPicker() {
               ref={inputRef}
               className="h-7 w-full border-0 bg-transparent px-0 text-sm focus-visible:ring-0"
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search roles, skills, workflows, knowledge..."
+              placeholder="Search roles, skills, workflows, strategy, and files..."
               value={query}
               variant="ghost"
             />
@@ -177,7 +178,7 @@ export function ContextPicker() {
         <div className="flex min-h-0 flex-1">
           <nav className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-border bg-panel-raised p-1.5">
             {SECTIONS.map((section) => {
-              const attachedCount = run.contextItems.filter((item) => item.kind === section.id).length;
+              const attachedCount = run.contextItems.filter((item) => section.kinds.includes(item.kind)).length;
               return (
                 <button
                   className={cn(
@@ -213,7 +214,7 @@ export function ContextPicker() {
             <div className="min-h-0 flex-1 overflow-y-auto p-2">
               {filtered.length === 0 ? (
                 <EmptyState
-                  description={`Add a ${active} from the ${SECTIONS.find((entry) => entry.id === active)?.label} page.`}
+                  description={`Add an item from the ${SECTIONS.find((entry) => entry.id === active)?.label} page.`}
                   icon={<Icon name="boxes" size={16} />}
                   title="No matches"
                 />
@@ -228,7 +229,7 @@ export function ContextPicker() {
                           active={selected}
                           description={entry.subtitle}
                           disabled={Boolean(reason)}
-                          leading={<Icon name="file-text" className="text-muted-foreground" size={12} />}
+                          leading={<Icon name={CONTEXT_KIND_ICONS[entry.kind] ?? "file-text"} className="text-muted-foreground" size={12} />}
                           onClick={() => toggle(entry)}
                           title={entry.title}
                           trailing={<Pill tone={selected ? "primary" : "default"}>{selected ? "Attached" : "Add"}</Pill>}

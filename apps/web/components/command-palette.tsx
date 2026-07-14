@@ -43,7 +43,7 @@ type Entry = {
 
 const NAV: { href: string; label: string; icon: ReactNode; keywords: string[] }[] = [
   { href: "/", label: "Runs", icon: <Icon name={ENTITY_ICONS.run} size={14} />, keywords: ["run", "chat", "home"] },
-  { href: "/knowledge", label: "Knowledge", icon: <Icon name={ENTITY_ICONS.knowledge} size={14} />, keywords: ["knowledge", "evidence", "library", "file"] },
+  { href: "/knowledge", label: "Files", icon: <Icon name={ENTITY_ICONS.file} size={14} />, keywords: ["knowledge", "evidence", "library", "file", "drive"] },
   { href: "/strategy", label: "Strategy", icon: <Icon name={ENTITY_ICONS.strategy} size={14} />, keywords: ["strategy", "prompt", "positioning"] },
   { href: "/roles", label: "Roles", icon: <Icon name={ENTITY_ICONS.role} size={14} />, keywords: ["role", "agent"] },
   { href: "/workflows", label: "Workflows", icon: <Icon name={ENTITY_ICONS.workflow} size={14} />, keywords: ["workflow", "workstream", "graph"] },

@@ -82,7 +82,7 @@ export function ResizableSidebar({
   return (
     <aside
       className={cn(
-        "relative flex max-w-[var(--sidebar-list-responsive-max)] shrink-0 flex-col border-r border-border bg-panel lg:max-w-none",
+        "relative flex min-w-0 max-w-[var(--sidebar-list-responsive-max)] shrink-0 flex-col overflow-hidden border-r border-border bg-panel lg:max-w-none",
         className
       )}
       ref={panelRef}

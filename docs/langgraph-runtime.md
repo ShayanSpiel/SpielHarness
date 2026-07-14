@@ -26,4 +26,6 @@ Human-input resume is database-backed: the API persists the latest checkpoint in
 
 Node skills execute sequentially. Workflow roots come from saved edges, fan-out branches execute independently, joins wait for their declared inputs, and terminal eval gates can route back to their retry source until `maxAttempts`. `llm_call`, `knowledge_search`, `eval`, `human_input`, and safe read-only generic HTTP operations are executable. External-state HTTP operations require a confirmed provider adapter. MCP execution is intentionally rejected until a real server adapter is configured; it is never simulated as success.
 
+Seeded roles may declare stable `contextSlugs`. Execution resolves those slugs to current file ids and combines them with user-selected context for each applicable node. Prompt components and harness templates are rendered as file-backed instructions; strategy, knowledge, and user source files are rendered as context. The graph never loads Google Drive files unless the user explicitly imports or selects them through the Files tab.
+
 Known runtime boundary: execution still lives inside a Next.js request. Production needs a durable worker and event transport so a deploy, timeout, or disconnected client cannot own run liveness.

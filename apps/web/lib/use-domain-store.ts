@@ -148,7 +148,7 @@ function parseRole(row: FileRecord): CoreRole {
     modelId: (m.modelId as string | null) ?? null,
     inputContract: (m.inputContract as RoleContract) ?? defaultInputContract(),
     outputContract: (m.outputContract as RoleContract) ?? defaultOutputContract(),
-    skillIds: (m.skillIds as string[]) ?? [],
+    skillIds: (m.skillIds as string[]) ?? (m.skillSlugs as string[]) ?? [],
     status: row.status === "active" ? "active" : row.status === "archived" ? "archived" : "draft",
     metadata: m
   };
@@ -170,6 +170,7 @@ function parseSkill(row: FileRecord): CoreSkill {
     outputSchema: typeof m.outputSchema === "string" ? m.outputSchema : JSON.stringify(m.outputSchema ?? {}),
     implementation: String(m.implementation ?? row.body),
     bindings: (m.bindings as CoreSkill["bindings"]) ?? [],
+    humanQuestions: (m.humanQuestions as CoreSkill["humanQuestions"]) ?? undefined,
     evalRules: (m.evalRules as CoreSkill["evalRules"]) ?? undefined,
     overallThreshold: (m.overallThreshold as number | undefined) ?? undefined,
     metadata: m
@@ -210,8 +211,9 @@ function parseWorkflow(row: FileRecord): CoreWorkflowFile {
       title: String(n.title ?? `Step ${i + 1}`),
       roleId: String(n.roleId ?? n.roleSlug ?? ""),
       promptOverride: n.promptOverride ? String(n.promptOverride) : undefined,
+      humanQuestions: n.humanQuestions as CoreWorkflowFile["nodes"][number]["humanQuestions"],
       skillIds: (n.skillIds as string[]) ?? (n.skillSlugs as string[]) ?? [],
-      fileIds: (n.fileIds as string[]) ?? [],
+      fileIds: (n.fileIds as string[]) ?? (n.fileSlugs as string[]) ?? [],
       inputContract: String(n.inputContract ?? n.input ?? "any"),
       outputContract: String(n.outputContract ?? n.output ?? "any"),
       position: (n.position as { x: number; y: number }) ?? { x: 120 + i * 260, y: 160 },
@@ -313,8 +315,17 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
         const driveFiles = driveResult.status === "fulfilled" ? driveResult.value.files ?? [] : [];
         setFiles([...dbFiles, ...driveFiles]);
         const folders = new Set<string>();
+        const libraryFileTypes = new Set([
+          "artifact",
+          "asset",
+          "draft",
+          "eval_report",
+          "evidence",
+          "harness_template",
+          "publish_package"
+        ]);
         for (const f of dbFiles) {
-          if (typeof f.metadata?.seedFolder === "string" && ["knowledge", "library"].includes(f.fileType)) {
+          if (typeof f.metadata?.seedFolder === "string" && libraryFileTypes.has(f.fileType)) {
             folders.add(f.metadata.seedFolder);
           }
         }
@@ -723,8 +734,15 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
     .map(fileRecordToItem)
     .filter((item): item is WorkspaceItem => item !== null);
 
-  const roles = files.filter((f) => f.fileType === "harness_role").map(parseRole);
   const skills = files.filter((f) => f.fileType === "harness_skill").map(parseSkill);
+  const skillIdBySlug = new Map(skills.map((skill) => [skill.slug, skill.id]));
+  const roles = files
+    .filter((f) => f.fileType === "harness_role")
+    .map(parseRole)
+    .map((role) => ({
+      ...role,
+      skillIds: role.skillIds.map((idOrSlug) => skillIdBySlug.get(idOrSlug) ?? idOrSlug)
+    }));
   const workflows = files.filter((f) => f.fileType === "harness_workflow" || f.fileType === "harness_workstream").map(parseWorkflow);
   const evalFiles = files.filter((f) => f.fileType === "harness_eval").map(parseEval);
 

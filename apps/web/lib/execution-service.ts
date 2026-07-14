@@ -123,6 +123,15 @@ export async function resolveExecution(
     const slug = skill.metadata?.slug;
     if (typeof slug === "string") skillBySlug.set(slug, skill.id);
   }
+  for (const role of Object.values(roles)) {
+    role.skillIds = role.skillIds.map((idOrSlug) => skillBySlug.get(idOrSlug) ?? idOrSlug);
+  }
+  const fileReferenceIds = new Map<string, string>();
+  for (const file of files) {
+    fileReferenceIds.set(file.id, file.id);
+    const slug = file.metadata?.slug;
+    if (typeof slug === "string") fileReferenceIds.set(slug, file.id);
+  }
   for (const evalFile of Object.values(evals)) {
     const evalSkill = evalFileToSkill(evalFile, org.orgId);
     skills[evalSkill.id] = evalSkill;
@@ -132,11 +141,6 @@ export async function resolveExecution(
 
   // Resolve context files (the user's attached files)
   const contextFileIds = dedupe(body.contextFileIds ?? []);
-  const contextFiles = contextFileIds.length > 0
-    ? files.filter((f) => contextFileIds.includes(f.id) && f.status !== "deleted")
-    : [];
-  const attached: AttachedFile[] = contextFiles.map(toAttached);
-
   // Resolve target
   const targetType: RunType = body.type ?? "chat";
   let targetId: string | null = null;
@@ -151,7 +155,7 @@ export async function resolveExecution(
     if (wf.status !== "active") {
       throw new HttpError(400, `Workflow "${wf.name}" is disabled.`);
     }
-    workflow = normalizeWorkflow(wf, roles, skills, roleBySlug, skillBySlug, org.orgId);
+    workflow = normalizeWorkflow(wf, roles, skills, roleBySlug, skillBySlug, fileReferenceIds, org.orgId);
     targetId = wf.id;
   } else if (targetType === "role") {
     if (!body.targetId) throw new HttpError(400, "targetId is required for role runs.");
@@ -246,6 +250,21 @@ export async function resolveExecution(
   } else {
     throw new HttpError(400, `Unknown run type: ${body.type}`);
   }
+
+  if (workflow) {
+    workflow = {
+      ...workflow,
+      nodes: workflow.nodes.map((node) => ({
+        ...node,
+        fileIds: dedupe([...node.fileIds, ...contextFileIds])
+      }))
+    };
+  }
+  const configuredFileIds = workflow?.nodes.flatMap((node) => node.fileIds) ?? singleNode?.fileIds ?? [];
+  const runFileIds = dedupe([...contextFileIds, ...configuredFileIds]);
+  const attached: AttachedFile[] = files
+    .filter((file) => runFileIds.includes(file.id) && file.status !== "deleted")
+    .map(toAttached);
 
   // Resolve model
   const preferredModelId = workflow
@@ -383,7 +402,7 @@ function resolveDirectorPrompt(
     `Skills: ${Object.values(skills).filter((item) => item.status === "active" && !item.id.startsWith("runtime.eval.skill.")).map((item) => item.name).join(", ") || "none"}`,
     `Workflows: ${Object.values(workflows).filter((item) => item.status === "active").map((item) => item.name).join(", ") || "none"}`,
     `Evals: ${Object.values(evals).filter((item) => item.status === "active").map((item) => item.name).join(", ") || "none"}`,
-    `Knowledge and strategy files: ${files.filter((item) => ["knowledge", "strategy", "library", "prompt"].includes(item.file_type) && item.status === "active").map((item) => item.title).join(", ") || "none"}`
+    `Available strategy and library files: ${files.filter((item) => ["knowledge", "strategy", "library", "prompt"].includes(item.file_type) && item.status === "active").map((item) => item.title).join(", ") || "none"}`
   ].join("\n");
   return [
     "You are the SpielOS assistant. Converse naturally and answer the user's question directly. You can explain the product, its workspace, and the available harness catalog. Do not require a selected role, skill, file, eval, or workflow for ordinary conversation.",
@@ -400,6 +419,7 @@ function normalizeWorkflow(
   skills: Record<string, Skill>,
   roleBySlug: Map<string, string>,
   skillBySlug: Map<string, string>,
+  fileReferenceIds: Map<string, string>,
   orgId: string
 ): WorkflowFile {
   if (wf.nodes.length === 0) throw new HttpError(400, `Workflow "${wf.name}" has no steps.`);
@@ -449,6 +469,11 @@ function normalizeWorkflow(
       };
     }
     const n = node as WorkflowNode;
+    const roleContextSlugs = role && Array.isArray(role.metadata?.contextSlugs)
+      ? role.metadata.contextSlugs.filter((value): value is string => typeof value === "string")
+      : [];
+    const fileIds = dedupe([...roleContextSlugs, ...n.fileIds])
+      .map((idOrSlug) => fileReferenceIds.get(idOrSlug) ?? idOrSlug);
     const nodeId = n.id || `node-${i + 1}`;
     if (seenNodeIds.has(nodeId)) throw new HttpError(400, `Workflow contains duplicate node id "${nodeId}".`);
     seenNodeIds.add(nodeId);
@@ -457,7 +482,7 @@ function normalizeWorkflow(
       id: nodeId,
       roleId,
       skillIds: effectiveSkillIds,
-      fileIds: n.fileIds,
+      fileIds,
       position: n.position ?? { x: 120 + i * 260, y: 160 }
     };
   });

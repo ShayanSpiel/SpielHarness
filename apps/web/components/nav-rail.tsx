@@ -36,7 +36,7 @@ const sections: Array<{
     markerClass: "bg-accent",
     activeClass: "bg-selected text-accent",
     items: [
-      { href: "/knowledge", label: "Knowledge", icon: ENTITY_ICONS.knowledge, match: (p) => p.startsWith("/knowledge") },
+      { href: "/knowledge", label: "Files", icon: ENTITY_ICONS.file, match: (p) => p.startsWith("/knowledge") },
       { href: "/strategy", label: "Strategy", icon: ENTITY_ICONS.strategy, match: (p) => p.startsWith("/strategy") || p.startsWith("/prompts") },
     ],
   },
