@@ -1,43 +1,28 @@
 import { betterAuth } from "better-auth";
 import { Pool } from "pg";
 
-const PG_POOL_ID = `auth-pool-${Date.now()}`;
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  max: 3,
-  idleTimeoutMillis: 30_000,
-  connectionTimeoutMillis: 15_000,
-  ssl: { rejectUnauthorized: false },
-});
+const getCached = <T>(key: string, init: () => T): T => {
+  const g = globalThis as unknown as Record<string, T | undefined>;
+  if (!g[key]) g[key] = init();
+  return g[key]!;
+};
 
-const active = { connections: 0, idle: 0, waiting: 0 };
-pool.on("connect", () => {
-  active.connections++;
-  console.log(`[pool ${PG_POOL_ID}] +connect  active=${active.connections} idle=${active.idle} waiting=${active.waiting}`);
-});
-pool.on("acquire", () => {
-  active.waiting = Math.max(0, active.waiting - 1);
-  active.idle = Math.max(0, active.idle - 1);
-  console.log(`[pool ${PG_POOL_ID}] +acquire  active=${active.connections} idle=${active.idle} waiting=${active.waiting}`);
-});
-pool.on("release", (err) => {
-  if (err) {
-    console.log(`[pool ${PG_POOL_ID}] ~release(err)  active=${active.connections} idle=${active.idle} waiting=${active.waiting} err=${err.message}`);
-  } else {
-    active.idle++;
-    console.log(`[pool ${PG_POOL_ID}] ~release  active=${active.connections} idle=${active.idle} waiting=${active.waiting}`);
-  }
-});
-pool.on("remove", () => {
-  active.connections = Math.max(0, active.connections - 1);
-  console.log(`[pool ${PG_POOL_ID}] -remove  active=${active.connections} idle=${active.idle} waiting=${active.waiting}`);
-});
-pool.on("error", (err) => {
-  console.error(`[pool ${PG_POOL_ID}] !error  active=${active.connections} idle=${active.idle} waiting=${active.waiting} err=${err.message}`);
+const pool = getCached("__auth_pool", () => {
+  const p = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: Math.max(1, Number(process.env.AUTH_POOL_MAX) || 3),
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 15_000,
+    ssl: { rejectUnauthorized: false },
+  });
+  const id = `auth-${Date.now()}`;
+  p.on("error", (err: Error) => console.error(`[pool ${id}] error:`, err.message));
+  return p;
 });
 
 export const auth = betterAuth({
   database: pool,
+  secret: process.env.BETTER_AUTH_SECRET,
   baseURL: process.env.BETTER_AUTH_URL || "http://localhost:3000",
   session: {
     expiresIn: 60 * 60 * 24 * 7, // 7 days
@@ -73,7 +58,7 @@ export const auth = betterAuth({
         after: async (user) => {
           try {
             const { createDefaultOrgForUser } = await import("./auth-helpers");
-            await createDefaultOrgForUser(pool, user.id, user.email, user.name);
+            await createDefaultOrgForUser(pool, user.id, user.email, user.name, user.image);
           } catch (err) {
             console.error("[auth] Failed to create default org:", err);
           }

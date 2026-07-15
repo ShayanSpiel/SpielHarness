@@ -6,7 +6,7 @@ import { Button, Tooltip, cn } from "@spielos/design-system";
 import { ThemeToggle } from "@spielos/design-system/components/theme-toggle";
 import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { SIDEBAR } from "@spielos/design-system";
-import { OrgSwitcher } from "./org-switcher";
+import { UserMenu } from "./user-menu";
 import { useRunContext } from "../lib/run-context";
 import { useWorkspaceStore } from "../lib/use-workspace-store";
 
@@ -71,7 +71,7 @@ export function NavRail({ onOpenSearch }: { onOpenSearch: () => void }) {
         </div>
       </Tooltip>
 
-      <OrgSwitcher />
+      <UserMenu />
 
       <Tooltip content="Search (⌘K)" side="right">
         <Button aria-label="Search" onClick={onOpenSearch} size="icon" variant="ghost">

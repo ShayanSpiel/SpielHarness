@@ -4,24 +4,7 @@ import { randomUUID } from "node:crypto";
 type JsonInput = Record<string, unknown> | unknown[] | string | number | boolean | null;
 type PostgresParameter = postgres.SerializableParameter<never>;
 function sanitizeJsonString(value: string): string {
-  let output = "";
-  for (let index = 0; index < value.length; index++) {
-    const code = value.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        output += value[index] + value[index + 1];
-        index++;
-      } else {
-        output += "\ufffd";
-      }
-    } else if (code >= 0xdc00 && code <= 0xdfff) {
-      output += "\ufffd";
-    } else {
-      output += value[index];
-    }
-  }
-  return output;
+  return value.replace(/[\u{D800}-\u{DFFF}]/gu, "\ufffd");
 }
 
 function sanitizeJsonValue(value: JsonInput): JsonInput {
@@ -43,9 +26,6 @@ export const json = toJson;
 
 export type Sql = ReturnType<typeof postgres>;
 
-let sqlPoolCount = 0;
-const SQL_POOL_ID = `app-pool-${Date.now()}`;
-
 export function createSql(connectionString: string): Sql {
   const parsed = new URL(connectionString);
   const projectRef = parsed.searchParams.get("host");
@@ -56,24 +36,15 @@ export function createSql(connectionString: string): Sql {
     connection.host = projectRef;
   }
   const opts: Record<string, unknown> = {
-    max: 3,
+    max: Math.max(1, Number(process.env.DB_POOL_MAX) || 5),
     idle_timeout: 30,
     connect_timeout: 10,
-    prepare: false,
+    prepare: true,
     ssl,
     connection,
     transform: { undefined: null },
-    onconnect() {
-      sqlPoolCount++;
-      console.log(`[pool ${SQL_POOL_ID}] +connect  total=${sqlPoolCount}`);
-    },
-    ondisconnect() {
-      sqlPoolCount--;
-      console.log(`[pool ${SQL_POOL_ID}] -disconnect  total=${sqlPoolCount}`);
-    },
   };
   const sql = postgres(connectionString, opts as any);
-  console.log(`[pool ${SQL_POOL_ID}] created  max=${opts.max} idle_timeout=${opts.idle_timeout}`);
   return sql;
 }
 
@@ -523,12 +494,21 @@ export type RunEventRow = {
 export async function listRunEvents(
   sql: Sql,
   orgId: string,
-  runId: string
+  runId: string,
+  afterId?: string
 ): Promise<RunEventRow[]> {
+  if (afterId) {
+    return sql<RunEventRow[]>`
+      select * from run_events
+      where org_id = ${orgId} and run_id = ${runId}
+        and id > ${afterId}::uuid
+      order by sequence asc, created_at asc
+    `;
+  }
   return sql<RunEventRow[]>`
     select * from run_events
     where org_id = ${orgId} and run_id = ${runId}
-    order by sequence asc
+    order by sequence asc, created_at asc
   `;
 }
 
@@ -553,6 +533,7 @@ export type RunEventInput = {
   skill_name: string | null;
   message: string;
   payload: Record<string, unknown>;
+  event_key?: string;
 };
 
 export async function appendRunEvents(
@@ -562,43 +543,42 @@ export async function appendRunEvents(
   events: RunEventInput[]
 ): Promise<RunEventRow[]> {
   if (events.length === 0) return [];
-  const startSeq = await nextRunEventSequence(sql, orgId, runId);
-  const values = events.map((event, index) => ({
+  const values = events.map((event) => ({
     org_id: orgId,
     run_id: runId,
     event_type: event.event_type,
-    sequence: startSeq + index,
     node_id: event.node_id,
     node_title: event.node_title,
     skill_id: event.skill_id,
     skill_name: event.skill_name,
     message: event.message,
-    payload: event.payload
+    payload: event.payload,
+    event_key: event.event_key ?? null
   }));
   const rows = await sql<RunEventRow[]>`
-    insert into run_events (org_id, run_id, event_type, sequence, node_id, node_title, skill_id, skill_name, message, payload)
-    select record.org_id::uuid,
-           record.run_id::uuid,
-           record.event_type::event_type,
-           record.sequence,
-           record.node_id,
-           record.node_title,
-           record.skill_id,
-           record.skill_name,
-           record.message,
-           record.payload
-    from jsonb_to_recordset(${json(values)}::jsonb) as record(
-      org_id text,
-      run_id text,
-      event_type text,
-      sequence integer,
-      node_id text,
-      node_title text,
-      skill_id text,
-      skill_name text,
-      message text,
-      payload jsonb
+    with batch as (
+      select row_number() over () as rn, record.*
+      from jsonb_to_recordset(${json(values)}::jsonb) as record(
+        org_id text, run_id text, event_type text,
+        node_id text, node_title text, skill_id text, skill_name text,
+        message text, payload jsonb, event_key text
+      )
     )
+    insert into run_events (org_id, run_id, event_type, sequence, node_id, node_title, skill_id, skill_name, message, payload, event_key)
+    select
+      batch.org_id::uuid,
+      batch.run_id::uuid,
+      batch.event_type::event_type,
+      seq.base + batch.rn,
+      batch.node_id,
+      batch.node_title,
+      batch.skill_id,
+      batch.skill_name,
+      batch.message,
+      batch.payload,
+      batch.event_key
+    from batch
+    cross join (select coalesce(max(sequence), 0)::bigint as base from run_events where run_id = ${runId}) seq
     returning *
   `;
   return rows;
@@ -741,6 +721,15 @@ export type ModelRow = {
   config: Record<string, unknown>;
   enabled: boolean;
 };
+
+export async function getModel(sql: Sql, orgId: string, id: string): Promise<ModelRow | null> {
+  const [row] = await sql<ModelRow[]>`
+    select id, org_id, name, provider, model, base_url, secret_env_key, config, enabled
+    from models
+    where org_id = ${orgId} and id = ${id}
+  `;
+  return row ?? null;
+}
 
 export async function listModels(sql: Sql, orgId: string): Promise<ModelRow[]> {
   return sql<ModelRow[]>`

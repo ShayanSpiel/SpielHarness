@@ -95,11 +95,11 @@ export function environmentModelDefaults(): EnvironmentModel[] {
 }
 
 export async function listModelsWithEnvironmentDefaults(sql: Sql, orgId: string): Promise<ModelRow[]> {
-  let rows = await listModels(sql, orgId);
+  const rows = await listModels(sql, orgId);
   const defaults = environmentModelDefaults();
   for (const model of defaults) {
     if (rows.some((row) => row.provider === model.provider && row.model === model.model)) continue;
-    await createModel(sql, orgId, {
+    const created = await createModel(sql, orgId, {
       id: stableUuid(`${orgId}:environment-model:${model.provider}:${model.model}`),
       name: model.name,
       provider: model.provider,
@@ -109,7 +109,7 @@ export async function listModelsWithEnvironmentDefaults(sql: Sql, orgId: string)
       config: { source: "environment", capabilities: model.capabilities },
       enabled: true
     });
+    rows.push(created);
   }
-  if (defaults.length > 0) rows = await listModels(sql, orgId);
   return rows;
 }

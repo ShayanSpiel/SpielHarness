@@ -48,7 +48,39 @@ export interface ChatAdapter {
   countTokens?(req: ChatRequest): Promise<number>;
 }
 
+function tryDecryptCredential(config: Record<string, unknown>): string | null {
+  const encrypted = config.encryptedCredential as string | undefined;
+  if (!encrypted) return null;
+  try {
+    const crypto = require("node:crypto") as typeof import("node:crypto");
+    const { createDecipheriv, createHash } = crypto;
+    const source =
+      process.env.CONNECTION_ENCRYPTION_KEY ||
+      (process.env.NODE_ENV !== "production"
+        ? process.env.DATABASE_URL || "spielos-dev-fallback"
+        : "");
+    const key = createHash("sha256").update(source).digest();
+    const [iv, tag, ciphertext] = encrypted.split(".");
+    if (!iv || !tag || !ciphertext) throw new Error("Invalid encrypted credential");
+    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "base64url"));
+    decipher.setAuthTag(Buffer.from(tag, "base64url"));
+    const decrypted = JSON.parse(
+      Buffer.concat([
+        decipher.update(Buffer.from(ciphertext, "base64url")),
+        decipher.final(),
+      ]).toString("utf8")
+    ) as Record<string, unknown>;
+    return (decrypted.apiKey as string | undefined) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function readSecret(req: ChatRequest): string {
+  const config = req.model.config ?? {};
+  const fromEncrypted = tryDecryptCredential(config);
+  if (fromEncrypted) return fromEncrypted;
+
   const ref = req.provider.secretEnvKey;
   if (ref) {
     const value = process.env[ref];

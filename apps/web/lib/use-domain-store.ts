@@ -657,11 +657,13 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
   }, [deleteFile]);
 
   const addModel = useCallback(
-    async (model: { name: string; provider: Model["provider"]; model: string; baseUrl: string | null; secretEnvKey: string | null; enabled: boolean; config?: Record<string, unknown> }) => {
+    async (model: { name: string; provider: Model["provider"]; model: string; baseUrl: string | null; secretEnvKey: string | null; enabled: boolean; config?: Record<string, unknown>; apiKey?: string }) => {
+      const { apiKey, ...body } = model;
+      const payload = apiKey ? { ...body, apiKey } : body;
       const res = await fetch("/api/models", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(model)
+        body: JSON.stringify(payload)
       });
       if (!res.ok) throw new Error("Failed to add model");
       const data = (await res.json()) as { model: { id: string; orgId: string; name: string; provider: string; model: string; baseUrl: string | null; secretEnvKey: string | null; config: Record<string, unknown>; enabled: boolean } };
@@ -673,15 +675,17 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
   );
 
   const updateModel = useCallback(
-    async (id: string, patch: Partial<Model>) => {
+    async (id: string, patch: Partial<Model> & { apiKey?: string }) => {
+      const { apiKey, ...rest } = patch;
+      const payload = apiKey ? { ...rest, apiKey } : rest;
       const res = await fetch("/api/models", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, ...patch })
+        body: JSON.stringify({ id, ...payload })
       });
       if (!res.ok) throw new Error("Failed to update model");
-      const data = (await res.json()) as { model: { id: string; orgId: string; name: string; provider: string; model: string; baseUrl: string | null; secretEnvKey: string | null; config: Record<string, unknown>; enabled: boolean } };
-      setModels((current) => current.map((m) => (m.id === id ? parseModel(data.model) : m)));
+      const result = (await res.json()) as { model: { id: string; orgId: string; name: string; provider: string; model: string; baseUrl: string | null; secretEnvKey: string | null; config: Record<string, unknown>; enabled: boolean } };
+      setModels((current) => current.map((m) => (m.id === id ? parseModel(result.model) : m)));
     },
     []
   );

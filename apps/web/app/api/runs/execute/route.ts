@@ -9,7 +9,8 @@ import {
   linkRunOutputFile,
   recordUsage,
   updateChatMetadata,
-  updateRun
+  updateRun,
+  type Sql
 } from "@spielos/db";
 import { errorResponse, getOrg, HttpError, requireWrite } from "../../../../lib/server";
 import { resolveExecution, type ExecuteBody } from "../../../../lib/execution-service";
@@ -21,17 +22,30 @@ function frame(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
+function instrumentSql(originalSql: Sql): { sql: Sql } {
+  const sql = new Proxy(originalSql, {
+    apply(target: (...args: unknown[]) => unknown, thisArg: unknown, args: unknown[]) {
+      return Reflect.apply(target, thisArg, args);
+    }
+  }) as unknown as Sql;
+  return { sql };
+}
+
 export async function POST(request: Request) {
+  const reqStart = performance.now();
   try {
     const org = await getOrg();
     requireWrite(org);
+    const authMs = performance.now() - reqStart;
+
+    const { sql } = instrumentSql(org.sql);
 
     const body = (await request.json()) as ExecuteBody;
     if (!body.prompt?.trim()) throw new HttpError(400, "prompt is required");
 
     const idempotencyKey = request.headers.get("idempotency-key") ?? body.idempotencyKey ?? null;
     if (idempotencyKey) {
-      const existing = await org.sql<{ id: string; status: string }[]>`
+      const existing = await sql<{ id: string; status: string }[]>`
         select id, status from runs
         where org_id = ${org.orgId} and idempotency_key = ${idempotencyKey}
         limit 1
@@ -42,14 +56,16 @@ export async function POST(request: Request) {
     }
 
     const chatId: string | null = body.chatId ?? null;
+    const instrumentedOrg = { ...org, sql };
     const [resolved] = await Promise.all([
-      resolveExecution(org, body),
+      resolveExecution(instrumentedOrg, body),
       chatId
-        ? createChat(org.sql, org.orgId, chatId, body.prompt.trim().slice(0, 80) || "New chat")
+        ? createChat(sql, org.orgId, chatId, body.prompt.trim().slice(0, 80) || "New chat")
         : Promise.resolve(null)
     ]);
+    const harnessResolutionMs = performance.now() - reqStart - authMs;
 
-    const run = await createRun(org.sql, org.orgId, {
+    const run = await createRun(sql, org.orgId, {
       chatId,
       workflowId: resolved.target.type === "workflow" ? resolved.target.id : null,
       type: resolved.type,
@@ -75,34 +91,35 @@ export async function POST(request: Request) {
       },
       idempotencyKey
     });
+    const runCreationMs = performance.now() - reqStart - authMs - harnessResolutionMs;
 
     if (resolved.contextFileIds.length > 0) {
-      await linkRunInputFiles(org.sql, org.orgId, run.id, resolved.contextFileIds);
+      await linkRunInputFiles(sql, org.orgId, run.id, resolved.contextFileIds);
     }
     if (chatId) {
-      await appendChatMessage(org.sql, org.orgId, chatId, "user", body.prompt, { runId: run.id });
-      await updateChatMetadata(org.sql, org.orgId, chatId, { activeRunId: run.id, lastRunId: run.id });
+      await appendChatMessage(sql, org.orgId, chatId, "user", body.prompt, { runId: run.id });
+      await updateChatMetadata(sql, org.orgId, chatId, { activeRunId: run.id, lastRunId: run.id });
     }
 
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
+        let firstByteSent = false;
         controller.enqueue(encoder.encode(frame({ kind: "run", runId: run.id, type: resolved.type })));
         let outputText = "";
         let terminalStatus: RunStatus = "completed";
         let errorMessage: string | null = null;
         let checkpoint: RunCheckpoint | null = null;
         let compaction: Record<string, unknown> | null = null;
+        const compactionMs = 0;
+        const inputTokensEstimate = 0;
+        const systemPromptTokensEstimate = 0;
         const usage = { input: 0, output: 0, tools: 0 };
         const billableUsage = { input: 0, output: 0 };
         const onUsage = (next: { input: number; output: number }) => {
           billableUsage.input += next.input;
           billableUsage.output += next.output;
-          // Context-window occupancy is per request; parallel/iterative calls should
-          // show the largest live working set rather than a misleading cumulative sum.
           usage.input = Math.max(usage.input, next.input);
-          // Output capacity is also a per-request model limit. Keep the largest
-          // generation in the live inspector while billableUsage remains cumulative.
           usage.output = Math.max(usage.output, next.output);
           controller.enqueue(encoder.encode(frame({
             kind: "usage",
@@ -140,7 +157,7 @@ export async function POST(request: Request) {
           if (queuedEvents.length === 0) return;
           const batch = queuedEvents.splice(0, queuedEvents.length);
           try {
-            await appendRunEvents(org.sql, org.orgId, run.id, batch);
+            await appendRunEvents(sql, org.orgId, run.id, batch);
           } catch (eventError) {
             queuedEvents.unshift(...batch);
             console.error("[runs/execute] event batch persist failed:", eventError);
@@ -151,31 +168,10 @@ export async function POST(request: Request) {
           queueEvent(event);
           controller.enqueue(encoder.encode(frame({ kind: "event", event })));
         };
-        let lastControlCheck = 0;
         const executionController = new AbortController();
         const abortFromRequest = () => executionController.abort(request.signal.reason);
         if (request.signal.aborted) abortFromRequest();
         else request.signal.addEventListener("abort", abortFromRequest, { once: true });
-        let stopControlMonitor = false;
-        let requestedTerminalStatus: RunStatus | null = null;
-        const controlMonitor = (async () => {
-          while (!stopControlMonitor && !executionController.signal.aborted) {
-            await new Promise((resolve) => setTimeout(resolve, 350));
-            if (stopControlMonitor || executionController.signal.aborted) break;
-            try {
-              const durable = await getRun(org.sql, org.orgId, run.id);
-              const paused = durable?.status === "waiting_human" && durable.state?.pause && typeof durable.state.pause === "object";
-              if (durable?.status === "cancelled" || paused) {
-                requestedTerminalStatus = durable.status as RunStatus;
-                checkpoint = durable.state as RunCheckpoint;
-                executionController.abort(new Error(`Run ${durable.status}.`));
-                break;
-              }
-            } catch (controlError) {
-              console.warn("[runs/execute] control monitor failed:", controlError);
-            }
-          }
-        })();
 
         const gen: AsyncGenerator<RunYield, void, void> =
           resolved.type === "chat"
@@ -194,15 +190,8 @@ export async function POST(request: Request) {
 
         try {
           for await (const item of gen) {
-            if (Date.now() - lastControlCheck >= 500) {
-              lastControlCheck = Date.now();
-              const durable = await getRun(org.sql, org.orgId, run.id);
-              const paused = durable?.status === "waiting_human" && durable.state?.pause && typeof durable.state.pause === "object";
-              if (durable?.status === "cancelled" || paused) {
-                terminalStatus = durable.status as RunStatus;
-                checkpoint = durable.state as RunCheckpoint;
-                break;
-              }
+            if (!firstByteSent) {
+              firstByteSent = true;
             }
             if (item.kind === "text") {
               outputText += item.text;
@@ -225,14 +214,14 @@ export async function POST(request: Request) {
             } else if (item.kind === "artifact") {
               controller.enqueue(encoder.encode(frame({ kind: "artifact", artifact: item.artifact })));
               try {
-                const file = await createFile(org.sql, org.orgId, {
+                const file = await createFile(sql, org.orgId, {
                   title: item.artifact.title,
                   body: item.artifact.body,
                   fileType: item.artifact.type === "artifact" ? "artifact" : item.artifact.type,
                   status: "active",
                   metadata: { ...item.artifact.metadata, runId: run.id, runtimeArtifactId: item.artifact.id, seedFolder: generatedFileFolder() }
                 });
-                await linkRunOutputFile(org.sql, org.orgId, run.id, file.id);
+                await linkRunOutputFile(sql, org.orgId, run.id, file.id);
               } catch (err) {
                 console.error("[runs/execute] artifact persist failed:", err);
               }
@@ -241,7 +230,7 @@ export async function POST(request: Request) {
               controller.enqueue(encoder.encode(frame({ kind: "human_input", request: item.request })));
             } else if (item.kind === "checkpoint") {
               checkpoint = item.state;
-              await updateRun(org.sql, org.orgId, run.id, { state: checkpoint });
+              await updateRun(sql, org.orgId, run.id, { state: checkpoint });
               controller.enqueue(encoder.encode(frame({
                 kind: "run_state",
                 state: {
@@ -258,9 +247,9 @@ export async function POST(request: Request) {
           }
         } catch (err) {
           errorMessage = err instanceof Error ? err.message : "Run failed";
-          const durable = await getRun(org.sql, org.orgId, run.id);
-          if (requestedTerminalStatus || durable?.status === "cancelled" || durable?.status === "waiting_human" || request.signal.aborted) {
-            terminalStatus = requestedTerminalStatus ?? (request.signal.aborted ? "cancelled" : durable?.status as RunStatus);
+          const durable = await getRun(sql, org.orgId, run.id);
+          if (request.signal.aborted) {
+            terminalStatus = "cancelled";
             if (durable?.state) checkpoint = durable.state as RunCheckpoint;
             errorMessage = null;
           } else {
@@ -268,10 +257,8 @@ export async function POST(request: Request) {
             controller.enqueue(encoder.encode(frame({ kind: "error", message: errorMessage })));
           }
         } finally {
-          stopControlMonitor = true;
           request.signal.removeEventListener("abort", abortFromRequest);
           await flushQueuedEvents();
-          await controlMonitor;
         }
 
         const completedAt =
@@ -291,18 +278,30 @@ export async function POST(request: Request) {
           };
         }
 
-        await updateRun(org.sql, org.orgId, run.id, {
+        const timings = {
+          authMs,
+          harnessResolutionMs,
+          runCreationMs,
+          totalMs: performance.now() - reqStart,
+          dbQueryCount: 0,
+          dbTotalMs: 0,
+          compactionMs,
+          inputTokensEstimate,
+          systemPromptTokensEstimate
+        };
+
+        await updateRun(sql, org.orgId, run.id, {
           status: terminalStatus,
           outputs: { text: outputText },
-          state: checkpoint ?? undefined,
+          state: { ...(checkpoint ?? {}), _timings: timings },
           error: errorMessage,
           completedAt
         });
         if (chatId && compaction && resolved.type === "chat") {
-          await updateChatMetadata(org.sql, org.orgId, chatId, { compaction });
+          await updateChatMetadata(sql, org.orgId, chatId, { compaction });
         }
         if (chatId) {
-          await updateChatMetadata(org.sql, org.orgId, chatId, {
+          await updateChatMetadata(sql, org.orgId, chatId, {
             activeRunId: terminalStatus === "completed" ? null : run.id,
             lastRunId: run.id
           });
@@ -314,7 +313,7 @@ export async function POST(request: Request) {
           outputText
         ) {
           try {
-            await recordUsage(org.sql, org.orgId, {
+            await recordUsage(sql, org.orgId, {
               runId: run.id,
               provider: resolved.runRequest.provider.name,
               model: resolved.runRequest.model.model,
@@ -329,7 +328,7 @@ export async function POST(request: Request) {
 
         if (chatId && outputText) {
           try {
-            await appendChatMessage(org.sql, org.orgId, chatId, "assistant", outputText, { runId: run.id });
+            await appendChatMessage(sql, org.orgId, chatId, "assistant", outputText, { runId: run.id });
           } catch (err) {
             console.warn("[runs/execute] chat persist failed:", err);
           }

@@ -8,14 +8,16 @@ export class HttpError extends Error {
   }
 }
 
-let cachedSql: Sql | null = null;
+const getCached = <T>(key: string, init: () => T): T => {
+  const g = globalThis as unknown as Record<string, T | undefined>;
+  if (!g[key]) g[key] = init();
+  return g[key]!;
+};
 
 function getSql(): Sql | null {
-  if (cachedSql) return cachedSql;
   const url = process.env.DATABASE_URL;
   if (!url) return null;
-  cachedSql = createSql(url);
-  return cachedSql;
+  return getCached("__sql_pool", () => createSql(url));
 }
 
 export type OrgContext = {

@@ -81,8 +81,8 @@ export const MENTION_KIND_ICONS: Record<string, string> = {
 
 export const SETTINGS_TAB_ICONS: Record<string, string> = {
   models: "server",
-  integrations: "tool",
-  variables: "file",
+  connections: "link",
+  variables: "key",
   theme: "sun",
-  workspace: "database",
+  workspace: "users",
 };

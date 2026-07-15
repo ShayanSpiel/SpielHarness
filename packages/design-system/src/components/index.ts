@@ -2,6 +2,7 @@
 
 export { Button, type ButtonProps } from "./button";
 export { AppToaster } from "./app-toaster";
+export { Avatar, AvatarFallback, AvatarImage } from "./avatar";
 export { ChoiceButton, type ChoiceButtonProps } from "./choice-button";
 export { ConfirmDialog, type ConfirmDialogProps } from "./confirm-dialog";
 export { Icon, type IconProps } from "./icons";
@@ -84,6 +85,7 @@ export {
   SelectValue
 } from "./select";
 export { SearchInput, type SearchInputProps } from "./search-input";
+export { Skeleton } from "./skeleton";
 export { ResizableSidebar, type ResizableSidebarProps } from "./resizable-sidebar";
 export { ActionRow, type ActionRowProps } from "./action-row";
 export { SidebarListPanel } from "./sidebar-list-panel";

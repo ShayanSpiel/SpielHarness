@@ -106,65 +106,69 @@ export async function resolveExecution(
 ): Promise<ResolvedExecution> {
   if (!body.prompt?.trim()) throw new HttpError(400, "prompt is required");
 
-  // Load the entire harness: all files + all connections.
-  const [files, connections, modelRows] = await Promise.all([
+  const targetType: RunType = body.type ?? "chat";
+  const contextFileIds = dedupe(body.contextFileIds ?? []);
+  const isChat = targetType === "chat";
+
+  // For plain chat, skip connections and harness parsing (roles/skills/evals/workflows).
+  const [files, modelRows] = await Promise.all([
     listHarnessFiles(org.sql, org.orgId),
-    listConnections(org.sql, org.orgId),
     listModelsWithEnvironmentDefaults(org.sql, org.orgId)
   ]);
+  const connections = isChat ? [] : await listConnections(org.sql, org.orgId);
 
   const toRecord = (f: FileRow) => fileRowToRecord(f);
-  const roles = indexBy(
-    files.filter((f) => f.file_type === "harness_role").map(toRecord).map(parseRoleFile),
-    (r) => r.id
-  );
-  const skills = indexBy(
-    files
-      .filter((f) => f.file_type === "harness_skill")
-      .map(toRecord)
-      .map(parseSkillFile),
-    (s) => s.id
-  );
-  const evals = indexBy(
-    files.filter((f) => f.file_type === "harness_eval").map(toRecord).map(parseEvalFile),
-    (e) => e.id
-  );
-  const workflows = indexBy(
-    files.filter((f) => f.file_type === "harness_workflow" || f.file_type === "harness_workstream").map(toRecord).map(parseWorkflowFile),
-    (w) => w.id
-  );
-
-  // Slug indexes for role/skill reference resolution
+  let roles: Record<string, Role> = {};
+  let skills: Record<string, Skill> = {};
+  let evals: Record<string, EvalFile> = {};
+  let workflows: Record<string, WorkflowFile> = {};
   const roleBySlug = new Map<string, string>();
-  for (const role of Object.values(roles)) {
-    const slug = role.metadata?.slug;
-    if (typeof slug === "string") roleBySlug.set(slug, role.id);
-  }
   const skillBySlug = new Map<string, string>();
-  for (const skill of Object.values(skills)) {
-    const slug = skill.metadata?.slug;
-    if (typeof slug === "string") skillBySlug.set(slug, skill.id);
-  }
-  for (const role of Object.values(roles)) {
-    role.skillIds = role.skillIds.map((idOrSlug) => skillBySlug.get(idOrSlug) ?? idOrSlug);
-  }
   const fileReferenceIds = new Map<string, string>();
-  for (const file of files) {
-    fileReferenceIds.set(file.id, file.id);
-    const slug = file.metadata?.slug;
-    if (typeof slug === "string") fileReferenceIds.set(slug, file.id);
-  }
-  for (const evalFile of Object.values(evals)) {
-    const evalSkill = evalFileToSkill(evalFile, org.orgId);
-    skills[evalSkill.id] = evalSkill;
-    skillBySlug.set(evalFile.id, evalSkill.id);
-    skillBySlug.set(evalSkill.slug, evalSkill.id);
+
+  if (!isChat) {
+    roles = indexBy(
+      files.filter((f) => f.file_type === "harness_role").map(toRecord).map(parseRoleFile),
+      (r) => r.id
+    );
+    skills = indexBy(
+      files.filter((f) => f.file_type === "harness_skill").map(toRecord).map(parseSkillFile),
+      (s) => s.id
+    );
+    evals = indexBy(
+      files.filter((f) => f.file_type === "harness_eval").map(toRecord).map(parseEvalFile),
+      (e) => e.id
+    );
+    workflows = indexBy(
+      files.filter((f) => f.file_type === "harness_workflow" || f.file_type === "harness_workstream").map(toRecord).map(parseWorkflowFile),
+      (w) => w.id
+    );
+
+    for (const role of Object.values(roles)) {
+      const slug = role.metadata?.slug;
+      if (typeof slug === "string") roleBySlug.set(slug, role.id);
+    }
+    for (const skill of Object.values(skills)) {
+      const slug = skill.metadata?.slug;
+      if (typeof slug === "string") skillBySlug.set(slug, skill.id);
+    }
+    for (const role of Object.values(roles)) {
+      role.skillIds = role.skillIds.map((idOrSlug) => skillBySlug.get(idOrSlug) ?? idOrSlug);
+    }
+    for (const file of files) {
+      fileReferenceIds.set(file.id, file.id);
+      const slug = file.metadata?.slug;
+      if (typeof slug === "string") fileReferenceIds.set(slug, file.id);
+    }
+    for (const evalFile of Object.values(evals)) {
+      const evalSkill = evalFileToSkill(evalFile, org.orgId);
+      skills[evalSkill.id] = evalSkill;
+      skillBySlug.set(evalFile.id, evalSkill.id);
+      skillBySlug.set(evalSkill.slug, evalSkill.id);
+    }
   }
 
-  // Resolve context files (the user's attached files)
-  const contextFileIds = dedupe(body.contextFileIds ?? []);
   // Resolve target
-  const targetType: RunType = body.type ?? "chat";
   let targetId: string | null = null;
   let workflow: WorkflowFile | null = null;
   let singleNode: RunRequest["singleNode"] = null;
@@ -312,43 +316,45 @@ export async function resolveExecution(
     model = { provider: withEffort(model.provider), model: withEffort(model.model) };
   }
 
-  // Resolve connections
-  const connectionIds = new Set<string>();
-  const operationIds = new Set<string>();
-  for (const skill of Object.values(skills)) {
-    operationIds.add(skill.slug);
-    for (const binding of skill.bindings) {
-      if (binding.connectionId) connectionIds.add(binding.connectionId);
-    }
-  }
+  // Resolve connections (only for harness runs — chat doesn't execute skills)
   const connectionsById: Record<string, Connection> = {};
-  for (const c of connections) {
-    const exposesSkillOperation = (c.operations ?? []).some((operation) => operationIds.has(String(operation.id)));
-    if (connectionIds.has(c.id) || exposesSkillOperation) {
-      connectionsById[c.id] = {
-        id: c.id,
-        orgId: c.org_id,
-        name: c.name,
-        kind: c.kind as Connection["kind"],
-        status: c.status as Connection["status"],
-        baseUrl: c.base_url,
-        secretEnvKey: c.secret_env_key,
-        config: c.config ?? {},
-        operations: (c.operations ?? []).map((o) => ({
-          id: String(o.id),
-          label: o.label as string | undefined,
-          effect: (o.effect as "read" | "write" | "send" | "destructive" | undefined) ?? "read",
-          method: o.method as string | undefined,
-          path: o.path as string | undefined,
-          inputParam: o.inputParam as string | undefined
-        })),
-        enabled: c.enabled
-      };
+  if (!isChat) {
+    const connectionIds = new Set<string>();
+    const operationIds = new Set<string>();
+    for (const skill of Object.values(skills)) {
+      operationIds.add(skill.slug);
+      for (const binding of skill.bindings) {
+        if (binding.connectionId) connectionIds.add(binding.connectionId);
+      }
+    }
+    for (const c of connections) {
+      const exposesSkillOperation = (c.operations ?? []).some((operation) => operationIds.has(String(operation.id)));
+      if (connectionIds.has(c.id) || exposesSkillOperation) {
+        connectionsById[c.id] = {
+          id: c.id,
+          orgId: c.org_id,
+          name: c.name,
+          kind: c.kind as Connection["kind"],
+          status: c.status as Connection["status"],
+          baseUrl: c.base_url,
+          secretEnvKey: c.secret_env_key,
+          config: c.config ?? {},
+          operations: (c.operations ?? []).map((o) => ({
+            id: String(o.id),
+            label: o.label as string | undefined,
+            effect: (o.effect as "read" | "write" | "send" | "destructive" | undefined) ?? "read",
+            method: o.method as string | undefined,
+            path: o.path as string | undefined,
+            inputParam: o.inputParam as string | undefined
+          })),
+          enabled: c.enabled
+        };
+      }
     }
   }
 
-  // Resolve director prompt for chat runs
-  const directorPrompt = resolveDirectorPrompt(files, roles, skills, evals, workflows);
+  // Resolve director prompt
+  const directorPrompt = resolveDirectorPrompt(files, roles, skills, evals, workflows, isChat);
   const harnessFileAction: NonNullable<RunRequest["harnessFileAction"]> = async (action, params, context) => {
     const allowedTypes = new Set(["harness_role", "harness_skill", "harness_workflow", "harness_eval", "harness_template"]);
     if (action === "create") {
@@ -552,25 +558,28 @@ function resolveDirectorPrompt(
   roles: Record<string, Role>,
   skills: Record<string, Skill>,
   evals: Record<string, EvalFile>,
-  workflows: Record<string, WorkflowFile>
+  workflows: Record<string, WorkflowFile>,
+  isChat: boolean
 ): string {
   const orchestrator = files.find(
     (f) => f.file_type === "prompt" && f.metadata?.systemRole === "orchestrator" && f.status === "active"
   );
-  const catalog = [
-    "Workspace catalog (awareness only; an item is executable context only when the user selects it):",
-    `Roles: ${Object.values(roles).filter((item) => item.status === "active").map((item) => item.name).join(", ") || "none"}`,
-    `Skills: ${Object.values(skills).filter((item) => item.status === "active" && !item.id.startsWith("runtime.eval.skill.")).map((item) => item.name).join(", ") || "none"}`,
-    `Workflows: ${Object.values(workflows).filter((item) => item.status === "active").map((item) => item.name).join(", ") || "none"}`,
-    `Evals: ${Object.values(evals).filter((item) => item.status === "active").map((item) => item.name).join(", ") || "none"}`,
-    `Available strategy and library files: ${files.filter((item) => ["knowledge", "strategy", "library", "prompt"].includes(item.file_type) && item.status === "active").map((item) => item.title).join(", ") || "none"}`
-  ].join("\n");
-  return [
-    "You are the SpielOS assistant. Converse naturally and answer the user's question directly. You can explain the product, its workspace, and the available harness catalog. Do not require a selected role, skill, file, eval, or workflow for ordinary conversation.",
+  const base = [
+    "You are the SpielOS assistant. Converse naturally and answer the user's question directly. You can explain the product and its workspace. Do not require a selected role, skill, file, eval, or workflow for ordinary conversation.",
     "Never claim that you searched, executed a tool, ran a workflow, or read a file unless the runtime actually supplied that context or execution.",
-    orchestrator?.body ? `Workspace-authored assistant instructions:\n${orchestrator.body}` : "",
-    catalog
-  ].filter(Boolean).join("\n\n");
+    orchestrator?.body ? `Workspace-authored assistant instructions:\n${orchestrator.body}` : ""
+  ].filter(Boolean);
+  if (!isChat) {
+    base.push([
+      "Workspace catalog (awareness only; an item is executable context only when the user selects it):",
+      `Roles: ${Object.values(roles).filter((item) => item.status === "active").map((item) => item.name).join(", ") || "none"}`,
+      `Skills: ${Object.values(skills).filter((item) => item.status === "active" && !item.id.startsWith("runtime.eval.skill.")).map((item) => item.name).join(", ") || "none"}`,
+      `Workflows: ${Object.values(workflows).filter((item) => item.status === "active").map((item) => item.name).join(", ") || "none"}`,
+      `Evals: ${Object.values(evals).filter((item) => item.status === "active").map((item) => item.name).join(", ") || "none"}`,
+      `Available strategy and library files: ${files.filter((item) => ["knowledge", "strategy", "library", "prompt"].includes(item.file_type) && item.status === "active").map((item) => item.title).join(", ") || "none"}`
+    ].join("\n"));
+  }
+  return base.join("\n\n");
 }
 
 // ── Workflow normalization: resolve role/skill slugs, attach files ─

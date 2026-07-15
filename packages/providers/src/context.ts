@@ -85,7 +85,8 @@ export async function assembleConversationContext(args: {
     messages: initial,
     signal: args.signal
   });
-  if (initialCount.count <= inputLimit * capabilities.compactionThreshold) {
+  // Skip compaction on first turn — nothing to compact yet.
+  if (initialCount.count <= inputLimit * capabilities.compactionThreshold || uncompactedHistory.length <= 1) {
     return {
       messages: initial,
       inputTokens: initialCount.count,

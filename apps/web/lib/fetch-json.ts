@@ -1,6 +1,6 @@
 export const REQUEST_POLICY = {
-  attempts: 3,
-  baseDelayMs: 250,
+  attempts: 2,
+  baseDelayMs: 200,
 } as const;
 
 export class HttpRequestError extends Error {

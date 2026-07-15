@@ -9,7 +9,8 @@ export async function createDefaultOrgForUser(
   pool: Pool,
   userId: string,
   email: string,
-  name: string | null
+  name: string | null,
+  image?: string | null
 ): Promise<void> {
   const displayName = name || email.split("@")[0] || "User";
   const orgName = `${displayName}'s workspace`;
@@ -18,9 +19,9 @@ export async function createDefaultOrgForUser(
   // Create profile
   await pool.query(
     `INSERT INTO profiles (id, email, display_name, avatar_url)
-     VALUES ($1, $2, $3, NULL)
-     ON CONFLICT (id) DO NOTHING`,
-    [userId, email, displayName]
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (id) DO UPDATE SET avatar_url = COALESCE($4, profiles.avatar_url)`,
+    [userId, email, displayName, image ?? null]
   );
 
   // Create org

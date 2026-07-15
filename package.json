@@ -18,7 +18,11 @@
     "test:e2e": "npx playwright test",
     "test:e2e:ui": "npx playwright test --ui",
     "test:e2e:live": "npx playwright test --headed",
-    "test:e2e:update": "npx playwright test --update-snapshots"
+    "test:e2e:update": "npx playwright test --update-snapshots",
+    "db:verify": "bash scripts/db-verify.sh",
+    "db:migrate": "bash scripts/db-migrate.sh",
+    "db:seed": "bash scripts/db-seed.sh",
+    "db:reset": "bash scripts/db-reset.sh"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",

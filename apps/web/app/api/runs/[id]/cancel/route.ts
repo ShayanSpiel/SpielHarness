@@ -9,10 +9,18 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
 
     const existing = await getRun(org.sql, org.orgId, id);
     if (!existing) throw new HttpError(404, "Run not found");
+    if (existing.status === "cancelled" || existing.status === "completed") {
+      return Response.json({ ok: true, already: existing.status });
+    }
 
+    const requestedAt = new Date().toISOString();
     await updateRun(org.sql, org.orgId, id, {
       status: "cancelled",
-      completedAt: new Date().toISOString()
+      completedAt: requestedAt,
+      state: {
+        ...(existing.state ?? {}),
+        cancel_requested_at: requestedAt
+      }
     });
 
     await appendRunEvents(org.sql, org.orgId, id, [
@@ -23,7 +31,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
         skill_id: null,
         skill_name: null,
         message: "Run cancelled by user.",
-        payload: {}
+        payload: { requestedAt }
       }
     ]);
 

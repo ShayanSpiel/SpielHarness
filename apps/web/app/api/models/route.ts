@@ -1,11 +1,13 @@
 import {
   createModel,
   deleteModel,
+  getModel,
   updateModel
 } from "@spielos/db";
 import type { Model, ModelProvider } from "@spielos/core";
 import { errorResponse, getOrg, HttpError, requireAdmin } from "../../../lib/server";
 import { listModelsWithEnvironmentDefaults } from "../../../lib/default-models";
+import { encryptConnectionSecret } from "../../../lib/connection-secrets";
 
 const ALLOWED_PROVIDERS = ["mistral", "openai", "anthropic", "openai-compatible"];
 
@@ -27,6 +29,7 @@ function toClient(row: {
 }): Model {
   const allowed = ["mistral", "openai", "anthropic", "openai-compatible"] as const;
   const provider = (allowed.find((k) => k === row.provider) ?? "openai-compatible") as ModelProvider["provider"];
+  const safeConfig = row.config ? Object.fromEntries(Object.entries(row.config).filter(([k]) => k !== "encryptedCredential")) : {};
   return {
     id: row.id,
     orgId: row.org_id,
@@ -34,9 +37,8 @@ function toClient(row: {
     provider,
     model: row.model,
     baseUrl: row.base_url,
-    // Never echo a legacy row that accidentally stored a credential value.
     secretEnvKey: safeEnvironmentKey(row.secret_env_key),
-    config: row.config ?? {},
+    config: safeConfig,
     enabled: row.enabled
   };
 }
@@ -62,6 +64,7 @@ export async function POST(request: Request) {
       model: string;
       baseUrl?: string | null;
       secretEnvKey?: string | null;
+      apiKey?: string | null;
       config?: Record<string, unknown>;
       enabled?: boolean;
     };
@@ -74,6 +77,10 @@ export async function POST(request: Request) {
     if (body.secretEnvKey && !safeEnvironmentKey(body.secretEnvKey)) {
       throw new HttpError(400, "secretEnvKey must be an environment variable name, not a credential value");
     }
+    const config = { ...(body.config ?? {}) };
+    if (body.apiKey) {
+      config.encryptedCredential = encryptConnectionSecret({ apiKey: body.apiKey });
+    }
     const row = await createModel(org.sql, org.orgId, {
       id: body.id,
       name: body.name,
@@ -81,7 +88,7 @@ export async function POST(request: Request) {
       model: body.model,
       baseUrl: body.baseUrl ?? null,
       secretEnvKey: body.secretEnvKey ?? null,
-      config: body.config ?? {},
+      config,
       enabled: body.enabled ?? true
     });
     return Response.json({ model: toClient(row) }, { status: 201 });
@@ -101,6 +108,7 @@ export async function PUT(request: Request) {
       model?: string;
       baseUrl?: string | null;
       secretEnvKey?: string | null;
+      apiKey?: string | null;
       config?: Record<string, unknown>;
       enabled?: boolean;
     };
@@ -111,13 +119,24 @@ export async function PUT(request: Request) {
     if (body.secretEnvKey && !safeEnvironmentKey(body.secretEnvKey)) {
       throw new HttpError(400, "secretEnvKey must be an environment variable name, not a credential value");
     }
+
+    // Preserve existing encryptedCredential across updates
+    const existingModelRow = await getModel(org.sql, org.orgId, body.id);
+    if (!existingModelRow) throw new HttpError(404, "Model not found");
+    const existingConfig = existingModelRow.config as Record<string, unknown> | undefined;
+    const config = { ...(existingConfig ?? {}), ...(body.config ?? {}) };
+    if (body.apiKey) {
+      config.encryptedCredential = encryptConnectionSecret({ apiKey: body.apiKey });
+    } else if (body.apiKey === null) {
+      delete config.encryptedCredential;
+    }
     const row = await updateModel(org.sql, org.orgId, body.id, {
       name: body.name,
       provider: body.provider,
       model: body.model,
       baseUrl: body.baseUrl,
       secretEnvKey: body.secretEnvKey,
-      config: body.config,
+      config,
       enabled: body.enabled
     });
     if (!row) throw new HttpError(404, "Model not found");

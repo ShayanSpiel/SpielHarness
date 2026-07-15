@@ -40,7 +40,7 @@ export default function StrategyPage() {
           folderKinds={STRATEGY_FOLDER_KINDS}
           fileExtension=".md"
           fileIconName="file-text"
-          itemIconMap={{ strategy: "task", prompt: "prompt" }}
+          itemIconMap={{ strategy: "strategy", prompt: "prompt" }}
           folderIconName="prompt-folder"
           folderSectionLabel="Strategy"
           newFileLabel="Document"

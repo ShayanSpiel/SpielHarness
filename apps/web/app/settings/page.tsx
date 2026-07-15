@@ -34,7 +34,7 @@ type SettingsTab = "models" | "connections" | "variables" | "theme" | "workspace
 
 const SETTINGS_TABS: { id: SettingsTab; label: string; icon: string }[] = [
   { id: "models", label: "Models", icon: SETTINGS_TAB_ICONS.models },
-  { id: "connections", label: "Connections", icon: SETTINGS_TAB_ICONS.integrations },
+  { id: "connections", label: "Connections", icon: SETTINGS_TAB_ICONS.connections },
   { id: "variables", label: "Secrets & Variables", icon: SETTINGS_TAB_ICONS.variables },
   { id: "workspace", label: "Workspace", icon: SETTINGS_TAB_ICONS.workspace },
   { id: "theme", label: "Theme", icon: SETTINGS_TAB_ICONS.theme },
@@ -107,10 +107,12 @@ export default function SettingsPage() {
   const [creatingModel, setCreatingModel] = useState(false);
   const [confirmModelDelete, setConfirmModelDelete] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [apiKey, setApiKey] = useState("");
   const [connectionSaving, setConnectionSaving] = useState(false);
   const [disconnecting, setDisconnecting] = useState<typeof integrations[number] | null>(null);
   const [disconnectingBusy, setDisconnectingBusy] = useState(false);
   const isNew = selectedId === null;
+  const isEnvModel = !isNew && (store.models.find((m) => m.id === selectedId)?.config?.source === "environment");
 
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
@@ -233,12 +235,15 @@ export default function SettingsPage() {
     setCreatingModel(true);
     setSelectedId(null);
     setAdvancedOpen(false);
+    setApiKey("");
     reset(emptyModel());
   }
 
   async function save() {
     setSaving(true);
     try {
+      const config = { capabilities: draft.capabilities };
+      const extra = apiKey ? { apiKey } : {};
       if (isNew) {
         const created = await store.addModel({
           name: draft.label,
@@ -247,20 +252,23 @@ export default function SettingsPage() {
           baseUrl: draft.baseUrl || null,
           secretEnvKey: draft.secretEnvKey || null,
           enabled: draft.enabled,
-          config: { capabilities: draft.capabilities }
+          config,
+          ...extra
         });
         setSelectedId(created.id);
         reset(toProviderModel(created));
         setCreatingModel(false);
+        setApiKey("");
         toast.success("Model created");
       } else {
         const id = (draft as ProviderModel).id;
-        await store.updateModel(id, { name: draft.label, provider: draft.provider as Model["provider"], model: draft.model, baseUrl: draft.baseUrl || null, secretEnvKey: draft.secretEnvKey || null, enabled: draft.enabled, config: { capabilities: draft.capabilities } });
+        await store.updateModel(id, { name: draft.label, provider: draft.provider as Model["provider"], model: draft.model, baseUrl: draft.baseUrl || null, secretEnvKey: draft.secretEnvKey || null, enabled: draft.enabled, config, ...extra });
         markSaved();
+        setApiKey("");
         toast.success("Model saved");
       }
-    } catch {
-      toast.error("Failed to save model");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save model");
     } finally {
       setSaving(false);
     }
@@ -326,28 +334,33 @@ export default function SettingsPage() {
                     title={draft.label || "New model"}
                   />
                 ) : null}
-                {store.models.map((model) => (
-                  <ListItem
-                    active={model.id === selectedId}
-                    key={model.id}
-                    metadata={
-                      <span className="flex shrink-0 items-center gap-1">
-                        {model.config?.source === "environment" || model.secretEnvKey ? <Pill className="text-3xs" tone="info">Env</Pill> : null}
-                        <Pill tone={model.enabled ? "success" : "default"} className="text-3xs">
-                          {model.enabled ? "On" : "Off"}
-                        </Pill>
-                      </span>
-                    }
-                    onClick={() => {
-                      setCreatingModel(false);
-                      setSelectedId(model.id);
-                      setAdvancedOpen(false);
-                      reset(toProviderModel(model));
-                    }}
-                    subtitle={`${model.provider} · ${compactTokens(capabilitiesForModel(model).contextWindow)} context · ${capabilitiesForModel(model).reasoningEffort === "xhigh" ? "ultra" : capabilitiesForModel(model).reasoningEffort}`}
-                    title={model.name}
-                  />
-                ))}
+                {store.models.map((model) => {
+                  const isEnv = model.config?.source === "environment";
+                  return (
+                    <ListItem
+                      active={model.id === selectedId}
+                      className={cn(isEnv && "opacity-60")}
+                      key={model.id}
+                      metadata={
+                        <span className="flex shrink-0 items-center gap-1">
+                          {isEnv || model.secretEnvKey ? <Pill className="text-3xs" tone="info">Env</Pill> : null}
+                          <Pill tone={model.enabled ? "success" : "default"} className="text-3xs">
+                            {model.enabled ? "On" : "Off"}
+                          </Pill>
+                        </span>
+                      }
+                      onClick={() => {
+                        setCreatingModel(false);
+                        setSelectedId(model.id);
+                        setAdvancedOpen(false);
+                        setApiKey("");
+                        reset(toProviderModel(model));
+                      }}
+                      subtitle={`${model.provider} · ${compactTokens(capabilitiesForModel(model).contextWindow)} context · ${capabilitiesForModel(model).reasoningEffort === "xhigh" ? "ultra" : capabilitiesForModel(model).reasoningEffort}`}
+                      title={model.name}
+                    />
+                  );
+                })}
               </ul>
             </ResizableSidebar>
             <section className="min-w-0 flex-1 overflow-y-auto bg-background">
@@ -359,24 +372,32 @@ export default function SettingsPage() {
                       {isNew ? "New" : "Edit"}
                     </Pill>
                     <div className="ml-auto flex items-center gap-1.5">
-                      {!isNew ? (
+                      {!isNew && !isEnvModel ? (
                         <Tooltip content="Delete model" side="bottom">
                           <Button aria-label="Delete" icon="trash" onClick={() => setConfirmModelDelete(true)} size="icon-xs" variant="ghost" />
                         </Tooltip>
                       ) : null}
                       <Button
-                        disabled={!dirty || !draft.label.trim() || !draft.model.trim()}
+                        disabled={isEnvModel || !dirty || !draft.label.trim() || !draft.model.trim()}
                         icon="save"
                         loading={saving}
                         onClick={save}
                         size="md"
-                        variant={dirty ? "primary" : "outline"}
+                        variant={dirty && !isEnvModel ? "primary" : "outline"}
                       >
                         Save
                       </Button>
                     </div>
                   </div>
-                  <div className="grid gap-4">
+
+                  {isEnvModel ? (
+                    <Notice className="mb-4" tone="info" title="Environment model">
+                      This model is provided by your deployment environment. Create a custom
+                      model to override its settings.
+                    </Notice>
+                  ) : null}
+
+                  <div className={cn("grid gap-4", isEnvModel && "pointer-events-none opacity-50 select-none")}>
                     <div className="grid items-start gap-3 md:grid-cols-2">
                       <Field label="Provider">
                         <NativeSelect
@@ -405,8 +426,8 @@ export default function SettingsPage() {
                           value={draft.model}
                         />
                       </Field>
-                      <div className="md:col-span-2">
-                        <Field hint="Name of the secure environment variable that contains this provider token. Credential values are never shown here." label="API credential">
+                      <div className="md:col-span-2 grid gap-3 md:grid-cols-2">
+                        <Field hint="Name of the secure environment variable that contains this provider token (optional)." label="Environment key">
                           <div className="flex items-center gap-2">
                             <Input
                               className="min-w-0 flex-1 font-mono"
@@ -416,8 +437,24 @@ export default function SettingsPage() {
                             />
                             <Pill className="h-8 shrink-0 px-2" tone={draft.secretEnvKey ? "success" : "default"}>
                               <Icon name={draft.secretEnvKey ? "shield" : "lock"} size={11} />
-                              {draft.secretEnvKey ? "Secure env" : "Not set"}
+                              {draft.secretEnvKey ? "Secure" : "Not set"}
                             </Pill>
+                          </div>
+                        </Field>
+                        <Field hint="Paste the API key directly. It will be encrypted and stored securely." label="API Key">
+                          <div className="flex items-center gap-2">
+                            <Input
+                              className="min-w-0 flex-1"
+                              onChange={(event) => setApiKey(event.target.value)}
+                              type="password"
+                              value={apiKey}
+                            />
+                            {apiKey ? (
+                              <Pill className="h-8 shrink-0 px-2" tone="success">
+                                <Icon name="shield" size={11} />
+                                Encrypted
+                              </Pill>
+                            ) : null}
                           </div>
                         </Field>
                       </div>
@@ -564,18 +601,120 @@ export default function SettingsPage() {
         )}
 
         {activeTab === "variables" && (
-          <div className="min-h-0 flex-1 overflow-y-auto"><div className="mx-auto w-full max-w-3xl px-6 py-6"><div className="rounded-md border border-border bg-panel p-5">
-            <div className="flex items-center gap-2"><Icon name="terminal" size={14} /><h2 className="text-sm font-semibold text-foreground">Secrets & Variables</h2><Pill>{variables.length}</Pill></div>
-            <p className="mt-2 text-xs text-muted-foreground">Variables are workspace configuration. Secret references point to deployment environment variables; their values are never stored or shown here.</p>
-            <div className="mt-4 grid gap-3 rounded-md bg-panel-raised p-3 md:grid-cols-2">
-              <Field label="Name"><Input placeholder="Default sender" value={variableDraft.name} onChange={(event) => setVariableDraft((d) => ({ ...d, name: event.target.value }))} /></Field>
-              <Field label="Type"><NativeSelect ariaLabel="Variable type" value={variableDraft.kind} options={[{ label: "Variable", value: "variable" }, { label: "Secret reference", value: "secret_ref" }]} onChange={(kind) => setVariableDraft((d) => ({ ...d, kind }))} /></Field>
-              <Field label={variableDraft.kind === "secret_ref" ? "Environment key" : "Value"}><Input placeholder={variableDraft.kind === "secret_ref" ? "BUFFER_API_KEY" : "marketing@company.com"} value={variableDraft.value} onChange={(event) => setVariableDraft((d) => ({ ...d, value: event.target.value }))} /></Field>
-              <Field label="Description (optional)"><Input value={variableDraft.description} onChange={(event) => setVariableDraft((d) => ({ ...d, description: event.target.value }))} /></Field>
-              <div className="md:col-span-2"><Button disabled={!variableDraft.name.trim()} onClick={addVariable} size="md" variant="primary"><Icon name="plus" size={14} />Add</Button></div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="mx-auto w-full max-w-3xl px-6 py-6">
+              <div className="rounded-md border border-border bg-panel p-5">
+                <div className="mb-4 flex items-center gap-2">
+                  <span className="flex h-7 w-7 items-center justify-center rounded-md bg-panel text-muted-foreground">
+                    <Icon name="key" size={13} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-foreground">Secrets & Variables</div>
+                    <div className="text-3xs text-muted-foreground">
+                      Variables are plain values; secret references point to deployment environment variables.
+                    </div>
+                  </div>
+                  <Pill tone="default">{variables.length}</Pill>
+                </div>
+
+                <div className="grid gap-3 rounded-md bg-panel-raised p-3 sm:grid-cols-[1fr_auto_1fr]">
+                  <Field label="Name">
+                    <Input
+                      placeholder="e.g. DEFAULT_SENDER"
+                      onChange={(event) => setVariableDraft((d) => ({ ...d, name: event.target.value }))}
+                      value={variableDraft.name}
+                    />
+                  </Field>
+                  <Field label="Type">
+                    <NativeSelect
+                      ariaLabel="Variable type"
+                      onChange={(kind) => setVariableDraft((d) => ({ ...d, kind }))}
+                      options={[{ label: "Variable", value: "variable" }, { label: "Secret reference", value: "secret_ref" }]}
+                      value={variableDraft.kind}
+                    />
+                  </Field>
+                  <Field label={variableDraft.kind === "secret_ref" ? "Environment key" : "Value"}>
+                    <Input
+                      placeholder={variableDraft.kind === "secret_ref" ? "MY_API_KEY" : "value"}
+                      onChange={(event) => setVariableDraft((d) => ({ ...d, value: event.target.value }))}
+                      value={variableDraft.value}
+                    />
+                  </Field>
+                  <div className="sm:col-span-3">
+                    <Field label="Description (optional)">
+                      <Input
+                        onChange={(event) => setVariableDraft((d) => ({ ...d, description: event.target.value }))}
+                        value={variableDraft.description}
+                      />
+                    </Field>
+                  </div>
+                  <div className="sm:col-span-3">
+                    <Button
+                      disabled={!variableDraft.name.trim()}
+                      icon="plus"
+                      onClick={addVariable}
+                      size="md"
+                      variant="primary"
+                    >
+                      Add
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-2">
+                  {variables.length === 0 ? (
+                    <div className="flex flex-col items-center gap-2 py-8 text-sm text-muted-foreground">
+                      <Icon name="key" size={20} />
+                      <span>No variables yet. Add one above.</span>
+                    </div>
+                  ) : (
+                    variables.map((variable) => (
+                      <div
+                        className="flex items-center gap-3 rounded-md bg-panel-raised p-3 transition-colors hover:bg-hover"
+                        key={variable.id}
+                      >
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-panel text-muted-foreground">
+                          <Icon name={variable.kind === "secret_ref" ? "lock" : "code"} size={14} />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-medium text-foreground">
+                              {variable.name}
+                            </span>
+                            <Pill
+                              className="text-3xs"
+                              tone={variable.kind === "secret_ref" ? "purple" : "default"}
+                            >
+                              {variable.kind === "secret_ref" ? "Secret" : "Variable"}
+                            </Pill>
+                          </div>
+                          <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                            {variable.kind === "secret_ref"
+                              ? variable.envKey ?? "—"
+                              : variable.value ?? "—"}
+                          </div>
+                        </div>
+                        <Pill
+                          className="shrink-0"
+                          tone={
+                            variable.kind === "secret_ref" && !variable.configured
+                              ? "warning"
+                              : "success"
+                          }
+                        >
+                          {variable.kind === "secret_ref"
+                            ? variable.configured
+                              ? "Ready"
+                              : "Missing env"
+                            : "Active"}
+                        </Pill>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </div>
-            <div className="mt-4 grid gap-2">{variables.map((variable) => <div className="flex items-center gap-3 rounded-md bg-panel-raised p-3" key={variable.id}><Icon name={variable.kind === "secret_ref" ? "lock" : "code"} size={14} /><div className="min-w-0 flex-1"><div className="text-sm font-medium text-foreground">{variable.name}</div><div className="truncate text-xs text-muted-foreground">{variable.kind === "secret_ref" ? variable.envKey : variable.value}</div></div><Pill tone={variable.kind === "secret_ref" && !variable.configured ? "warning" : "success"}>{variable.kind === "secret_ref" ? variable.configured ? "Ready" : "Missing env" : "Variable"}</Pill></div>)}</div>
-          </div></div></div>
+          </div>
         )}
 
         {activeTab === "theme" && (
