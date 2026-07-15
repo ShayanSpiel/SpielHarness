@@ -1,13 +1,18 @@
 import {
   createModel,
   deleteModel,
-  listModels,
   updateModel
 } from "@spielos/db";
 import type { Model, ModelProvider } from "@spielos/core";
 import { errorResponse, getOrg, HttpError, requireAdmin } from "../../../lib/server";
+import { listModelsWithEnvironmentDefaults } from "../../../lib/default-models";
 
 const ALLOWED_PROVIDERS = ["mistral", "openai", "anthropic", "openai-compatible"];
+
+function safeEnvironmentKey(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return /^[A-Z_][A-Z0-9_]*$/.test(value) ? value : null;
+}
 
 function toClient(row: {
   id: string;
@@ -29,7 +34,8 @@ function toClient(row: {
     provider,
     model: row.model,
     baseUrl: row.base_url,
-    secretEnvKey: row.secret_env_key,
+    // Never echo a legacy row that accidentally stored a credential value.
+    secretEnvKey: safeEnvironmentKey(row.secret_env_key),
     config: row.config ?? {},
     enabled: row.enabled
   };
@@ -38,7 +44,7 @@ function toClient(row: {
 export async function GET() {
   try {
     const org = await getOrg();
-    const models = await listModels(org.sql, org.orgId);
+    const models = await listModelsWithEnvironmentDefaults(org.sql, org.orgId);
     return Response.json({ models: models.map(toClient) });
   } catch (err) {
     return errorResponse(err);
@@ -64,6 +70,9 @@ export async function POST(request: Request) {
     }
     if (!ALLOWED_PROVIDERS.includes(body.provider)) {
       throw new HttpError(400, "unsupported provider");
+    }
+    if (body.secretEnvKey && !safeEnvironmentKey(body.secretEnvKey)) {
+      throw new HttpError(400, "secretEnvKey must be an environment variable name, not a credential value");
     }
     const row = await createModel(org.sql, org.orgId, {
       id: body.id,
@@ -98,6 +107,9 @@ export async function PUT(request: Request) {
     if (!body.id) throw new HttpError(400, "id is required");
     if (body.provider !== undefined && !ALLOWED_PROVIDERS.includes(body.provider)) {
       throw new HttpError(400, "unsupported provider");
+    }
+    if (body.secretEnvKey && !safeEnvironmentKey(body.secretEnvKey)) {
+      throw new HttpError(400, "secretEnvKey must be an environment variable name, not a credential value");
     }
     const row = await updateModel(org.sql, org.orgId, body.id, {
       name: body.name,

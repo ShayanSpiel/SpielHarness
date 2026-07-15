@@ -14,13 +14,20 @@
     "lint": "npm run lint --workspace @spielos/web",
     "check:ui": "npm run check:colors --workspace @spielos/web && bash scripts/check-ui-contracts.sh",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/*.test.ts"
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test:e2e": "npx playwright test",
+    "test:e2e:ui": "npx playwright test --ui",
+    "test:e2e:live": "npx playwright test --headed",
+    "test:e2e:update": "npx playwright test --update-snapshots"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "typescript": "^6.0.0"
   },
   "dependencies": {
     "@boxicons/react": "^1.0.3",
-    "geist": "^1.7.2"
+    "better-auth": "^1.6.23",
+    "geist": "^1.7.2",
+    "sharp": "^0.35.3"
   }
 }

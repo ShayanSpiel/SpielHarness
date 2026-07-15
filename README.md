@@ -28,7 +28,7 @@ npm run lint
 npm run build
 ```
 
-Set `MISTRAL_API_KEY` for the environment-backed plain-chat fallback and optionally `MISTRAL_MODEL` to override its model id. Enabled database model records take precedence. Plain chat does not require a selected workflow, role, skill, eval, or context file.
+Set `MISTRAL_API_KEY` for the environment-backed Mistral Small and Mistral Medium defaults. Use `MISTRAL_MODEL` or `MISTRAL_MEDIUM_MODEL` to override either model id; the Medium capacity and reasoning defaults also have dedicated environment settings in `apps/web/.env.example`. Enabled database model records take precedence. Plain chat does not require a selected workflow, role, skill, eval, or context file.
 
 ## Starter Harness
 

@@ -9,6 +9,7 @@ export {
   ENTITY_ICONS,
   ACTION_ICONS,
   EVENT_ICONS,
+  CONTEXT_ICON,
   CONTEXT_KIND_ICONS,
   MENTION_KIND_ICONS,
   SETTINGS_TAB_ICONS
@@ -73,6 +74,7 @@ export { NavTabs, type NavTab, type NavTabsProps } from "./nav-tabs";
 export { Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle } from "./panel";
 export { PageHeader, type PageHeaderProps } from "./page-header";
 export { Pill, type PillProps } from "./pill";
+export { Popover, PopoverContent, PopoverTrigger } from "./popover";
 export {
   Select,
   SelectContent,

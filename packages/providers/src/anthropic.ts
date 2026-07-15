@@ -1,8 +1,26 @@
 import type { ChatAdapter, ChatRequest, ChatResponse } from "./types.ts";
-import { readSecret, baseUrlFor } from "./types.ts";
+import { readSecret, baseUrlFor, reasoningConfig } from "./types.ts";
 
 // Anthropic Messages API.
 export const anthropicAdapter: ChatAdapter = {
+  async countTokens(req: ChatRequest): Promise<number> {
+    const apiKey = readSecret(req);
+    if (!apiKey) throw new Error(`Provider "${req.provider.name}" has no API key.`);
+    const { system, messages } = splitSystem(req.messages);
+    const response = await fetch(`${baseUrlFor(req, "https://api.anthropic.com/v1")}/messages/count_tokens`, {
+      method: "POST",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ model: req.model.model, system, messages }),
+      signal: req.signal
+    });
+    if (!response.ok) throw new Error(`Anthropic token count failed: ${response.status}`);
+    const data = await response.json() as { input_tokens?: number };
+    return data.input_tokens ?? 0;
+  },
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const apiKey = readSecret(req);
     if (!apiKey) throw new Error(`Provider "${req.provider.name}" has no API key.`);
@@ -20,7 +38,8 @@ export const anthropicAdapter: ChatAdapter = {
         max_tokens: req.maxTokens ?? 1024,
         temperature: req.temperature ?? 0.4,
         system,
-        messages
+        messages,
+        ...reasoningConfig(req)
       }),
       signal: req.signal
     });
@@ -35,11 +54,13 @@ export const anthropicAdapter: ChatAdapter = {
       .filter((b) => b.type === "text")
       .map((b) => b.text ?? "")
       .join("");
+    const usage = data.usage
+      ? { input: data.usage.input_tokens ?? 0, output: data.usage.output_tokens ?? 0 }
+      : undefined;
+    if (usage) req.onUsage?.(usage);
     return {
       content: text.trim(),
-      usage: data.usage
-        ? { input: data.usage.input_tokens ?? 0, output: data.usage.output_tokens ?? 0 }
-        : undefined,
+      usage,
       raw: data
     };
   },
@@ -62,6 +83,7 @@ export const anthropicAdapter: ChatAdapter = {
         temperature: req.temperature ?? 0.4,
         system,
         messages,
+        ...reasoningConfig(req),
         stream: true
       }),
       signal: req.signal
@@ -87,7 +109,13 @@ export const anthropicAdapter: ChatAdapter = {
           const data = JSON.parse(raw) as {
             type?: string;
             delta?: { type?: string; text?: string };
+            message?: { usage?: { input_tokens?: number; output_tokens?: number } };
+            usage?: { input_tokens?: number; output_tokens?: number };
           };
+          const usage = data.message?.usage ?? data.usage;
+          if (usage && (usage.input_tokens !== undefined || usage.output_tokens !== undefined)) {
+            req.onUsage?.({ input: usage.input_tokens ?? 0, output: usage.output_tokens ?? 0 });
+          }
           if (data.type === "content_block_delta" && data.delta?.text) {
             content += data.delta.text;
             yield data.delta.text;

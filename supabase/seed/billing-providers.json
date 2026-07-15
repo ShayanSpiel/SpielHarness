@@ -1,0 +1,20 @@
+[
+  {
+    "id": "stripe",
+    "name": "Stripe",
+    "enabled": false,
+    "config": {
+      "webhookSecret": "env:STRIPE_WEBHOOK_SECRET",
+      "publishableKey": "env:STRIPE_PUBLISHABLE_KEY"
+    }
+  },
+  {
+    "id": "zarinpal",
+    "name": "Zarinpal",
+    "enabled": false,
+    "config": {
+      "merchantId": "env:ZARINPAL_MERCHANT_ID",
+      "sandbox": true
+    }
+  }
+]

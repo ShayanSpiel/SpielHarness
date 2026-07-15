@@ -12,7 +12,7 @@ import { errorResponse, getOrg, HttpError, requireWrite } from "../../../../../l
 import { resolveExecution, type ExecuteBody } from "../../../../../lib/execution-service";
 import { generatedFileFolder } from "../../../../../lib/workspace-data";
 import { streamRun, type RunCheckpoint } from "@spielos/graph";
-import type { Artifact, RunEvent } from "@spielos/core";
+import type { RunEvent } from "@spielos/core";
 
 function frame(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -21,16 +21,6 @@ function frame(data: unknown): string {
 type ReplyBody = {
   requestId: string;
   answers: Record<string, unknown>;
-};
-
-type PendingEvent = {
-  event_type: string;
-  node_id: string | null;
-  node_title: string | null;
-  skill_id: string | null;
-  skill_name: string | null;
-  message: string;
-  payload: Record<string, unknown>;
 };
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -45,8 +35,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     const run = await getRun(org.sql, org.orgId, runId);
     if (!run) throw new HttpError(404, "Run not found");
-    if (run.status !== "waiting_human") {
+    const controlAction = body.requestId === "resume" || body.requestId === "retry";
+    const controlAllowed = body.requestId === "resume"
+      ? run.status === "waiting_human"
+      : body.requestId === "retry" && (run.status === "failed" || run.status === "cancelled");
+    if ((!controlAction && run.status !== "waiting_human") || (controlAction && !controlAllowed)) {
       throw new HttpError(409, "Run is not waiting for human input");
+    }
+    if (controlAction && run.type === "chat") {
+      throw new HttpError(409, "Plain chat responses retry as a new response; durable recovery applies to executable runs.");
     }
 
     // Reconstruct the execution body from the persisted run.
@@ -60,6 +57,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       targetId: target.id ?? undefined,
       workflowId: target.id ?? undefined,
       contextFileIds: (previousInputs.contextFileIds as string[]) ?? [],
+      modelId: typeof previousInputs.modelId === "string" ? previousInputs.modelId : undefined,
+      reasoningEffort: typeof previousInputs.reasoningEffort === "string" ? previousInputs.reasoningEffort as ExecuteBody["reasoningEffort"] : undefined,
+      goal: previousInputs.goal as ExecuteBody["goal"],
+      budget: previousInputs.budget as ExecuteBody["budget"],
       runId
     };
 
@@ -77,7 +78,19 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (definitionSnapshot.skills) {
       resolved.runRequest.skills = definitionSnapshot.skills as typeof resolved.runRequest.skills;
     }
-    const checkpoint: RunCheckpoint = (run.state as RunCheckpoint) ?? {
+    if (definitionSnapshot.workspaceInstructions) {
+      resolved.runRequest.workspaceInstructions = definitionSnapshot.workspaceInstructions as typeof resolved.runRequest.workspaceInstructions;
+    }
+    if (definitionSnapshot.memories) {
+      resolved.runRequest.memories = definitionSnapshot.memories as typeof resolved.runRequest.memories;
+    }
+    if (definitionSnapshot.provider) {
+      resolved.runRequest.provider = definitionSnapshot.provider as typeof resolved.runRequest.provider;
+    }
+    if (definitionSnapshot.model) {
+      resolved.runRequest.model = definitionSnapshot.model as typeof resolved.runRequest.model;
+    }
+    let checkpoint: RunCheckpoint = (run.state as RunCheckpoint) ?? {
       completedNodes: [],
       outputs: {},
       artifacts: [],
@@ -90,12 +103,32 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       error: null,
       retryNodeId: null
     };
+    if (controlAction) {
+      checkpoint = {
+        ...checkpoint,
+        status: "running",
+        failed: false,
+        failedNode: null,
+        error: null,
+        pendingHumanInput: null,
+        pause: { requested: false, reason: null, requestedAt: null },
+        progress: {
+          ...(checkpoint.progress ?? { milestone: null, completedActions: [], nextActions: [], unresolvedIssues: [] }),
+          nextActions: [body.requestId === "retry" ? "Retry the failed step from the latest checkpoint." : "Resume from the latest checkpoint."],
+          unresolvedIssues: []
+        },
+        verification: checkpoint.verification ? { ...checkpoint.verification, status: "pending", checkedAt: null } : undefined
+      };
+    }
 
     // Persist the human answer against the run.
     const previousHumanInputs = (run.human_inputs as Record<string, unknown>) ?? {};
     await updateRun(org.sql, org.orgId, runId, {
       status: "running",
-      humanInputs: { ...previousHumanInputs, [body.requestId]: body.answers }
+      humanInputs: controlAction ? previousHumanInputs : { ...previousHumanInputs, [body.requestId]: body.answers },
+      state: checkpoint,
+      error: null,
+      completedAt: null
     });
 
     const firstEventSequence = await nextRunEventSequence(org.sql, org.orgId, runId);
@@ -104,20 +137,38 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const stream = new ReadableStream({
       async start(controller) {
         controller.enqueue(encoder.encode(frame({ kind: "run", runId, type: target.type })));
-        const pendingEvents: PendingEvent[] = [];
-        const pendingArtifacts: Artifact[] = [];
         let outputText = "";
         let terminalStatus: "completed" | "failed" | "cancelled" | "waiting_human" = "completed";
         let errorMessage: string | null = null;
         let latestCheckpoint: RunCheckpoint = checkpoint;
         let streamEventSequence = firstEventSequence;
+        const priorUsage = {
+          input: checkpoint.budget?.inputTokens ?? 0,
+          output: checkpoint.budget?.outputTokens ?? 0,
+          tools: checkpoint.budget?.toolCalls ?? 0
+        };
+        const usage = { input: 0, output: 0, tools: 0 };
+        const onUsage = (next: { input: number; output: number }) => {
+          usage.input += next.input;
+          usage.output += next.output;
+        };
+        const onToolUsage = (count: number) => {
+          const next = priorUsage.tools + usage.tools + count;
+          const maximum = checkpoint.budget?.maxToolCalls;
+          if (maximum && next > maximum) throw new Error(`Tool-call budget exceeded (${maximum}).`);
+          usage.tools += count;
+        };
 
         try {
           for await (const item of streamRun({
             ...resolved.runRequest,
             runId,
-            resume: body.answers,
+            resume: controlAction ? {} : body.answers,
             checkpoint,
+            goal: executeBody.goal,
+            budget: executeBody.budget,
+            onUsage,
+            onToolUsage,
             signal: request.signal
           })) {
             if (item.kind === "text") {
@@ -127,7 +178,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               controller.enqueue(encoder.encode(frame({ kind: "status", message: item.message })));
             } else if (item.kind === "event") {
               const e: RunEvent = { ...item.event, sequence: streamEventSequence++ };
-              pendingEvents.push({
+              await appendRunEvents(org.sql, org.orgId, runId, [{
                 event_type: e.type,
                 node_id: e.nodeId ?? null,
                 node_title: e.nodeTitle ?? null,
@@ -135,16 +186,42 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 skill_name: e.skillName ?? null,
                 message: e.message,
                 payload: e.payload ?? {}
-              });
+              }]);
               controller.enqueue(encoder.encode(frame({ kind: "event", event: e })));
             } else if (item.kind === "artifact") {
-              pendingArtifacts.push(item.artifact);
+              const file = await createFile(org.sql, org.orgId, {
+                title: item.artifact.title,
+                body: item.artifact.body,
+                fileType: item.artifact.type === "artifact" ? "artifact" : item.artifact.type,
+                status: "active",
+                metadata: {
+                  ...item.artifact.metadata,
+                  runId,
+                  runtimeArtifactId: item.artifact.id,
+                  seedFolder: generatedFileFolder()
+                }
+              });
+              await linkRunOutputFile(org.sql, org.orgId, runId, file.id);
               controller.enqueue(encoder.encode(frame({ kind: "artifact", artifact: item.artifact })));
             } else if (item.kind === "human_input") {
               terminalStatus = "waiting_human";
               controller.enqueue(encoder.encode(frame({ kind: "human_input", request: item.request })));
             } else if (item.kind === "checkpoint") {
               latestCheckpoint = item.state;
+              await updateRun(org.sql, org.orgId, runId, {
+                status: latestCheckpoint.status,
+                state: latestCheckpoint,
+                error: latestCheckpoint.error
+              });
+              controller.enqueue(encoder.encode(frame({
+                kind: "run_state",
+                state: {
+                  goal: latestCheckpoint.goal,
+                  budget: latestCheckpoint.budget,
+                  progress: latestCheckpoint.progress,
+                  verification: latestCheckpoint.verification
+                }
+              })));
             } else if (item.kind === "done") {
               const allowed = ["completed", "failed", "cancelled", "waiting_human"] as const;
               terminalStatus = allowed.includes(item.status as (typeof allowed)[number])
@@ -158,38 +235,22 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           controller.enqueue(encoder.encode(frame({ kind: "error", message: errorMessage })));
         }
 
-        if (pendingEvents.length > 0) {
-          try {
-            await appendRunEvents(org.sql, org.orgId, runId, pendingEvents);
-          } catch (err) {
-            console.error("[runs/reply] event persist failed:", err);
-          }
-        }
-
-        for (const artifact of pendingArtifacts) {
-          try {
-            const file = await createFile(org.sql, org.orgId, {
-              title: artifact.title,
-              body: artifact.body,
-              fileType: artifact.type === "artifact" ? "artifact" : artifact.type,
-              status: "active",
-              metadata: {
-                ...artifact.metadata,
-                runId,
-                runtimeArtifactId: artifact.id,
-                seedFolder: generatedFileFolder()
-              }
-            });
-            await linkRunOutputFile(org.sql, org.orgId, runId, file.id);
-          } catch (err) {
-            console.error("[runs/reply] artifact persist failed:", err);
-          }
-        }
-
         const completedAt =
           terminalStatus === "completed" || terminalStatus === "failed" || terminalStatus === "cancelled"
             ? new Date().toISOString()
             : null;
+
+        if (latestCheckpoint.budget) {
+          latestCheckpoint = {
+            ...latestCheckpoint,
+            budget: {
+              ...latestCheckpoint.budget,
+              inputTokens: priorUsage.input + usage.input,
+              outputTokens: priorUsage.output + usage.output,
+              toolCalls: priorUsage.tools + usage.tools
+            }
+          };
+        }
 
         await updateRun(org.sql, org.orgId, runId, {
           status: terminalStatus,
@@ -205,8 +266,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               runId,
               provider: resolved.runRequest.provider.name,
               model: resolved.runRequest.model.model,
-              inputTokens: Math.ceil(run.prompt.length / 4),
-              outputTokens: Math.ceil(outputText.length / 4),
+              inputTokens: usage.input,
+              outputTokens: usage.output,
               costMicros: 0
             });
           } catch (err) {
@@ -223,6 +284,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             console.warn("[runs/reply] chat persist failed:", err);
           }
         }
+
+        controller.enqueue(encoder.encode(frame({
+          kind: "run_state",
+          state: {
+            goal: latestCheckpoint.goal,
+            budget: latestCheckpoint.budget,
+            progress: latestCheckpoint.progress,
+            verification: latestCheckpoint.verification
+          }
+        })));
 
         controller.enqueue(encoder.encode(frame({ kind: "done", runId, status: terminalStatus })));
         controller.close();

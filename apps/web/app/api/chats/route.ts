@@ -1,6 +1,7 @@
 import {
   createChat,
-  listChats
+  listChats,
+  updateChatMetadata
 } from "@spielos/db";
 import { errorResponse, getOrg, HttpError, requireWrite } from "../../../lib/server";
 
@@ -51,11 +52,16 @@ export async function PATCH(request: Request) {
   try {
     const org = await getOrg();
     requireWrite(org);
-    const body = (await request.json()) as { id?: string; title?: string; archived?: boolean };
+    const body = (await request.json()) as { id?: string; title?: string; archived?: boolean; metadata?: Record<string, unknown> };
     if (!body.id) throw new HttpError(400, "id is required");
     const patch: Record<string, unknown> = {};
     if (body.title !== undefined) patch.title = body.title.trim() || "New chat";
     if (body.archived !== undefined) patch.archived_at = body.archived ? new Date().toISOString() : null;
+    if (body.metadata !== undefined) {
+      const updated = await updateChatMetadata(org.sql, org.orgId, body.id, body.metadata);
+      if (!updated) throw new HttpError(404, "Chat not found");
+      if (Object.keys(patch).length === 0) return Response.json({ chat: updated });
+    }
     if (Object.keys(patch).length === 0) {
       throw new HttpError(400, "no fields to update");
     }

@@ -6,9 +6,12 @@ import {
   parseSkillFile,
   parseWorkflowFile,
   type Model,
+  type ModelCapabilities,
   type ModelProvider,
   type EvalFile,
   type Role,
+  type RunBudget,
+  type RunGoal,
   type RunType,
   type Skill,
   type WorkflowFile,
@@ -17,13 +20,27 @@ import {
 import type { OrgContext } from "./server";
 import { HttpError } from "./server";
 import {
-  listModels,
+  audit,
+  createFile,
+  getFile,
   listConnections,
-  listHarnessFiles
+  listHarnessFiles,
+  updateFileIfVersion
 } from "@spielos/db";
 import type { Connection, FileRecord } from "@spielos/core";
 import type { RunRequest, AttachedFile } from "@spielos/graph";
+import type { ConversationCompaction } from "@spielos/providers";
 import type { FileRow } from "@spielos/db";
+import { createHash } from "node:crypto";
+import { listModelsWithEnvironmentDefaults } from "./default-models";
+
+function stableUuid(value: string): string {
+  const chars = createHash("sha256").update(value).digest("hex").slice(0, 32).split("");
+  chars[12] = "5";
+  chars[16] = ((Number.parseInt(chars[16], 16) & 0x3) | 0x8).toString(16);
+  const hex = chars.join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 function fileRowToRecord(row: FileRow): FileRecord {
   return {
@@ -66,6 +83,11 @@ export type ExecuteBody = {
   // History (for plain chat)
   messages?: Array<{ role: "user" | "assistant"; content: string }>;
   idempotencyKey?: string;
+  modelId?: string;
+  reasoningEffort?: ModelCapabilities["reasoningEffort"];
+  goal?: RunGoal;
+  budget?: Partial<Pick<RunBudget, "maxInputTokens" | "maxOutputTokens" | "maxDurationMs" | "maxToolCalls">>;
+  previousCompaction?: ConversationCompaction | null;
 };
 
 // ── Resolved execution ────────────────────────────────────────
@@ -88,7 +110,7 @@ export async function resolveExecution(
   const [files, connections, modelRows] = await Promise.all([
     listHarnessFiles(org.sql, org.orgId),
     listConnections(org.sql, org.orgId),
-    listModels(org.sql, org.orgId)
+    listModelsWithEnvironmentDefaults(org.sql, org.orgId)
   ]);
 
   const toRecord = (f: FileRow) => fileRowToRecord(f);
@@ -265,12 +287,30 @@ export async function resolveExecution(
   const attached: AttachedFile[] = files
     .filter((file) => runFileIds.includes(file.id) && file.status !== "deleted")
     .map(toAttached);
+  const workspaceInstructions: AttachedFile[] = files
+    .filter((file) => file.status === "active" && file.metadata?.workspaceConfig === true)
+    .map(toAttached);
+  const memories: AttachedFile[] = retrieveMemories(files, body.prompt, targetType, targetId, org.userId).map(toAttached);
 
   // Resolve model
-  const preferredModelId = workflow
+  const preferredModelId = body.modelId ?? (workflow
     ? Object.values(roles).find((r) => workflow!.nodes.some((n) => n.roleId === r.id))?.modelId ?? null
-    : singleNode?.role?.modelId ?? null;
-  const model = resolveModel(modelRows, preferredModelId, org.orgId);
+    : singleNode?.role?.modelId ?? null);
+  let model = resolveModel(modelRows, preferredModelId, org.orgId);
+  const allowedEffort = ["auto", "low", "medium", "high", "xhigh", "max"] as const;
+  if (model && body.reasoningEffort && allowedEffort.includes(body.reasoningEffort)) {
+    const withEffort = (value: Model): Model => ({
+      ...value,
+      config: {
+        ...value.config,
+        capabilities: {
+          ...(typeof value.config.capabilities === "object" && value.config.capabilities ? value.config.capabilities : {}),
+          reasoningEffort: body.reasoningEffort
+        }
+      }
+    });
+    model = { provider: withEffort(model.provider), model: withEffort(model.model) };
+  }
 
   // Resolve connections
   const connectionIds = new Set<string>();
@@ -309,6 +349,120 @@ export async function resolveExecution(
 
   // Resolve director prompt for chat runs
   const directorPrompt = resolveDirectorPrompt(files, roles, skills, evals, workflows);
+  const harnessFileAction: NonNullable<RunRequest["harnessFileAction"]> = async (action, params, context) => {
+    const allowedTypes = new Set(["harness_role", "harness_skill", "harness_workflow", "harness_eval", "harness_template"]);
+    if (action === "create") {
+      const title = typeof params.title === "string" ? params.title.trim() : "";
+      const fileType = typeof params.fileType === "string" ? params.fileType : "";
+      const content = typeof params.body === "string" ? params.body : "";
+      if (!title || !allowedTypes.has(fileType)) throw new Error("Harness creation requires a title and valid harness fileType.");
+      const suppliedMetadata = params.metadata && typeof params.metadata === "object" && !Array.isArray(params.metadata)
+        ? params.metadata as Record<string, unknown>
+        : {};
+      const row = await createFile(org.sql, org.orgId, {
+        title,
+        body: content,
+        fileType,
+        status: "draft",
+        metadata: {
+          ...suppliedMetadata,
+          agentProposed: true,
+          proposedByRun: context.runId,
+          proposedByNode: context.nodeId
+        }
+      });
+      await audit(org.sql, org.orgId, {
+        actorId: org.userId,
+        action: "agent_propose_create",
+        entityType: "file",
+        entityId: row.id,
+        after: { title: row.title, fileType: row.file_type, status: row.status, runId: context.runId }
+      });
+      return { id: row.id, title: row.title, fileType: row.file_type, status: row.status, version: row.current_version };
+    }
+
+    const id = typeof params.id === "string" ? params.id : "";
+    const expectedVersion = typeof params.expectedVersion === "number" ? params.expectedVersion : NaN;
+    if (!id || !Number.isInteger(expectedVersion)) throw new Error("Harness update requires id and expectedVersion.");
+    const before = await getFile(org.sql, org.orgId, id);
+    if (!before || !allowedTypes.has(before.file_type)) throw new Error("Harness draft was not found.");
+    if (before.status !== "draft" || before.metadata?.agentProposed !== true) {
+      throw new Error("Agents may only update agent-proposed drafts; active harness files require explicit user editing.");
+    }
+    const suppliedMetadata = params.metadata && typeof params.metadata === "object" && !Array.isArray(params.metadata)
+      ? params.metadata as Record<string, unknown>
+      : null;
+    const row = await updateFileIfVersion(org.sql, org.orgId, id, expectedVersion, {
+      title: typeof params.title === "string" ? params.title.trim() : undefined,
+      body: typeof params.body === "string" ? params.body : undefined,
+      metadata: suppliedMetadata ? { ...before.metadata, ...suppliedMetadata, lastProposedByRun: context.runId } : undefined
+    });
+    if (!row) throw new Error("Harness draft changed concurrently. Reload it and retry with the latest version.");
+    await audit(org.sql, org.orgId, {
+      actorId: org.userId,
+      action: "agent_propose_update",
+      entityType: "file",
+      entityId: row.id,
+      before: { version: before.current_version, title: before.title },
+      after: { version: row.current_version, title: row.title, runId: context.runId }
+    });
+    return { id: row.id, title: row.title, fileType: row.file_type, status: row.status, version: row.current_version };
+  };
+  const memoryProposalAction: NonNullable<RunRequest["memoryProposalAction"]> = async (params, context) => {
+    const title = typeof params.title === "string" ? params.title.trim() : "";
+    const content = typeof params.body === "string" ? params.body.trim() : "";
+    if (!title || !content) throw new Error("Memory proposals require title and body.");
+    const requestedScope = typeof params.scope === "string" ? params.scope : "workspace";
+    const scope = ["workspace", "user", "role", "workflow"].includes(requestedScope) ? requestedScope : "workspace";
+    const scopeId = scope === "user"
+      ? org.userId
+      : scope === "role" && targetType === "role"
+        ? targetId
+        : scope === "workflow" && targetType === "workflow"
+          ? targetId
+          : typeof params.scopeId === "string" ? params.scopeId : null;
+    if ((scope === "role" || scope === "workflow") && !scopeId) throw new Error(`${scope} memory requires a resolvable scope id.`);
+    const comparable = (value: string) => value.trim().toLowerCase().replace(/\s+/g, " ");
+    const latestFiles = await listHarnessFiles(org.sql, org.orgId);
+    const existingMemories = latestFiles.filter((file) => file.metadata?.memoryRecord === true && file.status !== "deleted");
+    const duplicate = existingMemories.find((file) => comparable(file.body) === comparable(content) && file.metadata.memoryScope === scope && (file.metadata.scopeId ?? null) === scopeId);
+    const conflicts = existingMemories.filter((file) => comparable(file.title) === comparable(title) && comparable(file.body) !== comparable(content) && file.metadata.memoryScope === scope && (file.metadata.scopeId ?? null) === scopeId);
+    if (duplicate) {
+      return { id: duplicate.id, title: duplicate.title, status: String(duplicate.metadata.memoryStatus ?? "proposed"), duplicateOf: duplicate.id, conflictIds: conflicts.map((file) => file.id) };
+    }
+    const confidence = typeof params.confidence === "number" ? Math.min(1, Math.max(0, params.confidence)) : 0.7;
+    const row = await createFile(org.sql, org.orgId, {
+      id: stableUuid(`${org.orgId}:${scope}:${scopeId ?? ""}:${comparable(content)}`),
+      title,
+      body: content,
+      fileType: "knowledge",
+      status: "active",
+      metadata: {
+        memoryRecord: true,
+        memoryKind: params.kind === "episodic" ? "episodic" : "semantic",
+        memoryScope: scope,
+        scopeId,
+        sourceType: "run",
+        sourceId: context.runId,
+        reason: typeof params.reason === "string" && params.reason.trim() ? params.reason.trim() : "Proposed from a runtime result for user review.",
+        confidence,
+        authority: "learned",
+        memoryStatus: "proposed",
+        pinned: false,
+        proposedByNode: context.nodeId,
+        potentialConflictIds: conflicts.map((file) => file.id),
+        supersedesId: typeof params.supersedesId === "string" ? params.supersedesId : null
+      }
+    });
+    await audit(org.sql, org.orgId, {
+      actorId: org.userId,
+      action: "agent_propose_memory",
+      entityType: "file",
+      entityId: row.id,
+      after: { title: row.title, scope, scopeId, runId: context.runId, conflictIds: conflicts.map((file) => file.id) }
+    });
+    return { id: row.id, title: row.title, status: "proposed", duplicateOf: null, conflictIds: conflicts.map((file) => file.id) };
+  };
 
   return {
     runRequest: {
@@ -320,9 +474,16 @@ export async function resolveExecution(
       roles,
       skills,
       files: attached,
+      workspaceInstructions,
+      memories,
       connections: connectionsById,
       provider: model?.provider ?? null,
-      model: model?.model ?? null
+      model: model?.model ?? null,
+      goal: body.goal,
+      budget: body.budget,
+      previousCompaction: body.previousCompaction ?? null,
+      harnessFileAction,
+      memoryProposalAction
     },
     type: targetType,
     target: { type: targetType, id: targetId },
@@ -335,7 +496,7 @@ export async function resolveExecution(
 type ResolvedModel = { provider: ModelProvider; model: Model } | null;
 
 function resolveModel(
-  rows: Awaited<ReturnType<typeof listModels>>,
+  rows: Awaited<ReturnType<typeof listModelsWithEnvironmentDefaults>>,
   preferredModelId: string | null,
   orgId: string
 ): ResolvedModel {
@@ -564,6 +725,37 @@ function indexBy<T>(items: T[], key: (item: T) => string): Record<string, T> {
 
 function dedupe<T>(items: T[]): T[] {
   return Array.from(new Set(items));
+}
+
+function retrieveMemories(
+  files: FileRow[],
+  prompt: string,
+  targetType: RunType,
+  targetId: string | null,
+  userId: string | null
+): FileRow[] {
+  const terms = new Set(prompt.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 2));
+  return files
+    .filter((file) => {
+      const metadata = file.metadata ?? {};
+      if (file.status !== "active" || metadata.memoryRecord !== true || metadata.memoryStatus !== "approved") return false;
+      const scope = String(metadata.memoryScope ?? "workspace");
+      if (scope === "workspace") return true;
+      if (scope === "user") return Boolean(userId) && metadata.scopeId === userId;
+      if (scope === "role") return targetType === "role" && metadata.scopeId === targetId;
+      if (scope === "workflow") return targetType === "workflow" && metadata.scopeId === targetId;
+      return false;
+    })
+    .map((file) => {
+      const haystack = `${file.title}\n${file.body}`.toLowerCase();
+      const relevance = [...terms].reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
+      const pinned = file.metadata?.pinned === true ? 1000 : 0;
+      return { file, score: pinned + relevance };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 8)
+    .map((entry) => entry.file);
 }
 
 function toAttached(file: FileRow): AttachedFile {

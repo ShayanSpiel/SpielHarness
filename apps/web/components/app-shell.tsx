@@ -5,7 +5,7 @@ import { CommandPalette } from "./command-palette";
 import { NavRail } from "./nav-rail";
 import { InspectorToggle } from "./inspector-toggle";
 import { useUiStore } from "../lib/use-ui-store";
-import { SIDEBAR } from "../lib/layout-constants";
+import { SIDEBAR } from "@spielos/design-system";
 
 export function AppShell({
   children,
@@ -18,6 +18,7 @@ export function AppShell({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [resizing, setResizing] = useState(false);
   const asideRef = useRef<HTMLDivElement>(null);
+  const inspectorInitialized = useRef(false);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -51,6 +52,12 @@ export function AppShell({
   }, [resizing, store]);
 
   const hasInspector = Boolean(inspector);
+
+  useEffect(() => {
+    if (!hasInspector || inspectorInitialized.current) return;
+    inspectorInitialized.current = true;
+    if (window.matchMedia("(min-width: 1024px)").matches) store.setInspectorOpen(true);
+  }, [hasInspector, store]);
 
   return (
     <div className="flex h-screen min-h-screen w-full overflow-hidden bg-background text-foreground">

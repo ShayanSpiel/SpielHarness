@@ -1,5 +1,5 @@
 import type { ChatAdapter, ChatRequest, ChatResponse } from "./types.ts";
-import { readSecret, baseUrlFor } from "./types.ts";
+import { readSecret, baseUrlFor, outputTokenConfig, reasoningConfig, textFromProviderContent } from "./types.ts";
 
 // OpenAI Chat Completions API. Also used for openai-compatible endpoints.
 export const openaiAdapter: ChatAdapter = {
@@ -14,7 +14,8 @@ export const openaiAdapter: ChatAdapter = {
         model: req.model.model,
         temperature: req.temperature ?? 0.4,
         messages: req.messages,
-        ...(req.maxTokens ? { max_tokens: req.maxTokens } : {})
+        ...outputTokenConfig(req),
+        ...reasoningConfig(req)
       }),
       signal: req.signal
     });
@@ -22,14 +23,16 @@ export const openaiAdapter: ChatAdapter = {
       throw new Error(`OpenAI request failed: ${response.status} ${await response.text()}`);
     }
     const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{ message?: { content?: unknown } }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
+    const usage = data.usage
+      ? { input: data.usage.prompt_tokens ?? 0, output: data.usage.completion_tokens ?? 0 }
+      : undefined;
+    if (usage) req.onUsage?.(usage);
     return {
-      content: data.choices?.[0]?.message?.content?.trim() ?? "",
-      usage: data.usage
-        ? { input: data.usage.prompt_tokens ?? 0, output: data.usage.completion_tokens ?? 0 }
-        : undefined,
+      content: textFromProviderContent(data.choices?.[0]?.message?.content).trim(),
+      usage,
       raw: data
     };
   },
@@ -46,7 +49,9 @@ export const openaiAdapter: ChatAdapter = {
         temperature: req.temperature ?? 0.4,
         messages: req.messages,
         stream: true,
-        ...(req.maxTokens ? { max_tokens: req.maxTokens } : {})
+        stream_options: { include_usage: true },
+        ...outputTokenConfig(req),
+        ...reasoningConfig(req)
       }),
       signal: req.signal
     });
@@ -70,9 +75,13 @@ export const openaiAdapter: ChatAdapter = {
           if (!raw || raw === "[DONE]") continue;
           try {
             const data = JSON.parse(raw) as {
-              choices?: Array<{ delta?: { content?: string } }>;
+              choices?: Array<{ delta?: { content?: unknown } }>;
+              usage?: { prompt_tokens?: number; completion_tokens?: number };
             };
-            const delta = data.choices?.[0]?.delta?.content ?? "";
+            if (data.usage) {
+              req.onUsage?.({ input: data.usage.prompt_tokens ?? 0, output: data.usage.completion_tokens ?? 0 });
+            }
+            const delta = textFromProviderContent(data.choices?.[0]?.delta?.content);
             if (!delta) continue;
             content += delta;
             yield delta;

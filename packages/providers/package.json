@@ -7,6 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@spielos/core": "file:../core"
+    "@spielos/core": "file:../core",
+    "js-tiktoken": "^1.0.21"
   }
 }

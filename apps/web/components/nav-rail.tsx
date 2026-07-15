@@ -1,11 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Button, Tooltip, cn } from "@spielos/design-system";
 import { ThemeToggle } from "@spielos/design-system/components/theme-toggle";
 import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
-import { SIDEBAR } from "../lib/layout-constants";
+import { SIDEBAR } from "@spielos/design-system";
+import { OrgSwitcher } from "./org-switcher";
+import { useRunContext } from "../lib/run-context";
+import { useWorkspaceStore } from "../lib/use-workspace-store";
 
 type NavEntry = {
   href: string;
@@ -36,7 +39,7 @@ const sections: Array<{
     markerClass: "bg-accent",
     activeClass: "bg-selected text-accent",
     items: [
-      { href: "/knowledge", label: "Files", icon: ENTITY_ICONS.file, match: (p) => p.startsWith("/knowledge") },
+      { href: "/knowledge", label: "Files", icon: ENTITY_ICONS.knowledge, match: (p) => p.startsWith("/knowledge") },
       { href: "/strategy", label: "Strategy", icon: ENTITY_ICONS.strategy, match: (p) => p.startsWith("/strategy") || p.startsWith("/prompts") },
     ],
   },
@@ -56,6 +59,9 @@ const sections: Array<{
 
 export function NavRail({ onOpenSearch }: { onOpenSearch: () => void }) {
   const pathname = usePathname();
+  const router = useRouter();
+  const run = useRunContext();
+  const store = useWorkspaceStore();
 
   return (
     <aside className={`flex h-full ${SIDEBAR.NAV_RAIL_WIDTH} shrink-0 flex-col items-center gap-1 border-r border-border bg-panel py-2`}>
@@ -64,6 +70,8 @@ export function NavRail({ onOpenSearch }: { onOpenSearch: () => void }) {
           <Icon name="box" size={16} />
         </div>
       </Tooltip>
+
+      <OrgSwitcher />
 
       <Tooltip content="Search (⌘K)" side="right">
         <Button aria-label="Search" onClick={onOpenSearch} size="icon" variant="ghost">
@@ -82,6 +90,28 @@ export function NavRail({ onOpenSearch }: { onOpenSearch: () => void }) {
           ) : null}
           {section.items.map((item) => {
             const active = item.match(pathname);
+            const isRuns = item.href === "/" && item.label === "Runs";
+              if (isRuns) {
+              return (
+                <Tooltip content={item.label} key={item.href} side="right">
+                  <button
+                    aria-label={item.label}
+                    className={cn(
+                      "flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors duration-[var(--duration)] hover:bg-hover hover:text-foreground",
+                      active && section.activeClass
+                    )}
+                    onClick={() => {
+                      run.reset();
+                      store.setActiveChat(null);
+                      router.push("/");
+                    }}
+                    type="button"
+                  >
+                    <Icon name={item.icon} size={16} />
+                  </button>
+                </Tooltip>
+              );
+            }
             return (
               <Tooltip content={item.label} key={item.href} side="right">
                 <Link

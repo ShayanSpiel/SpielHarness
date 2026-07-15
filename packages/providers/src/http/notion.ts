@@ -1,5 +1,6 @@
 import { decryptConnectionSecret } from "./auth.ts";
 import type { HttpAdapter } from "./types.ts";
+import { readToolInput, readToolNumber } from "./input.ts";
 
 function resolveNotionToken(
   connectionId: string,
@@ -24,7 +25,8 @@ async function notionRequest(
   path: string,
   method: string,
   token: string,
-  body?: Record<string, unknown>
+  body?: Record<string, unknown>,
+  signal?: AbortSignal
 ): Promise<string> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
@@ -35,6 +37,7 @@ async function notionRequest(
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    signal,
   });
   const text = await response.text();
   if (!response.ok) {
@@ -51,19 +54,22 @@ export const notionAdapter: HttpAdapter = {
 
     switch (req.operation.id) {
       case "notion.search": {
-        const body = { query: req.input.slice(0, 2000) };
-        const raw = await notionRequest("/search", "POST", token, body);
+        const body = {
+          query: readToolInput(req.input, ["query", "q"]).slice(0, 2000),
+          page_size: readToolNumber(req.input, ["maxResults", "max_results", "limit", "pageSize"], 10, { max: 25 })
+        };
+        const raw = await notionRequest("/search", "POST", token, body, req.signal);
         return { output: raw };
       }
       case "notion.read": {
-        const pageId = req.input.trim();
+        const pageId = readToolInput(req.input, ["pageId", "page_id", "id"]);
         if (!pageId) throw new Error("Notion page ID is required.");
-        const raw = await notionRequest(`/pages/${pageId}`, "GET", token);
+        const raw = await notionRequest(`/pages/${pageId}`, "GET", token, undefined, req.signal);
         return { output: raw };
       }
       case "notion.create": {
         const body = JSON.parse(req.input) as Record<string, unknown>;
-        const raw = await notionRequest("/pages", "POST", token, body);
+        const raw = await notionRequest("/pages", "POST", token, body, req.signal);
         return { output: raw };
       }
       case "notion.update": {
@@ -75,7 +81,8 @@ export const notionAdapter: HttpAdapter = {
           `/pages/${pageId}`,
           "PATCH",
           token,
-          properties
+          properties,
+          req.signal
         );
         return { output: raw };
       }

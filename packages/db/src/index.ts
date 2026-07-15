@@ -3,12 +3,48 @@ import { randomUUID } from "node:crypto";
 
 type JsonInput = Record<string, unknown> | unknown[] | string | number | boolean | null;
 type PostgresParameter = postgres.SerializableParameter<never>;
+function sanitizeJsonString(value: string): string {
+  let output = "";
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        output += value[index] + value[index + 1];
+        index++;
+      } else {
+        output += "\ufffd";
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      output += "\ufffd";
+    } else {
+      output += value[index];
+    }
+  }
+  return output;
+}
+
+function sanitizeJsonValue(value: JsonInput): JsonInput {
+  if (typeof value === "string") return sanitizeJsonString(value);
+  if (Array.isArray(value)) return value.map((entry) => sanitizeJsonValue(entry as JsonInput));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+      sanitizeJsonString(key),
+      sanitizeJsonValue(entry as JsonInput)
+    ]));
+  }
+  return value;
+}
+
 function toJson(value: JsonInput): PostgresParameter {
-  return value as unknown as PostgresParameter;
+  return sanitizeJsonValue(value) as unknown as PostgresParameter;
 }
 export const json = toJson;
 
 export type Sql = ReturnType<typeof postgres>;
+
+let sqlPoolCount = 0;
+const SQL_POOL_ID = `app-pool-${Date.now()}`;
 
 export function createSql(connectionString: string): Sql {
   const parsed = new URL(connectionString);
@@ -20,15 +56,25 @@ export function createSql(connectionString: string): Sql {
     connection.host = projectRef;
   }
   const opts: Record<string, unknown> = {
-    max: 10,
+    max: 3,
     idle_timeout: 30,
     connect_timeout: 10,
     prepare: false,
     ssl,
     connection,
-    transform: { undefined: null }
+    transform: { undefined: null },
+    onconnect() {
+      sqlPoolCount++;
+      console.log(`[pool ${SQL_POOL_ID}] +connect  total=${sqlPoolCount}`);
+    },
+    ondisconnect() {
+      sqlPoolCount--;
+      console.log(`[pool ${SQL_POOL_ID}] -disconnect  total=${sqlPoolCount}`);
+    },
   };
-  return postgres(connectionString, opts as any);
+  const sql = postgres(connectionString, opts as any);
+  console.log(`[pool ${SQL_POOL_ID}] created  max=${opts.max} idle_timeout=${opts.idle_timeout}`);
+  return sql;
 }
 
 export type OrgContext = {
@@ -189,6 +235,31 @@ export async function updateFile(
   return rows[0];
 }
 
+export async function updateFileIfVersion(
+  sql: Sql,
+  orgId: string,
+  id: string,
+  expectedVersion: number,
+  patch: UpdateFileInput
+): Promise<FileRow | null> {
+  const rows = await sql<FileRow[]>`
+    update files
+    set title = coalesce(${patch.title ?? null}, title),
+        body = coalesce(${patch.body ?? null}, body),
+        file_type = coalesce(${patch.fileType ?? null}, file_type),
+        status = coalesce(${patch.status ?? null}, status),
+        folder_id = ${patch.folderId === undefined ? sql`folder_id` : patch.folderId},
+        metadata = ${patch.metadata === undefined ? sql`metadata` : json(patch.metadata)}
+    where org_id = ${orgId}
+      and id = ${id}
+      and current_version = ${expectedVersion}
+      and deleted_at is null
+    returning id, org_id, folder_id, file_type, status, title, body, content_format,
+              metadata, current_version, created_at, updated_at
+  `;
+  return rows[0] ?? null;
+}
+
 export async function softDeleteFile(sql: Sql, orgId: string, id: string): Promise<boolean> {
   const rows = await sql`
     update files
@@ -224,6 +295,58 @@ export async function deleteEmptyPlaceholderFiles(sql: Sql, orgId: string): Prom
         where output.org_id = ${orgId} and output.file_id = file.id
       )
     returning file.id
+  `;
+  return rows.length;
+}
+
+export async function deleteLegacySeedDuplicates(sql: Sql, orgId: string): Promise<number> {
+  const rows = await sql<{ id: string }[]>`
+    with ranked_seed_paths as (
+      select id,
+             row_number() over (
+               partition by org_id, metadata ->> 'seedPath'
+               order by updated_at desc, id desc
+             ) as duplicate_rank
+      from files
+      where org_id = ${orgId}
+        and deleted_at is null
+        and coalesce(metadata ->> 'seed', 'false') = 'true'
+        and metadata ->> 'seedPath' is not null
+    ), duplicate_ids as (
+      select id from ranked_seed_paths where duplicate_rank > 1
+      union
+      select legacy.id
+      from files legacy
+      where legacy.org_id = ${orgId}
+        and legacy.deleted_at is null
+        and legacy.metadata ->> 'seedPath' is null
+        and legacy.file_type in ('harness_role', 'harness_skill', 'harness_workflow', 'harness_workstream', 'harness_eval', 'harness_template')
+        and (
+          coalesce(legacy.metadata ->> 'seed', 'false') = 'true'
+          or jsonb_typeof(legacy.metadata) <> 'object'
+          or legacy.metadata ? 'role'
+          or legacy.metadata ? 'skill'
+          or legacy.metadata ? 'workstream'
+          or legacy.metadata ? 'eval'
+          or legacy.metadata ? 'template'
+        )
+        and exists (
+          select 1 from files canonical
+          where canonical.org_id = legacy.org_id
+            and canonical.deleted_at is null
+            and canonical.id <> legacy.id
+            and canonical.file_type = legacy.file_type
+            and lower(canonical.title) = lower(legacy.title)
+            and canonical.body = legacy.body
+            and canonical.metadata ->> 'seedPath' is not null
+        )
+    )
+    update files as legacy
+    set status = 'deleted', deleted_at = now()
+    where legacy.org_id = ${orgId}
+      and legacy.deleted_at is null
+      and legacy.id in (select id from duplicate_ids)
+    returning legacy.id
   `;
   return rows.length;
 }
@@ -440,27 +563,78 @@ export async function appendRunEvents(
 ): Promise<RunEventRow[]> {
   if (events.length === 0) return [];
   const startSeq = await nextRunEventSequence(sql, orgId, runId);
-  const out: RunEventRow[] = [];
-  for (let i = 0; i < events.length; i++) {
-    const e = events[i];
-    const rows = await sql<RunEventRow[]>`
-      insert into run_events (org_id, run_id, event_type, sequence, node_id, node_title, skill_id, skill_name, message, payload)
-      values (${orgId}, ${runId}, ${e.event_type}, ${startSeq + i}, ${e.node_id}, ${e.node_title}, ${e.skill_id}, ${e.skill_name}, ${e.message}, ${json(e.payload)})
-      returning *
-    `;
-    if (rows[0]) out.push(rows[0]);
-  }
-  return out;
+  const values = events.map((event, index) => ({
+    org_id: orgId,
+    run_id: runId,
+    event_type: event.event_type,
+    sequence: startSeq + index,
+    node_id: event.node_id,
+    node_title: event.node_title,
+    skill_id: event.skill_id,
+    skill_name: event.skill_name,
+    message: event.message,
+    payload: event.payload
+  }));
+  const rows = await sql<RunEventRow[]>`
+    insert into run_events (org_id, run_id, event_type, sequence, node_id, node_title, skill_id, skill_name, message, payload)
+    select record.org_id::uuid,
+           record.run_id::uuid,
+           record.event_type::event_type,
+           record.sequence,
+           record.node_id,
+           record.node_title,
+           record.skill_id,
+           record.skill_name,
+           record.message,
+           record.payload
+    from jsonb_to_recordset(${json(values)}::jsonb) as record(
+      org_id text,
+      run_id text,
+      event_type text,
+      sequence integer,
+      node_id text,
+      node_title text,
+      skill_id text,
+      skill_name text,
+      message text,
+      payload jsonb
+    )
+    returning *
+  `;
+  return rows;
 }
 
 export type ChatRow = {
   id: string;
   org_id: string;
   title: string;
+  metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
   archived_at: string | null;
 };
+
+export async function getChat(sql: Sql, orgId: string, chatId: string): Promise<ChatRow | null> {
+  const rows = await sql<ChatRow[]>`
+    select * from chats where org_id = ${orgId} and id = ${chatId} limit 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function updateChatMetadata(
+  sql: Sql,
+  orgId: string,
+  chatId: string,
+  patch: Record<string, unknown>
+): Promise<ChatRow | null> {
+  const rows = await sql<ChatRow[]>`
+    update chats
+    set metadata = coalesce(metadata, '{}'::jsonb) || ${json(patch)}
+    where org_id = ${orgId} and id = ${chatId}
+    returning *
+  `;
+  return rows[0] ?? null;
+}
 
 export type ChatMessageRow = {
   id: string;
@@ -949,15 +1123,18 @@ export async function recordUsage(
     inputTokens: number;
     outputTokens: number;
     costMicros: number;
+    actualInputTokens?: number;
+    actualOutputTokens?: number;
     metadata?: Record<string, unknown>;
   }
 ): Promise<void> {
   await sql`
-    insert into usage_ledger (org_id, run_id, provider, model, input_tokens, output_tokens, cost_micros, metadata)
+    insert into usage_ledger (org_id, run_id, provider, model, input_tokens, output_tokens, cost_micros, actual_input_tokens, actual_output_tokens, metadata)
     values (
       ${orgId}, ${data.runId},
       ${data.provider}, ${data.model},
       ${data.inputTokens}, ${data.outputTokens}, ${data.costMicros},
+      ${data.actualInputTokens ?? null}, ${data.actualOutputTokens ?? null},
       ${json(data.metadata ?? {})}
     )
   `;
@@ -1015,4 +1192,250 @@ export async function resetWorkspace(
     await sql`delete from run_output_files where org_id = ${orgId} and file_id = any(${ids}::uuid[])`;
     await sql`delete from files where org_id = ${orgId}`;
   }
+}
+
+// ── Auth & Multi-Org ─────────────────────────────────────────────
+
+export type ProfileRow = {
+  id: string;
+  email: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function getProfile(sql: Sql, userId: string): Promise<ProfileRow | null> {
+  const rows = await sql<ProfileRow[]>`
+    select id, email, display_name, avatar_url, metadata, created_at, updated_at
+    from profiles
+    where id = ${userId}
+    limit 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function upsertProfile(
+  sql: Sql,
+  userId: string,
+  data: { email: string; displayName?: string | null; avatarUrl?: string | null }
+): Promise<ProfileRow> {
+  const rows = await sql<ProfileRow[]>`
+    insert into profiles (id, email, display_name, avatar_url)
+    values (${userId}, ${data.email}, ${data.displayName ?? null}, ${data.avatarUrl ?? null})
+    on conflict (id) do update set
+      email = excluded.email,
+      display_name = coalesce(excluded.display_name, profiles.display_name),
+      avatar_url = coalesce(excluded.avatar_url, profiles.avatar_url),
+      updated_at = now()
+    returning id, email, display_name, avatar_url, metadata, created_at, updated_at
+  `;
+  return rows[0];
+}
+
+export type MembershipRow = {
+  org_id: string;
+  profile_id: string;
+  role: string;
+  created_at: string;
+};
+
+export type OrgWithMembership = {
+  org_id: string;
+  org_name: string;
+  org_slug: string;
+  role: string;
+};
+
+export async function getUserOrgs(sql: Sql, userId: string): Promise<OrgWithMembership[]> {
+  return sql<OrgWithMembership[]>`
+    select
+      o.id as org_id,
+      o.name as org_name,
+      o.slug as org_slug,
+      m.role::text as role
+    from org_memberships m
+    join orgs o on o.id = m.org_id
+    where m.profile_id = ${userId}
+      and o.deleted_at is null
+    order by o.name asc
+  `;
+}
+
+export async function getMembership(
+  sql: Sql,
+  userId: string,
+  orgId: string
+): Promise<MembershipRow | null> {
+  const rows = await sql<MembershipRow[]>`
+    select org_id, profile_id, role::text as role, created_at
+    from org_memberships
+    where profile_id = ${userId} and org_id = ${orgId}
+    limit 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function createOrg(
+  sql: Sql,
+  name: string,
+  slug: string,
+  ownerId: string
+): Promise<{ id: string; name: string; slug: string }> {
+  const orgRows = await sql<{ id: string; name: string; slug: string }[]>`
+    insert into orgs (name, slug)
+    values (${name}, ${slug})
+    returning id, name, slug
+  `;
+  const org = orgRows[0];
+  if (!org) throw new Error("Failed to create org");
+
+  await sql`
+    insert into org_memberships (org_id, profile_id, role)
+    values (${org.id}, ${ownerId}, 'owner')
+    on conflict (org_id, profile_id) do nothing
+  `;
+
+  return org;
+}
+
+export async function addMember(
+  sql: Sql,
+  orgId: string,
+  profileId: string,
+  role: "admin" = "admin"
+): Promise<MembershipRow> {
+  const rows = await sql<MembershipRow[]>`
+    insert into org_memberships (org_id, profile_id, role)
+    values (${orgId}, ${profileId}, ${role})
+    on conflict (org_id, profile_id) do update set role = excluded.role
+    returning org_id, profile_id, role::text as role, created_at
+  `;
+  return rows[0];
+}
+
+export async function updateMemberRole(
+  sql: Sql,
+  orgId: string,
+  profileId: string,
+  role: "owner" | "admin"
+): Promise<boolean> {
+  const rows = await sql`
+    update org_memberships
+    set role = ${role}
+    where org_id = ${orgId} and profile_id = ${profileId}
+    returning org_id
+  `;
+  return rows.length > 0;
+}
+
+export async function removeMember(
+  sql: Sql,
+  orgId: string,
+  profileId: string
+): Promise<boolean> {
+  const rows = await sql`
+    delete from org_memberships
+    where org_id = ${orgId} and profile_id = ${profileId}
+    returning org_id
+  `;
+  return rows.length > 0;
+}
+
+export async function findProfileByEmail(
+  sql: Sql,
+  email: string
+): Promise<ProfileRow | null> {
+  const rows = await sql<ProfileRow[]>`
+    select id, email, display_name, avatar_url, metadata, created_at, updated_at
+    from profiles
+    where email = ${email}
+    limit 1
+  `;
+  return rows[0] ?? null;
+}
+
+// ── Credits ───────────────────────────────────────────────────────
+
+export type CreditRow = {
+  org_id: string;
+  balance: number;
+  lifetime_used: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function getOrgCredits(sql: Sql, orgId: string): Promise<CreditRow | null> {
+  const rows = await sql<CreditRow[]>`
+    select org_id, balance, lifetime_used, created_at, updated_at
+    from org_credits
+    where org_id = ${orgId}
+    limit 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function ensureOrgCredits(sql: Sql, orgId: string): Promise<CreditRow> {
+  const rows = await sql<CreditRow[]>`
+    insert into org_credits (org_id)
+    values (${orgId})
+    on conflict (org_id) do nothing
+    returning org_id, balance, lifetime_used, created_at, updated_at
+  `;
+  if (rows[0]) return rows[0];
+
+  const existing = await getOrgCredits(sql, orgId);
+  if (existing) return existing;
+  throw new Error("Failed to ensure org credits");
+}
+
+export async function debitOrgCredits(
+  sql: Sql,
+  orgId: string,
+  amount: number,
+  reason: string,
+  runId?: string
+): Promise<CreditRow> {
+  const rows = await sql<CreditRow[]>`
+    update org_credits
+    set balance = balance - ${amount},
+        lifetime_used = lifetime_used + ${amount},
+        updated_at = now()
+    where org_id = ${orgId} and balance >= ${amount}
+    returning org_id, balance, lifetime_used, created_at, updated_at
+  `;
+  if (!rows[0]) throw new Error("Insufficient credits");
+
+  await sql`
+    insert into credit_transactions (org_id, amount, reason, run_id)
+    values (${orgId}, -${amount}, ${reason}, ${runId ?? null})
+  `;
+
+  return rows[0];
+}
+
+export async function creditOrgBalance(
+  sql: Sql,
+  orgId: string,
+  amount: number,
+  reason: string,
+  provider?: string,
+  providerEventId?: string
+): Promise<CreditRow> {
+  const rows = await sql<CreditRow[]>`
+    update org_credits
+    set balance = balance + ${amount},
+        updated_at = now()
+    where org_id = ${orgId}
+    returning org_id, balance, lifetime_used, created_at, updated_at
+  `;
+  if (!rows[0]) throw new Error("Org credits not found");
+
+  await sql`
+    insert into credit_transactions (org_id, amount, reason, provider, provider_event_id)
+    values (${orgId}, ${amount}, ${reason}, ${provider ?? null}, ${providerEventId ?? null})
+  `;
+
+  return rows[0];
 }

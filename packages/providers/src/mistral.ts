@@ -1,5 +1,5 @@
 import type { ChatAdapter, ChatRequest, ChatResponse } from "./types.ts";
-import { readSecret, baseUrlFor } from "./types.ts";
+import { readSecret, baseUrlFor, reasoningConfig, textFromProviderContent } from "./types.ts";
 
 export const mistralAdapter: ChatAdapter = {
   async chat(req: ChatRequest): Promise<ChatResponse> {
@@ -13,6 +13,7 @@ export const mistralAdapter: ChatAdapter = {
         model: req.model.model,
         temperature: req.temperature ?? 0.4,
         messages: req.messages,
+        ...reasoningConfig(req),
         ...(req.maxTokens ? { max_tokens: req.maxTokens } : {})
       }),
       signal: req.signal
@@ -21,14 +22,16 @@ export const mistralAdapter: ChatAdapter = {
       throw new Error(`Mistral request failed: ${response.status} ${await response.text()}`);
     }
     const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{ message?: { content?: unknown } }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
+    const usage = data.usage
+      ? { input: data.usage.prompt_tokens ?? 0, output: data.usage.completion_tokens ?? 0 }
+      : undefined;
+    if (usage) req.onUsage?.(usage);
     return {
-      content: data.choices?.[0]?.message?.content?.trim() ?? "",
-      usage: data.usage
-        ? { input: data.usage.prompt_tokens ?? 0, output: data.usage.completion_tokens ?? 0 }
-        : undefined,
+      content: textFromProviderContent(data.choices?.[0]?.message?.content).trim(),
+      usage,
       raw: data
     };
   },
@@ -45,6 +48,8 @@ export const mistralAdapter: ChatAdapter = {
         temperature: req.temperature ?? 0.4,
         messages: req.messages,
         stream: true,
+        stream_options: { include_usage: true },
+        ...reasoningConfig(req),
         ...(req.maxTokens ? { max_tokens: req.maxTokens } : {})
       }),
       signal: req.signal
@@ -69,9 +74,13 @@ export const mistralAdapter: ChatAdapter = {
           if (!raw || raw === "[DONE]") continue;
           try {
             const data = JSON.parse(raw) as {
-              choices?: Array<{ delta?: { content?: string } }>;
+              choices?: Array<{ delta?: { content?: unknown } }>;
+              usage?: { prompt_tokens?: number; completion_tokens?: number };
             };
-            const delta = data.choices?.[0]?.delta?.content ?? "";
+            if (data.usage) {
+              req.onUsage?.({ input: data.usage.prompt_tokens ?? 0, output: data.usage.completion_tokens ?? 0 });
+            }
+            const delta = textFromProviderContent(data.choices?.[0]?.delta?.content);
             if (!delta) continue;
             content += delta;
             yield delta;

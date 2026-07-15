@@ -1,5 +1,17 @@
 import type { RunEvent } from "@spielos/core";
 
+export function runtimeEventIcon(event: RunEvent, fallbackIcon = "circle-dot"): string {
+  if (event.type === "status") {
+    const category = event.payload?.category;
+    if (category === "memory_read") return "brain";
+    if (category === "compaction") return "archive";
+    if (category === "context_budget") return "activity";
+    if (category === "verification") return "shield";
+    if (category === "pause") return "pause";
+  }
+  return fallbackIcon;
+}
+
 export function orderRunEvents(events: readonly RunEvent[]): RunEvent[] {
   return events
     .map((event, arrival) => ({ event, arrival }))
@@ -39,7 +51,7 @@ export function isSuccessEvent(event: RunEvent): boolean {
 }
 
 export function isWaitingEvent(event: RunEvent): boolean {
-  return event.type === "human_input_requested";
+  return event.type === "human_input_requested" || (event.type === "status" && event.payload?.category === "pause");
 }
 
 export function isStartEvent(event: RunEvent): boolean {

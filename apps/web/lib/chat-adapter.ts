@@ -12,6 +12,8 @@ type StreamFrame =
   | { kind: "artifact"; artifact: Artifact }
   | { kind: "text"; text: string }
   | { kind: "status"; message: string }
+  | { kind: "run_state"; state: import("./run-context").DurableRunState }
+  | { kind: "usage"; usage: import("./run-context").LiveRunUsage }
   | { kind: "human_input"; request: HumanInputRequest }
   | { kind: "error"; message: string }
   | { kind: "done"; runId: string; status: string };
@@ -49,6 +51,13 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
         const text = getMessageText(lastUser);
         const ctx = runRef.current;
         const ws = storeRef.current;
+        let chatId = ws.activeChatId;
+        let createdChatId: string | null = null;
+        if (!chatId) {
+          const created = await ws.createChat(text.trim().slice(0, 80) || "New chat", false);
+          chatId = created.id;
+          createdChatId = created.id;
+        }
 
         // Map context items to file ids.
         const contextFileIds = ctx.contextItems
@@ -67,13 +76,44 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
         }
         ctx.startRun(type);
 
+        const chat = ws.chats.find((entry) => entry.id === chatId) ?? null;
+        const configuredModelId = typeof chat?.metadata?.modelId === "string"
+          ? chat.metadata.modelId
+          : ctx.pendingModelId;
+        const selectedModel = ws.models.find((model) => model.id === configuredModelId && model.enabled)
+          ?? ws.models.find((model) => model.enabled)
+          ?? null;
+        const previousCompaction = chat?.metadata?.compaction && typeof chat.metadata.compaction === "object"
+          ? chat.metadata.compaction
+          : null;
+        const reasoningEffort = typeof chat?.metadata?.reasoningEffort === "string"
+          ? chat.metadata.reasoningEffort
+          : ctx.pendingReasoningEffort !== "auto"
+            ? ctx.pendingReasoningEffort
+          : selectedModel?.config?.capabilities && typeof selectedModel.config.capabilities === "object"
+            ? (selectedModel.config.capabilities as Record<string, unknown>).reasoningEffort
+            : "auto";
+        await ws.updateChatMetadata(chatId, {
+          modelId: selectedModel?.id ?? null,
+          reasoningEffort,
+          contextItems: ctx.contextItems
+        });
+
         const payload = {
           prompt: text,
-          chatId: ws.activeChatId ?? undefined,
+          chatId,
           type,
           targetId: type === "workflow" ? undefined : targetId,
           workflowId: type === "workflow" ? targetId : undefined,
           contextFileIds,
+          modelId: selectedModel?.id,
+          reasoningEffort,
+          previousCompaction,
+          goal: {
+            objective: text,
+            constraints: [],
+            successCriteria: [type === "chat" ? "Return a grounded response." : "Complete every required runtime node and verify a non-empty terminal output."]
+          },
           messages: messages
             .map((m) => ({
               role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
@@ -154,8 +194,29 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
                 ctx.setActiveRunId(item.runId);
               } else if (item.kind === "status") {
                 ctx.setActivity(item.message);
+              } else if (item.kind === "run_state") {
+                ctx.setDurableState(item.state);
+                if (item.state.budget) {
+                  ctx.setLiveUsage({
+                    inputTokens: item.state.budget.inputTokens,
+                    outputTokens: item.state.budget.outputTokens,
+                    toolCalls: item.state.budget.toolCalls
+                  });
+                }
+              } else if (item.kind === "usage") {
+                ctx.setLiveUsage(item.usage);
               } else if (item.kind === "event") {
                 ctx.appendEvent(item.event);
+                if (item.event.payload?.category === "context_budget") {
+                  const inputTokens = item.event.payload.inputTokens;
+                  if (typeof inputTokens === "number") {
+                    ctx.setLiveUsage({
+                      inputTokens,
+                      outputTokens: runRef.current.liveUsage?.outputTokens ?? 0,
+                      toolCalls: runRef.current.liveUsage?.toolCalls ?? 0
+                    });
+                  }
+                }
                 if (item.event.type === "run_completed") terminalStatus = "completed";
                 if (item.event.type === "run_failed") terminalStatus = "failed";
                 if (item.event.type === "run_cancelled") terminalStatus = "cancelled";
@@ -198,6 +259,41 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
             fetch(`/api/runs/${activeRunId}/cancel`, { method: "POST" }).catch(() => {
               // ignore
             });
+          }
+          if (createdChatId && !storeRef.current.activeChatId) {
+            const createdAt = new Date().toISOString();
+            const localMessages = messages
+              .map((message, index) => ({
+                id: `local-${message.id || index}`,
+                orgId: "",
+                chatId: createdChatId,
+                role: (message.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
+                body: getMessageText(message),
+                metadata: {},
+                createdAt
+              }))
+              .filter((message) => message.body.trim());
+            if (narrative.trim()) {
+              localMessages.push({
+                id: `local-assistant-${messageKey}`,
+                orgId: "",
+                chatId: createdChatId,
+                role: "assistant",
+                body: narrative,
+                metadata: {},
+                createdAt
+              });
+            }
+            const restoredRunId = runRef.current.activeRunId;
+            storeRef.current.hydrateChat(createdChatId, {
+              messages: localMessages,
+              metadata: {
+                lastRunId: restoredRunId,
+                activeRunId: terminalStatus === "completed" ? null : restoredRunId
+              }
+            });
+            storeRef.current.setActiveChat(createdChatId);
+            void storeRef.current.reload();
           }
         }
 

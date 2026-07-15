@@ -15,12 +15,14 @@ import type { ChatMessage as DbChatMessage } from "@spielos/core";
 import { toast } from "@spielos/design-system";
 import { fetchJsonWithRetry } from "./fetch-json";
 
+
 export type Chat = {
   id: string;
   title: string;
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
+  metadata: Record<string, unknown>;
 };
 
 export type ChatStore = {
@@ -29,10 +31,12 @@ export type ChatStore = {
   messages: Record<string, DbChatMessage[]>;
   ready: boolean;
   setActiveChat: (id: string | null) => void;
-  createChat: (title?: string) => Promise<Chat>;
+  createChat: (title?: string, activate?: boolean) => Promise<Chat>;
   renameChat: (id: string, title: string) => Promise<void>;
   archiveChat: (id: string) => Promise<void>;
+  updateChatMetadata: (id: string, patch: Record<string, unknown>) => Promise<void>;
   appendMessage: (chatId: string, message: { role: "user" | "assistant" | "system"; body: string }) => Promise<DbChatMessage>;
+  hydrateChat: (chatId: string, value: { messages: DbChatMessage[]; metadata?: Record<string, unknown> }) => void;
   reload: () => Promise<void>;
 };
 
@@ -51,6 +55,13 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   const loadErrorShown = useRef(false);
 
   const reload = useCallback(async () => {
+    // HttpOnly session cookies are deliberately invisible to client code.
+    // Protected routes should load through the authenticated API instead of
+    // guessing authentication state from document.cookie.
+    if (typeof window !== "undefined" && window.location.pathname === "/login") {
+      setReady(true);
+      return;
+    }
     try {
       const data = await fetchJsonWithRetry<{
         chats: Array<{
@@ -59,6 +70,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
           created_at: string;
           updated_at: string;
           archived_at: string | null;
+          metadata: Record<string, unknown>;
           chat_messages: Array<{
             id: string;
             chat_id: string;
@@ -75,6 +87,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
         createdAt: c.created_at,
         updatedAt: c.updated_at,
         archivedAt: c.archived_at
+        ,metadata: c.metadata ?? {}
       }));
       const newMessages: Record<string, DbChatMessage[]> = {};
       for (const c of data.chats) {
@@ -119,24 +132,25 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   }, [reload]);
 
   const createChat = useCallback(
-    async (title = "New chat") => {
+    async (title = "New chat", activate = true) => {
       const res = await fetch("/api/chats", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title })
       });
       if (!res.ok) throw new Error("Failed to create chat");
-      const data = (await res.json()) as { chat: { id: string; title: string; created_at: string; updated_at: string; archived_at: string | null } };
+      const data = (await res.json()) as { chat: { id: string; title: string; metadata: Record<string, unknown>; created_at: string; updated_at: string; archived_at: string | null } };
       const chat: Chat = {
         id: data.chat.id,
         title: data.chat.title,
         createdAt: data.chat.created_at,
         updatedAt: data.chat.updated_at,
         archivedAt: data.chat.archived_at
+        ,metadata: data.chat.metadata ?? {}
       };
       setChats((current) => [chat, ...current]);
       setMessages((current) => ({ ...current, [chat.id]: [] }));
-      setActiveChatId(chat.id);
+      if (activate) setActiveChatId(chat.id);
       return chat;
     },
     []
@@ -170,6 +184,21 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     setActiveChatId((current) => (current === id ? null : current));
   }, []);
 
+  const updateChatMetadata = useCallback(async (id: string, patch: Record<string, unknown>) => {
+    setChats((current) => current.map((chat) => chat.id === id
+      ? { ...chat, metadata: { ...chat.metadata, ...patch }, updatedAt: nowIso() }
+      : chat));
+    const res = await fetch("/api/chats", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, metadata: patch })
+    });
+    if (!res.ok) {
+      await reload();
+      throw new Error("Failed to save chat context");
+    }
+  }, [reload]);
+
   const appendMessage = useCallback(
     async (chatId: string, message: { role: "user" | "assistant" | "system"; body: string }) => {
       const res = await fetch(`/api/chats/${chatId}/messages`, {
@@ -188,6 +217,15 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     []
   );
 
+  const hydrateChat = useCallback((chatId: string, value: { messages: DbChatMessage[]; metadata?: Record<string, unknown> }) => {
+    setMessages((current) => ({ ...current, [chatId]: value.messages }));
+    if (value.metadata) {
+      setChats((current) => current.map((chat) => chat.id === chatId
+        ? { ...chat, metadata: { ...chat.metadata, ...value.metadata }, updatedAt: nowIso() }
+        : chat));
+    }
+  }, []);
+
   const store = useMemo<ChatStore>(
     () => ({
       chats,
@@ -198,10 +236,12 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       createChat,
       renameChat,
       archiveChat,
+      updateChatMetadata,
       appendMessage,
+      hydrateChat,
       reload
     }),
-    [chats, activeChatId, messages, ready, createChat, renameChat, archiveChat, appendMessage, reload]
+    [chats, activeChatId, messages, ready, createChat, renameChat, archiveChat, updateChatMetadata, appendMessage, hydrateChat, reload]
   );
 
   return createElement(ChatStoreContext.Provider, { value: store }, children);

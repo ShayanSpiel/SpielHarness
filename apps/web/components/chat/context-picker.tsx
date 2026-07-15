@@ -27,7 +27,7 @@ const SECTIONS: Section[] = [
   { id: "workflow", label: "Workflows", icon: <Icon name={ENTITY_ICONS.workflow} size={14} />, blurb: "Multi-step graphs", kinds: ["workflow"] },
   { id: "eval", label: "Evals", icon: <Icon name={ENTITY_ICONS.eval} size={14} />, blurb: "Rubrics for scoring content, prompts, and workflows", kinds: ["eval"] },
   { id: "strategy", label: "Strategy", icon: <Icon name={ENTITY_ICONS.strategy} size={14} />, blurb: "Strategy documents and reusable prompts", kinds: ["strategy", "prompt"] },
-  { id: "files", label: "Files", icon: <Icon name={ENTITY_ICONS.file} size={14} />, blurb: "Local library content and saved outputs", kinds: ["knowledge", "library"] }
+  { id: "files", label: "Files", icon: <Icon name={ENTITY_ICONS.knowledge} size={14} />, blurb: "Local library content and saved outputs", kinds: ["knowledge", "library"] }
 ];
 
 type Candidate = {

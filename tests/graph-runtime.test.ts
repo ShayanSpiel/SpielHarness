@@ -114,6 +114,35 @@ test("unregistered executable skill kinds fail instead of simulating success", a
   assert.ok(!items.some((item) => item.kind === "event" && item.event.type === "run_completed"));
 });
 
+test("harness mutation skills call the application-owned draft adapter", async () => {
+  const createDraft = skill("harness-create", "harness_file", {
+    metadata: { harnessAction: "create" }
+  });
+  let received: Record<string, unknown> | null = null;
+  const items = await collect(streamRun({
+    orgId,
+    runId: "run-harness-draft",
+    prompt: JSON.stringify({ title: "Proposed researcher", fileType: "harness_role", body: "Draft role" }),
+    workflow: null,
+    singleNode: { kind: "skill", nodeId: "harness-node", title: "Create harness draft", role, skill: createDraft, fileIds: [] },
+    roles: { [role.id]: role },
+    skills: { [createDraft.id]: createDraft },
+    files: [],
+    connections: {},
+    provider: null,
+    model: null,
+    harnessFileAction: async (action, params, context) => {
+      received = { action, params, context };
+      return { id: "draft-id", title: String(params.title), fileType: String(params.fileType), status: "draft", version: 1 };
+    }
+  }));
+
+  assert.equal(received?.action, "create");
+  assert.equal((received?.params as Record<string, unknown>).title, "Proposed researcher");
+  assert.ok(items.some((item) => item.kind === "event" && item.event.type === "run_completed"));
+  assert.ok(items.some((item) => item.kind === "text" && item.text.includes("draft-id")));
+});
+
 test("workflow fan-out joins once and executes every declared skill", async () => {
   const searchA = skill("search-a", "knowledge_search");
   const searchB = skill("search-b", "knowledge_search");

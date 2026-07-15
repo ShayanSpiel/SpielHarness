@@ -1,6 +1,6 @@
 "use client";
 
-import { EVENT_ICONS, Icon } from "@spielos/design-system/components";
+import { CONTEXT_ICON, ENTITY_ICONS, EVENT_ICONS, Icon } from "@spielos/design-system/components";
 import {
   ActionBarPrimitive,
   AssistantRuntimeProvider,
@@ -11,6 +11,7 @@ import {
   useLocalRuntime,
   useMessagePartText
 } from "@assistant-ui/react";
+import { usePathname } from "next/navigation";
 import {
   type FormEvent,
   type KeyboardEvent,
@@ -24,6 +25,7 @@ import {
 import { createPortal } from "react-dom";
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import ReactMarkdown from "react-markdown";
+import { ToolCallCard } from "./tool-call";
 import {
   Button,
   ChoiceButton,
@@ -44,30 +46,33 @@ import { getTextAroundCursor } from "../mention-textarea";
 import { MentionDropdown } from "../mention-dropdown";
 import { ContextChips } from "./context-chips";
 import { ContextPicker } from "./context-picker";
-import type { HumanInputQuestion, HumanInputRequest, RunEvent, RunStatus } from "@spielos/core";
+import { capabilitiesForModel, type Artifact, type HumanInputQuestion, type HumanInputRequest, type RunEvent, type RunStatus } from "@spielos/core";
+import { ReasoningEffortControl, type ReasoningEffort } from "../reasoning-effort-control";
+import { ChatModelPicker } from "../chat-model-picker";
 import {
   compactRunEvents,
   isFailureEvent,
   isStartEvent,
   isSuccessEvent,
   isWaitingEvent,
-  orderRunEvents
+  orderRunEvents,
+  runtimeEventIcon
 } from "../../lib/run-events";
 
-function ComposerAddContext() {
+function ComposerAddContext({ count }: { count: number }) {
   const run = useRunContext();
   return (
-    <Tooltip content="Add context (Roles, Skills, Library, Workstreams)" side="top">
-      <Button
-        aria-label="Add context"
-        onClick={() => run.setPickerOpen(true)}
-        size="icon"
-        type="button"
-        variant="ghost"
-      >
-        <Icon name="plus" size={16} />
-      </Button>
-    </Tooltip>
+    <Button
+      aria-label="Open context deck"
+      icon={CONTEXT_ICON}
+      onClick={() => run.setPickerOpen(true)}
+      size="sm"
+      type="button"
+      variant="subtle"
+    >
+      Context
+      <Pill className="ml-0.5 h-4 text-3xs" tone={count > 0 ? "info" : "default"}>{count}</Pill>
+    </Button>
   );
 }
 
@@ -395,6 +400,17 @@ function Composer() {
   const composerShellRef = useRef<HTMLDivElement>(null);
   const mentionPortalRef = useRef<HTMLDivElement>(null);
   const human = useHumanInputFlow(run.humanInputRequest, textareaRef);
+  const activeChat = store.chats.find((chat) => chat.id === store.activeChatId) ?? null;
+  const enabledModels = store.models.filter((model) => model.enabled);
+  const selectedModelId = typeof activeChat?.metadata?.modelId === "string"
+    ? activeChat.metadata.modelId
+    : run.pendingModelId ?? enabledModels[0]?.id ?? "";
+  const selectedModel = enabledModels.find((model) => model.id === selectedModelId) ?? enabledModels[0] ?? null;
+  const selectedEffort: ReasoningEffort = typeof activeChat?.metadata?.reasoningEffort === "string"
+    ? activeChat.metadata.reasoningEffort as ReasoningEffort
+    : run.pendingReasoningEffort !== "auto"
+      ? run.pendingReasoningEffort as ReasoningEffort
+      : selectedModel ? capabilitiesForModel(selectedModel).reasoningEffort : "auto";
 
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
@@ -559,7 +575,37 @@ function Composer() {
           {human.request ? (
             <Pill tone="warning"><Icon name="user" size={10} /> Awaiting input</Pill>
           ) : (
-            <ComposerAddContext />
+            <div className="flex min-w-0 items-center gap-1.5">
+              <ComposerAddContext count={run.contextItems.length} />
+              {enabledModels.length > 0 ? (
+                <ChatModelPicker
+                  models={enabledModels}
+                  onChange={(modelId) => {
+                    if (activeChat) {
+                      void store.updateChatMetadata(activeChat.id, { modelId });
+                    } else {
+                      run.setPendingModelId(modelId);
+                      const model = enabledModels.find((entry) => entry.id === modelId);
+                      if (model) run.setPendingReasoningEffort(capabilitiesForModel(model).reasoningEffort);
+                    }
+                  }}
+                  value={selectedModelId}
+                />
+              ) : null}
+              {selectedModel ? (
+                <ReasoningEffortControl
+                  onChange={(reasoningEffort) => {
+                    if (activeChat) {
+                      void store.updateChatMetadata(activeChat.id, { reasoningEffort });
+                    } else {
+                      run.setPendingReasoningEffort(reasoningEffort);
+                    }
+                  }}
+                  running={isRunning}
+                  value={selectedEffort}
+                />
+              ) : null}
+            </div>
           )}
           {human.request ? (
             human.acceptsText ? (
@@ -705,12 +751,12 @@ function UserMessage() {
     <MessagePrimitive.Root className="group fade-in slide-in-from-bottom-1 relative grid w-full grid-cols-[1fr_auto] gap-x-3 animate-in duration-[var(--duration)]">
       <div className="min-w-0 max-w-[85%] overflow-hidden rounded-md bg-panel-strong px-3 py-2 text-sm leading-relaxed text-foreground">
         <MessagePrimitive.Parts components={{ Text: UserMessageText }} />
-        <div className="mt-1.5 flex items-center justify-end gap-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="mt-1.5 flex items-center justify-end gap-1 text-muted-foreground opacity-40 transition-opacity group-hover:opacity-100">
           <ActionBar />
         </div>
       </div>
       <div className="flex h-7 w-7 items-center justify-center rounded-md bg-foreground text-background">
-        <Icon name="user" size={14} />
+        <Icon className="scale-x-[-1]" name={ENTITY_ICONS.profile} size={14} />
       </div>
     </MessagePrimitive.Root>
   );
@@ -782,7 +828,7 @@ function RoleAvatar({ roleId, roleName }: { roleId: string; roleName: string }) 
       className="flex h-7 w-7 items-center justify-center rounded-md bg-selected text-3xs font-semibold text-foreground-strong"
       title={roleName}
     >
-      {typeof configuredIcon === "string" ? <Icon name={configuredIcon} size={14} /> : initials || <Icon name="bot" size={14} />}
+      {typeof configuredIcon === "string" ? <Icon name={configuredIcon} size={14} /> : initials || <Icon name={ENTITY_ICONS.assistant} size={14} />}
     </div>
   );
 }
@@ -821,11 +867,16 @@ function RunActivityTimeline() {
       <div className="ml-[5px] border-l border-border/70 pl-4">
           {items.map((event) => {
           const active = event.id === activeItemId;
+
+          if (event.type === "tool_call_started" || event.type === "tool_call_result") {
+            return <ToolCallCard active={active} event={event} key={event.id} />;
+          }
+
           const failed = isFailureEvent(event);
           const waiting = isWaitingEvent(event);
           const success = isSuccessEvent(event);
           const tone = failed ? "destructive" : waiting ? "warning" : success ? "success" : active ? "info" : "neutral";
-          const icon = EVENT_ICONS[event.type as keyof typeof EVENT_ICONS] ?? "circle-dot";
+          const icon = runtimeEventIcon(event, EVENT_ICONS[event.type as keyof typeof EVENT_ICONS]);
           return (
             <div className="flex min-h-6 min-w-0 items-center gap-2 py-0.5 text-2xs" key={event.id}>
               <StatusIcon busy={active} icon={icon} tone={tone} size={11} />
@@ -837,16 +888,53 @@ function RunActivityTimeline() {
               )}>
                 {event.message}
               </span>
-              {event.skillName && event.type === "tool_call_result" ? (
-                <span className="ml-auto shrink-0 rounded-full bg-selected px-2 py-0.5 text-3xs text-muted-foreground">
-                  {event.skillName}
-                </span>
-              ) : null}
             </div>
           );
         })}
       </div>
     </div>
+  );
+}
+
+function InlineRunArtifacts({ artifacts }: { artifacts: Artifact[] }) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  if (artifacts.length === 0) return null;
+  return (
+    <section aria-label="Generated files" className="mt-3 grid gap-1.5">
+      <div className="flex items-center gap-1.5 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <Icon name="layers" size={10} />
+        Generated files
+        <span className="tabular-nums">{artifacts.length}</span>
+      </div>
+      {artifacts.map((artifact) => {
+        const expanded = expandedId === artifact.id;
+        return (
+          <article className="overflow-hidden rounded-md border border-border bg-panel" key={artifact.id}>
+            <button
+              aria-expanded={expanded}
+              className="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-hover"
+              onClick={() => setExpandedId(expanded ? null : artifact.id)}
+              type="button"
+            >
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-panel-raised text-info">
+                <Icon name="file-text" size={13} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs font-medium text-foreground">{artifact.title}</span>
+                <span className="mt-0.5 block text-3xs text-muted-foreground">Saved to Outputs · {artifact.body.length.toLocaleString()} characters</span>
+              </span>
+              <Pill className="uppercase tracking-wider">{artifact.type}</Pill>
+              <Icon className={cn("text-muted-foreground transition-transform", expanded && "rotate-180")} name="chevron-down" size={12} />
+            </button>
+            {expanded ? (
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap border-t border-border bg-panel-raised p-3 text-xs leading-5 text-foreground">
+                {artifact.body}
+              </pre>
+            ) : null}
+          </article>
+        );
+      })}
+    </section>
   );
 }
 
@@ -858,7 +946,7 @@ function AssistantMessage() {
     <MessagePrimitive.Root className="group fade-in slide-in-from-bottom-1 relative grid w-full grid-cols-[auto_1fr] gap-x-3 animate-in duration-[var(--duration)]">
       {actor ? <RoleAvatar roleId={actor.roleId} roleName={actor.roleName} /> : (
         <div className="flex h-7 w-7 items-center justify-center rounded-md bg-panel-raised text-foreground">
-          <Icon name="bot" size={14} />
+          <Icon name={ENTITY_ICONS.assistant} size={14} />
         </div>
       )}
       <div className="min-w-0 overflow-hidden leading-relaxed">
@@ -868,8 +956,9 @@ function AssistantMessage() {
         <div className="mt-1">
           {isLatest ? <RunActivityTimeline /> : null}
           <MessagePrimitive.Parts components={{ Text: MarkdownPart }} />
+          {isLatest ? <InlineRunArtifacts artifacts={run.artifacts} /> : null}
         </div>
-        <div className="mt-2 flex items-center gap-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="mt-2 flex items-center gap-1 text-muted-foreground opacity-40 transition-opacity group-hover:opacity-100">
           <ActionBar />
         </div>
         <MessagePrimitive.Error>
@@ -886,7 +975,7 @@ function ContinuationResponse() {
   return (
     <div className="grid w-full grid-cols-[auto_1fr] gap-x-3">
       <div className="flex h-7 w-7 items-center justify-center rounded-md bg-panel-raised text-foreground">
-        <Icon name="bot" size={14} />
+        <Icon name={ENTITY_ICONS.assistant} size={14} />
       </div>
       <div className="min-w-0">
         <div className="mb-1 text-2xs font-medium text-muted-foreground">Assistant</div>
@@ -946,9 +1035,82 @@ function ChatRuntimeProvider({ children }: { children: ReactNode }) {
 
 function ChatThreadInner() {
   const run = useRunContext();
+  const store = useWorkspaceStore();
+  const pathname = usePathname();
+  const isDedicatedRunPage = pathname.startsWith("/runs/");
+  const restoredChatId = useRef<string | null>(null);
+  const restoreStoreRef = useRef(store);
+  const restoreRunRef = useRef(run);
+  restoreStoreRef.current = store;
+  restoreRunRef.current = run;
+  const activeChatId = store.activeChatId;
+  const updateChatMetadata = store.updateChatMetadata;
   const isEmpty = useAuiState(
     (s) => s.thread.messages.length === 0 && !s.thread.isRunning
   );
+
+  useEffect(() => {
+    const currentStore = restoreStoreRef.current;
+    const currentRun = restoreRunRef.current;
+    const active = currentStore.chats.find((chat) => chat.id === activeChatId) ?? null;
+    const saved = Array.isArray(active?.metadata?.contextItems)
+      ? active.metadata.contextItems.filter((item): item is import("../../lib/run-context").ContextItem => {
+          if (!item || typeof item !== "object") return false;
+          const value = item as Record<string, unknown>;
+          return typeof value.id === "string" && typeof value.kind === "string" && typeof value.title === "string";
+        })
+      : [];
+    currentRun.setContextItems(saved);
+    restoredChatId.current = active?.id ?? null;
+    const activeRunId = typeof active?.metadata?.activeRunId === "string" ? active.metadata.activeRunId : null;
+    const lastRunId = typeof active?.metadata?.lastRunId === "string" ? active.metadata.lastRunId : null;
+    const restorableRunId = activeRunId ?? lastRunId;
+    currentRun.setDurableState(null);
+    currentRun.setLiveUsage(null);
+    currentRun.clearEvents();
+    currentRun.clearArtifacts();
+    if (restorableRunId && !isDedicatedRunPage) {
+      currentRun.setActiveRunId(restorableRunId);
+      fetch(`/api/runs/${restorableRunId}`, { cache: "no-store" })
+        .then((response) => response.ok ? response.json() : null)
+        .then((payload: null | { run: { type: string; status: RunStatus; state: Record<string, unknown> }; events: Array<{ id: string; org_id: string; run_id: string; event_type: string; sequence: number; node_id: string | null; node_title: string | null; skill_id: string | null; skill_name: string | null; message: string; payload: Record<string, unknown>; created_at: string }>; artifacts: import("@spielos/core").Artifact[] }) => {
+          if (!payload) return;
+          const latestStore = restoreStoreRef.current;
+          const latestRun = restoreRunRef.current;
+          if (latestStore.activeChatId !== activeChatId) return;
+          if (latestRun.activeRunId && latestRun.activeRunId !== restorableRunId) return;
+          latestRun.setRunType(payload.run.type as import("@spielos/core").RunType);
+          latestRun.setRunStatus(payload.run.status);
+          latestRun.setDurableState(payload.run.state as import("../../lib/run-context").DurableRunState);
+          const restoredBudget = (payload.run.state as import("../../lib/run-context").DurableRunState).budget;
+          latestRun.setLiveUsage(restoredBudget ? {
+            inputTokens: restoredBudget.inputTokens,
+            outputTokens: restoredBudget.outputTokens,
+            toolCalls: restoredBudget.toolCalls
+          } : null);
+          const pending = payload.run.state?.pendingHumanInput;
+          latestRun.setHumanInputRequest(pending && typeof pending === "object" ? pending as HumanInputRequest : null);
+          for (const event of payload.events) {
+            latestRun.appendEvent({
+              id: event.id, orgId: event.org_id, runId: event.run_id, type: event.event_type as RunEvent["type"], sequence: Number(event.sequence),
+              nodeId: event.node_id ?? undefined, nodeTitle: event.node_title ?? undefined, skillId: event.skill_id ?? undefined, skillName: event.skill_name ?? undefined,
+              message: event.message, payload: event.payload ?? {}, createdAt: event.created_at
+            });
+          }
+          for (const artifact of payload.artifacts) latestRun.appendArtifact(artifact);
+        })
+        .catch(() => undefined);
+    }
+  // Restore only when the durable chat identity changes.
+  }, [activeChatId, isDedicatedRunPage]);
+
+  useEffect(() => {
+    if (!activeChatId || restoredChatId.current !== activeChatId) return;
+    const timer = window.setTimeout(() => {
+      void updateChatMetadata(activeChatId, { contextItems: run.contextItems });
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [activeChatId, run.contextItems, updateChatMetadata]);
 
   return (
     <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col">

@@ -4,6 +4,7 @@ import {
   createFile,
   createFolder,
   deleteEmptyPlaceholderFiles,
+  deleteLegacySeedDuplicates,
   deleteEmptyFolders,
   findFolderByName,
   listHarnessFiles,
@@ -26,6 +27,9 @@ type ManifestEntry = {
   auth?: "none" | "api_key" | "oauth";
   sideEffect?: "none" | "read" | "write" | "external";
   folder?: string;
+  workspaceConfig?: boolean;
+  harnessAction?: "create" | "update";
+  inputSchema?: Record<string, unknown>;
 };
 
 type Manifest = Record<string, ManifestEntry>;
@@ -150,6 +154,9 @@ function classify(
   if (entry?.auth) metadata.auth = entry.auth;
   if (entry?.sideEffect) metadata.sideEffect = entry.sideEffect;
   if (entry?.contextSlugs) metadata.contextSlugs = entry.contextSlugs;
+  if (entry?.workspaceConfig) metadata.workspaceConfig = true;
+  if (entry?.harnessAction) metadata.harnessAction = entry.harnessAction;
+  if (entry?.inputSchema) metadata.inputSchema = entry.inputSchema;
 
   return { fileType, metadata };
 }
@@ -164,6 +171,15 @@ function withoutUndefined(value: unknown): unknown {
     return out;
   }
   return value;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 async function loadManifest(): Promise<Manifest> {
@@ -341,36 +357,38 @@ export async function POST() {
 
     let seeded = 0;
     let updated = 0;
-    for (let file of seed) {
-      file = applyManifestToRole(file, manifest);
-      const folderId = folderMap.get(file.folderName) ?? null;
-
-      const current = bySeedPath.get(file.path);
-      if (current) {
-        const changed =
-          current.title !== file.title ||
-          current.body !== file.body ||
-          current.file_type !== file.fileType ||
-          current.status !== file.status ||
-          current.folder_id !== folderId ||
-          JSON.stringify(current.metadata ?? {}) !== JSON.stringify(file.metadata);
-        if (changed) {
-          await updateFile(org.sql, org.orgId, current.id, {
-            title: file.title,
-            body: file.body,
-            fileType: file.fileType,
-            status: file.status,
-            folderId,
-            metadata: file.metadata
-          });
-          await audit(org.sql, org.orgId, {
-            action: "seed-update",
-            entityType: "file",
-            entityId: current.id
-          });
-          updated++;
+    const preparedSeed = seed.map((file) => applyManifestToRole(file, manifest));
+    const batchSize = 8;
+    for (let index = 0; index < preparedSeed.length; index += batchSize) {
+      await Promise.all(preparedSeed.slice(index, index + batchSize).map(async (file) => {
+        const folderId = folderMap.get(file.folderName) ?? null;
+        const current = bySeedPath.get(file.path);
+        if (current) {
+          const changed =
+            current.title !== file.title ||
+            current.body !== file.body ||
+            current.file_type !== file.fileType ||
+            current.status !== file.status ||
+            current.folder_id !== folderId ||
+            stableJson(current.metadata ?? {}) !== stableJson(file.metadata);
+          if (changed) {
+            await updateFile(org.sql, org.orgId, current.id, {
+              title: file.title,
+              body: file.body,
+              fileType: file.fileType,
+              status: file.status,
+              folderId,
+              metadata: file.metadata
+            });
+            await audit(org.sql, org.orgId, {
+              action: "seed-update",
+              entityType: "file",
+              entityId: current.id
+            });
+            updated += 1;
+          }
+          return;
         }
-      } else {
         await createFile(org.sql, org.orgId, {
           title: file.title,
           body: file.body,
@@ -379,20 +397,23 @@ export async function POST() {
           folderId,
           metadata: file.metadata
         });
-        seeded++;
-      }
+        seeded += 1;
+      }));
     }
 
     const removedPlaceholders = await deleteEmptyPlaceholderFiles(org.sql, org.orgId);
+    const removedLegacyDuplicates = await deleteLegacySeedDuplicates(org.sql, org.orgId);
     const organizedGeneratedFiles = await organizeUnfolderedGeneratedFiles(org.sql, org.orgId);
     const removedEmptyFolders = await deleteEmptyFolders(org.sql, org.orgId);
 
     return Response.json({
-      message: `Seed sync complete. Inserted ${seeded}, updated ${updated}, organized ${organizedGeneratedFiles} outputs, removed ${removedPlaceholders} empty placeholders and ${removedEmptyFolders} empty folders.`,
+      message: `Seed sync complete. Inserted ${seeded}, updated ${updated}, organized ${organizedGeneratedFiles} outputs, removed ${removedPlaceholders} empty placeholders, ${removedLegacyDuplicates} legacy duplicates, and ${removedEmptyFolders} empty folders.`,
+      discovered: seed.length,
       seeded,
       updated,
       organizedGeneratedFiles,
       removedPlaceholders,
+      removedLegacyDuplicates,
       removedEmptyFolders
     });
   } catch (err) {

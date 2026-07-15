@@ -142,6 +142,8 @@ const DEFAULT_ICON_MAP: Record<string, string> = {
   "prompt-json": "FileCode",
   "prompt-folder": "FileDetail",
   task: "Task",
+  psychology: "Psychology",
+  head: "Head",
 };
 
 const INITIAL_ICON_MAP: Record<string, string> = { ...DEFAULT_ICON_MAP };

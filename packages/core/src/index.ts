@@ -31,7 +31,9 @@ export const skillKindSchema = z.enum([
   "eval",
   "http",
   "mcp_call",
-  "knowledge_search"
+  "knowledge_search",
+  "harness_file",
+  "memory_write"
 ]);
 export type SkillKind = z.infer<typeof skillKindSchema>;
 
@@ -161,6 +163,8 @@ export const workflowNodeSchema = z.object({
   humanQuestions: z.array(humanInputQuestionSchema).optional(),
   skillIds: z.array(z.string()).default([]),
   fileIds: z.array(z.string()).default([]),
+  toolCallLimits: z.record(z.number().int().positive()).optional(),
+  requiredToolCalls: z.array(z.string()).optional(),
   inputContract: z.string().default("any"),
   outputContract: z.string().default("any"),
   position: z.object({ x: z.number().default(0), y: z.number().default(0) }).default({ x: 0, y: 0 }),
@@ -319,6 +323,28 @@ export const modelProviderObjectSchema = z.object({
 });
 export type ModelProvider = z.infer<typeof modelProviderObjectSchema>;
 
+export const modelCapabilitiesSchema = z.object({
+  contextWindow: z.number().int().positive().default(32768),
+  maxOutputTokens: z.number().int().positive().default(4096),
+  compactionThreshold: z.number().min(0.5).max(0.95).default(0.8),
+  tokenCounter: z.enum(["provider", "tiktoken", "estimate"]).default("provider"),
+  toolCalling: z.boolean().default(false),
+  parallelToolCalling: z.boolean().default(false),
+  reasoningSummaries: z.boolean().default(false),
+  providerCompaction: z.boolean().default(false),
+  reasoningEffort: z.enum(["auto", "low", "medium", "high", "xhigh", "max"]).default("auto"),
+  outputTokenParameter: z.enum(["max_tokens", "max_completion_tokens"]).default("max_tokens")
+});
+export type ModelCapabilities = z.infer<typeof modelCapabilitiesSchema>;
+
+export const DEFAULT_MODEL_CAPABILITIES: ModelCapabilities = modelCapabilitiesSchema.parse({});
+
+export function capabilitiesForModel(model: ModelProvider): ModelCapabilities {
+  const configured = model.config?.capabilities;
+  const parsed = modelCapabilitiesSchema.safeParse(configured);
+  return parsed.success ? parsed.data : DEFAULT_MODEL_CAPABILITIES;
+}
+
 export const modelSchema = modelProviderObjectSchema;
 export type Model = z.infer<typeof modelSchema>;
 
@@ -361,6 +387,7 @@ export const chatSchema = z.object({
   id: z.string(),
   orgId: z.string(),
   title: z.string(),
+  metadata: z.record(z.unknown()).default({}),
   createdAt: z.string(),
   updatedAt: z.string()
 });
@@ -376,6 +403,73 @@ export const chatMessageSchema = z.object({
   createdAt: z.string()
 });
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
+
+// ── Durable execution state ───────────────────────────────────
+export const runGoalSchema = z.object({
+  objective: z.string().min(1),
+  constraints: z.array(z.string()).default([]),
+  successCriteria: z.array(z.string()).default([])
+});
+export type RunGoal = z.infer<typeof runGoalSchema>;
+
+export const runBudgetSchema = z.object({
+  maxInputTokens: z.number().int().positive().nullable().default(null),
+  maxOutputTokens: z.number().int().positive().nullable().default(null),
+  maxDurationMs: z.number().int().positive().nullable().default(null),
+  maxToolCalls: z.number().int().positive().nullable().default(null),
+  inputTokens: z.number().int().nonnegative().default(0),
+  outputTokens: z.number().int().nonnegative().default(0),
+  toolCalls: z.number().int().nonnegative().default(0),
+  startedAt: z.string(),
+  deadlineAt: z.string().nullable().default(null)
+});
+export type RunBudget = z.infer<typeof runBudgetSchema>;
+
+export const runProgressSchema = z.object({
+  milestone: z.string().nullable().default(null),
+  completedActions: z.array(z.string()).default([]),
+  nextActions: z.array(z.string()).default([]),
+  unresolvedIssues: z.array(z.string()).default([])
+});
+export type RunProgress = z.infer<typeof runProgressSchema>;
+
+export const runVerificationSchema = z.object({
+  required: z.boolean().default(true),
+  status: z.enum(["pending", "passed", "failed", "skipped"]).default("pending"),
+  evidence: z.array(z.string()).default([]),
+  checkedAt: z.string().nullable().default(null)
+});
+export type RunVerification = z.infer<typeof runVerificationSchema>;
+
+// ── Controlled, file-backed learned memory ───────────────────
+export const memoryKindSchema = z.enum(["semantic", "episodic"]);
+export type MemoryKind = z.infer<typeof memoryKindSchema>;
+
+export const memoryScopeSchema = z.enum(["workspace", "user", "role", "workflow"]);
+export type MemoryScope = z.infer<typeof memoryScopeSchema>;
+
+export const memoryRecordSchema = z.object({
+  id: z.string(),
+  title: z.string().min(1),
+  body: z.string().min(1),
+  kind: memoryKindSchema,
+  scope: memoryScopeSchema,
+  scopeId: z.string().nullable().default(null),
+  provenance: z.object({
+    sourceType: z.enum(["user", "run", "file", "system"]),
+    sourceId: z.string().nullable().default(null),
+    reason: z.string().min(1)
+  }),
+  confidence: z.number().min(0).max(1).default(1),
+  authority: z.enum(["learned", "user_confirmed", "workspace_config"]).default("learned"),
+  status: z.enum(["proposed", "approved", "superseded", "forgotten"]).default("proposed"),
+  pinned: z.boolean().default(false),
+  supersedesId: z.string().nullable().default(null),
+  conflictIds: z.array(z.string()).default([]),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+export type MemoryRecord = z.infer<typeof memoryRecordSchema>;
 
 // ── File record (DB row, camelCase) ────────────────────────────
 export const fileRecordSchema = z.object({
@@ -485,6 +579,8 @@ export function parseWorkflowFile(row: FileRecord): WorkflowFile {
       humanQuestions: n.humanQuestions as WorkflowNode["humanQuestions"],
       skillIds: (n.skillIds as string[]) ?? (n.skillSlugs as string[]) ?? [],
       fileIds: (n.fileIds as string[]) ?? (n.fileSlugs as string[]) ?? [],
+      toolCallLimits: n.toolCallLimits as WorkflowNode["toolCallLimits"],
+      requiredToolCalls: n.requiredToolCalls as WorkflowNode["requiredToolCalls"],
       inputContract: String(n.inputContract ?? n.input ?? "any"),
       outputContract: String(n.outputContract ?? n.output ?? "any"),
       position: (n.position as { x: number; y: number }) ?? {

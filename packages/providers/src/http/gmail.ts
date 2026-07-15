@@ -1,14 +1,16 @@
 import { resolveGoogleAccessToken } from "./auth.ts";
 import type { HttpAdapter } from "./types.ts";
+import { readToolInput, readToolNumber } from "./input.ts";
 
 const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 
 async function gmailGet(
   path: string,
   token: string,
-  params?: Record<string, string>
+  params?: Record<string, string>,
+  signal?: AbortSignal
 ): Promise<string> {
-  const url = new URL(path, GMAIL_BASE);
+  const url = new URL(`${GMAIL_BASE}${path}`);
   if (params) {
     for (const [key, value] of Object.entries(params)) {
       url.searchParams.set(key, value);
@@ -16,6 +18,7 @@ async function gmailGet(
   }
   const response = await fetch(url.toString(), {
     headers: { Authorization: `Bearer ${token}` },
+    signal,
   });
   const text = await response.text();
   if (!response.ok) {
@@ -29,7 +32,8 @@ async function gmailGet(
 async function gmailPost(
   path: string,
   token: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  signal?: AbortSignal
 ): Promise<string> {
   const response = await fetch(`${GMAIL_BASE}${path}`, {
     method: "POST",
@@ -38,6 +42,7 @@ async function gmailPost(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+    signal,
   });
   const text = await response.text();
   if (!response.ok) {
@@ -75,6 +80,68 @@ type EmailFields = {
   cc?: string;
   bcc?: string;
 };
+
+type GmailPayload = {
+  mimeType?: string;
+  headers?: Array<{ name?: string; value?: string }>;
+  body?: { data?: string; size?: number; attachmentId?: string };
+  parts?: GmailPayload[];
+};
+
+type GmailMessage = {
+  id?: string;
+  threadId?: string;
+  labelIds?: string[];
+  internalDate?: string;
+  snippet?: string;
+  payload?: GmailPayload;
+};
+
+function decodeBase64Url(value: string): string {
+  try {
+    return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+function readableGmailBody(payload: GmailPayload | undefined): string {
+  if (!payload) return "";
+  const candidates: Array<{ mimeType: string; text: string }> = [];
+  const visit = (part: GmailPayload) => {
+    const mimeType = part.mimeType ?? "";
+    if (part.body?.data && (mimeType.startsWith("text/plain") || mimeType.startsWith("text/html"))) {
+      candidates.push({ mimeType, text: decodeBase64Url(part.body.data) });
+    }
+    for (const child of part.parts ?? []) visit(child);
+  };
+  visit(payload);
+  const selected = candidates.find((candidate) => candidate.mimeType.startsWith("text/plain")) ?? candidates[0];
+  if (!selected) return "";
+  return selected.mimeType.startsWith("text/html")
+    ? selected.text.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
+    : selected.text.trim();
+}
+
+export function normalizeGmailMessage(raw: string): string {
+  const message = JSON.parse(raw) as GmailMessage;
+  const allowedHeaders = new Set(["subject", "from", "to", "cc", "date", "message-id"]);
+  const headers = Object.fromEntries((message.payload?.headers ?? [])
+    .filter((header) => header.name && allowedHeaders.has(header.name.toLowerCase()))
+    .map((header) => [header.name!, header.value ?? ""]));
+  const readableBody = readableGmailBody(message.payload);
+  const body = readableBody.slice(0, 40_000);
+  return JSON.stringify({
+    id: message.id,
+    threadId: message.threadId,
+    labelIds: message.labelIds,
+    internalDate: message.internalDate,
+    headers,
+    snippet: message.snippet ?? "",
+    body: body || message.snippet || "",
+    truncated: readableBody.length > body.length
+  }, null, 2);
+}
 
 function parseEmailInput(input: string): EmailFields {
   const trimmed = input.trim();
@@ -182,26 +249,26 @@ export const gmailAdapter: HttpAdapter = {
 
     switch (req.operation.id) {
       case "gmail.search": {
-        const params: Record<string, string> = {};
-        const input = req.input.trim();
+        const params: Record<string, string> = {
+          maxResults: String(readToolNumber(req.input, ["maxResults", "max_results", "limit"], 10, { max: 25 }))
+        };
+        const input = readToolInput(req.input, ["query", "q"]);
         if (input) {
           params.q = input.slice(0, 2000);
-        } else {
-          params.maxResults = "10";
         }
-        const raw = await gmailGet("/messages", token, params);
+        const raw = await gmailGet("/messages", token, params, req.signal);
         return { output: raw };
       }
 
       case "gmail.read": {
-        const messageId = req.input.trim();
+        const messageId = readToolInput(req.input, ["messageId", "message_id", "id"]);
         if (!messageId) {
           throw new Error("Gmail read requires a message ID.");
         }
         const raw = await gmailGet(`/messages/${messageId}`, token, {
           format: "full",
-        });
-        return { output: raw };
+        }, req.signal);
+        return { output: normalizeGmailMessage(raw) };
       }
 
       case "gmail.draft": {
@@ -213,7 +280,7 @@ export const gmailAdapter: HttpAdapter = {
         }
         const raw = await gmailPost("/drafts", token, {
           message: { raw: buildEmailRaw(to, subject, body) },
-        });
+        }, req.signal);
         return { output: raw };
       }
 
@@ -238,7 +305,7 @@ export const gmailAdapter: HttpAdapter = {
         } catch {}
 
         if (draftId) {
-          const raw = await gmailPost("/drafts/send", token, { id: draftId });
+          const raw = await gmailPost("/drafts/send", token, { id: draftId }, req.signal);
           return { output: raw };
         }
 
@@ -252,7 +319,7 @@ export const gmailAdapter: HttpAdapter = {
         }
         const raw = await gmailPost("/messages/send", token, {
           raw: buildEmailRaw(to, subject, body),
-        });
+        }, req.signal);
         return { output: raw };
       }
 

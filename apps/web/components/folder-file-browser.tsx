@@ -36,6 +36,7 @@ type FolderFileBrowserProps = {
   folderKinds?: Record<string, WorkspaceKind>;
   fileExtension: string;
   fileIconName?: string;
+  itemIconMap?: Record<string, string>;
   folderIconName?: string;
   folderSectionLabel?: string;
   newFileLabel?: string;
@@ -64,6 +65,7 @@ export function FolderFileBrowser({
   folderKinds,
   fileExtension,
   fileIconName = "file-text",
+  itemIconMap,
   folderIconName = "folder",
   folderSectionLabel = "Folders",
   newFileLabel = "File",
@@ -439,7 +441,7 @@ export function FolderFileBrowser({
                               editing={editingFileId === item.id}
                               fileNameDraft={fileNameDraft}
                               item={item}
-                              iconName={fileIconName}
+                              iconName={itemIconMap?.[item.kind] ?? fileIconName}
                               key={item.id}
                               onDelete={() => setPendingDelete({ kind: "file", item })}
                               onRename={() => startRenameFile(item)}
@@ -644,7 +646,7 @@ function TreeMenu({
       <DropdownMenuTrigger asChild>
         <Button
           aria-label="Actions"
-          className="opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
+          className="opacity-40 group-hover:opacity-100 data-[state=open]:opacity-100"
           size="icon-xs"
           variant="ghost"
           icon="more"

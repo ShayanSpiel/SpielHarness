@@ -1,4 +1,5 @@
 {
+  "system/workspace.md": { "fileType": "strategy", "slug": "workspace-identity", "folder": "Strategy", "workspaceConfig": true },
   "system/audience.md": { "fileType": "strategy", "slug": "audience", "folder": "Strategy" },
   "system/offer.md": { "fileType": "strategy", "slug": "offer", "folder": "Strategy" },
   "system/positioning.md": { "fileType": "strategy", "slug": "positioning", "folder": "Strategy" },
@@ -22,10 +23,14 @@
   "agents/analyst.md": { "skillSlugs": ["analytics.report", "knowledge.search", "llm.generate"], "contextSlugs": ["audience", "offer", "positioning"] },
   "agents/notion-admin.md": { "skillSlugs": ["notion.search", "notion.read", "notion.create", "notion.update"] },
   "agents/gmail-agent.md": { "skillSlugs": ["gmail.search", "gmail.read", "gmail.draft", "gmail.send"] },
+  "agents/connected-researcher.md": { "skillSlugs": ["duckduckgo.search", "drive.search", "drive.read", "gmail.search", "gmail.read", "notion.search", "notion.read"] },
 
   "skills/ask-the-user.md": { "slug": "ask-the-user", "kind": "human_input", "auth": "none", "sideEffect": "none" },
   "skills/icp-world-simulator.md": { "slug": "icp-world-simulator", "kind": "llm_call" },
   "skills/knowledge-search.md": { "slug": "knowledge.search", "kind": "knowledge_search", "auth": "none", "sideEffect": "read" },
+  "skills/harness-create-draft.md": { "slug": "harness.create-draft", "kind": "harness_file", "auth": "none", "sideEffect": "write", "harnessAction": "create", "inputSchema": { "type": "object", "required": ["title", "fileType", "body"], "properties": { "title": { "type": "string" }, "fileType": { "enum": ["harness_role", "harness_skill", "harness_workflow", "harness_eval", "harness_template"] }, "body": { "type": "string" }, "metadata": { "type": "object" } } } },
+  "skills/harness-update-draft.md": { "slug": "harness.update-draft", "kind": "harness_file", "auth": "none", "sideEffect": "write", "harnessAction": "update", "inputSchema": { "type": "object", "required": ["id", "expectedVersion"], "properties": { "id": { "type": "string" }, "expectedVersion": { "type": "integer" }, "title": { "type": "string" }, "body": { "type": "string" }, "metadata": { "type": "object" } } } },
+  "skills/memory-propose.md": { "slug": "memory.propose", "kind": "memory_write", "auth": "none", "sideEffect": "write", "inputSchema": { "type": "object", "required": ["title", "body"], "properties": { "title": { "type": "string" }, "body": { "type": "string" }, "kind": { "enum": ["semantic", "episodic"] }, "scope": { "enum": ["workspace", "user", "role", "workflow"] }, "scopeId": { "type": "string" }, "reason": { "type": "string" }, "confidence": { "type": "number", "minimum": 0, "maximum": 1 }, "supersedesId": { "type": "string" } } } },
   "skills/rag-file-read.md": { "slug": "rag.file.read", "kind": "knowledge_search", "auth": "none", "sideEffect": "read" },
   "skills/duckduckgo-search.md": { "slug": "duckduckgo.search", "kind": "http", "auth": "none", "sideEffect": "read" },
   "skills/llm-generate.md": { "slug": "llm.generate", "kind": "llm_call" },
@@ -42,6 +47,9 @@
   "skills/gmail.read.md": { "slug": "gmail.read", "kind": "http", "auth": "oauth", "sideEffect": "read" },
   "skills/gmail.draft.md": { "slug": "gmail.draft", "kind": "http", "auth": "oauth", "sideEffect": "write" },
   "skills/gmail.send.md": { "slug": "gmail.send", "kind": "http", "auth": "oauth", "sideEffect": "external" },
+  "skills/drive.list.md": { "slug": "drive.list", "kind": "http", "auth": "oauth", "sideEffect": "read" },
+  "skills/drive.search.md": { "slug": "drive.search", "kind": "http", "auth": "oauth", "sideEffect": "read" },
+  "skills/drive.read.md": { "slug": "drive.read", "kind": "http", "auth": "oauth", "sideEffect": "read" },
   "skills/analytics.report.md": { "slug": "analytics.report", "kind": "http", "auth": "oauth", "sideEffect": "read" },
 
   "evals/pipeline-gate-evaluator.json": { "slug": "pipeline-gate-evaluator", "kind": "eval" },

@@ -26,7 +26,7 @@ export default function FilesPage() {
     <AppShell>
       <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
         <PageHeader
-          icon={<Icon name={ENTITY_ICONS.file} size={14} />}
+          icon={<Icon name={ENTITY_ICONS.knowledge} size={14} />}
           title="Files"
         />
 

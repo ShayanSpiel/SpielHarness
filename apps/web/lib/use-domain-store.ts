@@ -24,6 +24,7 @@ import { toast } from "@spielos/design-system";
 import { fileRecordToItem, type WorkspaceItem } from "./workspace-data";
 import { fetchJsonWithRetry } from "./fetch-json";
 
+
 export type DomainStore = {
   ready: boolean;
   files: FileRecord[];
@@ -133,6 +134,7 @@ type NewModel = {
   baseUrl: string | null;
   secretEnvKey: string | null;
   enabled: boolean;
+  config?: Record<string, unknown>;
 };
 
 const DomainStoreContext = createContext<DomainStore | null>(null);
@@ -294,6 +296,13 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
   const loadErrorShown = useRef(false);
 
   const reload = useCallback(async () => {
+    // The Better Auth session cookie is HttpOnly by design and therefore cannot
+    // be inspected through document.cookie. Protected app routes can ask the
+    // server directly; only the public sign-in surface should skip eager loads.
+    if (typeof window !== "undefined" && window.location.pathname === "/login") {
+      setReady(true);
+      return;
+    }
     try {
       const [filesResult, modelsResult, driveResult] = await Promise.allSettled([
         fetchJsonWithRetry<{ files: FileRecord[] }>("/api/harness/files", { cache: "no-store" }),
@@ -648,7 +657,7 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
   }, [deleteFile]);
 
   const addModel = useCallback(
-    async (model: { name: string; provider: Model["provider"]; model: string; baseUrl: string | null; secretEnvKey: string | null; enabled: boolean }) => {
+    async (model: { name: string; provider: Model["provider"]; model: string; baseUrl: string | null; secretEnvKey: string | null; enabled: boolean; config?: Record<string, unknown> }) => {
       const res = await fetch("/api/models", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

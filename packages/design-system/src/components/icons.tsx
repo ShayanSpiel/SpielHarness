@@ -24,7 +24,7 @@ import {
   Layers, Move, Brain, FolderOpen, Flask, MedicalFlask, BarChart, Robot,
   DockRight, DockRightAlt,
   ChessKnight, WorkflowAlt, Cognition, ReadingGlass,
-  Task,
+  Task, Psychology, Head,
   type BoxIconProps,
 } from "@boxicons/react";
 
@@ -54,7 +54,7 @@ const ICON_COMPONENTS: Record<string, React.ComponentType<BoxIconProps>> = {
   Layers, Move, Brain, FolderOpen, Flask, MedicalFlask, BarChart, Robot,
   DockRight, DockRightAlt,
   ChessKnight, WorkflowAlt, Cognition, ReadingGlass,
-  Task,
+  Task, Psychology, Head,
 };
 
 function toBoxiconSize(size?: number | string): "xs" | "sm" | "base" | "md" | "lg" | "xl" {

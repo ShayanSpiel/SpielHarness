@@ -1,0 +1,47 @@
+{
+  "title": "External Context Synthesis",
+  "description": "Runs parallel read-only research across public search, Gmail, Google Drive, and Notion, then produces a grounded local report.",
+  "nodes": [
+    {
+      "id": "public-drive",
+      "title": "Public & Drive Research",
+      "roleSlug": "connected-researcher",
+      "skillSlugs": ["duckduckgo.search", "drive.search", "drive.read"],
+      "toolCallLimits": { "duckduckgo.search": 1, "drive.search": 1, "drive.read": 3 },
+      "requiredToolCalls": ["duckduckgo.search", "drive.search"],
+      "prompt": "Research the user's topic with public web search and Google Drive. Make exactly one bounded search per source with maxResults 3. Use up to three authoritative public results and read up to three relevant Drive files returned by that search. Never repeat or broaden a successful query. Preserve provenance, stop tool use after those bounded reads, and report sparse evidence as a gap.",
+      "input": "user_request",
+      "output": "public_drive_evidence",
+      "x": 120,
+      "y": 100
+    },
+    {
+      "id": "mail-notion",
+      "title": "Mail & Notion Research",
+      "roleSlug": "connected-researcher",
+      "skillSlugs": ["gmail.search", "gmail.read", "notion.search", "notion.read"],
+      "toolCallLimits": { "gmail.search": 1, "gmail.read": 3, "notion.search": 1, "notion.read": 3 },
+      "requiredToolCalls": ["gmail.search", "notion.search"],
+      "prompt": "Research the user's topic in Gmail and Notion using read-only operations. Make exactly one bounded search per source with maxResults 3, then read only up to three relevant returned messages/pages. Never repeat or broaden a successful query. Preserve provenance, stop tool use after those bounded reads, and report sparse evidence or failures without stopping the other source.",
+      "input": "user_request",
+      "output": "mail_notion_evidence",
+      "x": 120,
+      "y": 340
+    },
+    {
+      "id": "synthesis",
+      "title": "Verified External Context Synthesis",
+      "roleSlug": "analyst",
+      "skillSlugs": ["llm.generate"],
+      "prompt": "Synthesize every incoming evidence packet into the exact report requested by the user. Start with an H1 containing the requested report filename. Use these exact H2 headings: Executive Summary, Source Inventory, Findings, Supporting and Duplicate Evidence, Contradictions, Evidence, Tool Activity, Failures and Gaps, Verification Checklist, Next Actions. Cite only tool-returned evidence, and treat each Runtime Tool Evidence (authoritative) ledger as higher authority than model-authored prose in its packet. The runtime has already provided every bound tool: a zero-result search means no matches for that query, never that the connector or read tool is unavailable. External services must remain read-only. Do not evaluate, speculate about, or add a checklist item for local persistence: the application owns Outputs persistence after generation and verifies it in the artifact card. Never convert a reported gap into a pass, never claim a character count you did not measure, never claim a tool is missing when its result packet or authoritative ledger is present, and identify every evidence criterion that remains unverified.",
+      "input": "parallel_evidence",
+      "output": "verified_report",
+      "x": 560,
+      "y": 220
+    }
+  ],
+  "edges": [
+    { "id": "public-synthesis", "source": "public-drive", "target": "synthesis" },
+    { "id": "mail-synthesis", "source": "mail-notion", "target": "synthesis" }
+  ]
+}

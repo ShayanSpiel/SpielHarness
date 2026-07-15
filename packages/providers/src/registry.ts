@@ -1,5 +1,6 @@
-import type { Model, ModelProvider } from "@spielos/core";
+import { capabilitiesForModel, type Model, type ModelProvider } from "@spielos/core";
 import type { ChatAdapter, ChatRequest, ChatResponse } from "./types.ts";
+import { getEncoding, encodingForModel } from "js-tiktoken";
 import { mistralAdapter } from "./mistral.ts";
 import { openaiAdapter } from "./openai.ts";
 import { anthropicAdapter } from "./anthropic.ts";
@@ -30,6 +31,31 @@ export async function chat(
     messages,
     ...opts
   });
+}
+
+export async function countInputTokens(req: ChatRequest): Promise<{ count: number; source: "provider" | "tiktoken" | "estimate" }> {
+  const adapter = adapterForProvider(req.provider);
+  const strategy = capabilitiesForModel(req.model).tokenCounter;
+  if (strategy === "provider" && adapter.countTokens) {
+    try {
+      return { count: await adapter.countTokens(req), source: "provider" };
+    } catch {
+      // A provider count endpoint may be unavailable for compatible gateways.
+    }
+  }
+  if (strategy !== "estimate") {
+    try {
+      const encoding = req.provider.provider === "openai" || req.provider.provider === "openai-compatible"
+        ? encodingForModel(req.model.model as Parameters<typeof encodingForModel>[0])
+        : getEncoding("cl100k_base");
+      const count = req.messages.reduce((total, message) => total + 4 + encoding.encode(message.content).length, 2);
+      return { count, source: "tiktoken" };
+    } catch {
+      // Fall through to the conservative estimate.
+    }
+  }
+  const chars = req.messages.reduce((total, message) => total + message.content.length, 0);
+  return { count: Math.ceil(chars / 4) + req.messages.length * 4, source: "estimate" };
 }
 
 export async function* streamChat(

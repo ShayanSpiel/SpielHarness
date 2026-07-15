@@ -2,6 +2,7 @@ import type {
   EvalFile as CoreEvalFile,
   FileRecord,
   Model,
+  ModelCapabilities,
   Role as CoreRole,
   Skill as CoreSkill,
   WorkflowFile as CoreWorkflowFile,
@@ -18,6 +19,7 @@ export type ProviderModel = {
   baseUrl: string;
   secretEnvKey: string | null;
   enabled: boolean;
+  capabilities: ModelCapabilities;
 };
 
 export type RoleContract = CoreRole["inputContract"];
@@ -75,6 +77,7 @@ const TYPE_TO_KIND: Record<string, WorkspaceItemKind> = {
 };
 
 export function fileRecordToItem(file: FileRecord): WorkspaceItem | null {
+  if (file.metadata?.memoryRecord === true) return null;
   const kind = TYPE_TO_KIND[file.fileType];
   if (!kind) return null;
   const folder = (file.metadata?.seedFolder as string | undefined) ?? undefined;

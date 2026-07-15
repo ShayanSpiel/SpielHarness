@@ -25,17 +25,19 @@ import { THEME_REGISTRY } from "@spielos/design-system";
 import { useTheme } from "@spielos/design-system/hooks/use-theme";
 import { useDirty } from "@spielos/design-system/hooks/use-dirty";
 import { AppShell } from "../../components/app-shell";
-import { useWorkspaceStore } from "../../lib/use-workspace-store";
+import { ReasoningEffortControl } from "../../components/reasoning-effort-control";
+import { useWorkspace, useWorkspaceStore } from "../../lib/use-workspace-store";
 import type { Model, ProviderModel } from "../../lib/workspace-data";
+import { capabilitiesForModel, DEFAULT_MODEL_CAPABILITIES } from "@spielos/core";
 
 type SettingsTab = "models" | "connections" | "variables" | "theme" | "workspace";
 
 const SETTINGS_TABS: { id: SettingsTab; label: string; icon: string }[] = [
   { id: "models", label: "Models", icon: SETTINGS_TAB_ICONS.models },
   { id: "connections", label: "Connections", icon: SETTINGS_TAB_ICONS.integrations },
-  { id: "variables", label: "Secrets & Variables", icon: "terminal" },
-  { id: "theme", label: "Theme", icon: SETTINGS_TAB_ICONS.theme },
+  { id: "variables", label: "Secrets & Variables", icon: SETTINGS_TAB_ICONS.variables },
   { id: "workspace", label: "Workspace", icon: SETTINGS_TAB_ICONS.workspace },
+  { id: "theme", label: "Theme", icon: SETTINGS_TAB_ICONS.theme },
 ];
 
 const PROVIDER_OPTIONS = [
@@ -45,6 +47,18 @@ const PROVIDER_OPTIONS = [
   { label: "OpenAI Compatible", value: "openai-compatible" },
 ];
 
+const CONTEXT_PRESETS = [
+  { label: "128K", value: 128_000 },
+  { label: "200K", value: 200_000 },
+  { label: "1M", value: 1_000_000 }
+] as const;
+
+function compactTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 1 })}M`;
+  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
+  return value.toLocaleString();
+}
+
 function emptyModel(): Omit<ProviderModel, "id"> {
   return {
     provider: "openai",
@@ -52,7 +66,8 @@ function emptyModel(): Omit<ProviderModel, "id"> {
     model: "",
     baseUrl: "",
     secretEnvKey: null,
-    enabled: true
+    enabled: true,
+    capabilities: DEFAULT_MODEL_CAPABILITIES
   };
 }
 
@@ -80,8 +95,8 @@ export default function SettingsPage() {
   const [variableDraft, setVariableDraft] = useState({ name: "", kind: "variable", value: "", description: "" });
   const [selectedId, setSelectedId] = useState<string | null>(store.models[0]?.id ?? null);
   const toProviderModel = useCallback(
-    function (m: { id: string; provider: string; name: string; model: string; baseUrl: string | null; secretEnvKey: string | null; enabled: boolean }): ProviderModel {
-      return { id: m.id, provider: m.provider, label: m.name, model: m.model, baseUrl: m.baseUrl ?? "", secretEnvKey: m.secretEnvKey, enabled: m.enabled };
+    function (m: Model): ProviderModel {
+      return { id: m.id, provider: m.provider, label: m.name, model: m.model, baseUrl: m.baseUrl ?? "", secretEnvKey: m.secretEnvKey, enabled: m.enabled, capabilities: capabilitiesForModel(m) };
     },
     []
   );
@@ -91,15 +106,15 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [creatingModel, setCreatingModel] = useState(false);
   const [confirmModelDelete, setConfirmModelDelete] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [connectionSaving, setConnectionSaving] = useState(false);
   const [disconnecting, setDisconnecting] = useState<typeof integrations[number] | null>(null);
   const [disconnectingBusy, setDisconnectingBusy] = useState(false);
-  const [resetOpen, setResetOpen] = useState(false);
   const isNew = selectedId === null;
 
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
-    if (tab === "connections" || tab === "variables" || tab === "models" || tab === "theme" || tab === "workspace") setActiveTab(tab);
+    if (tab === "connections" || tab === "variables" || tab === "models" || tab === "theme" || tab === "workspace" || tab === "team") setActiveTab(tab === "team" ? "workspace" : tab);
     fetch("/api/integrations", { cache: "no-store" })
       .then((res) => res.ok ? res.json() : { integrations: [] })
       .then((data: { integrations?: typeof integrations; presets?: typeof presets; setupRequired?: boolean }) => { setIntegrations(data.integrations ?? []); setPresets(data.presets ?? []); setConnectionsSetupRequired(Boolean(data.setupRequired)); })
@@ -208,9 +223,16 @@ export default function SettingsPage() {
     if (found) reset(toProviderModel(found));
   }, [selectedId, store.models, reset, toProviderModel]);
 
+  useEffect(() => {
+    if (creatingModel || selectedId || !store.models[0]) return;
+    setSelectedId(store.models[0].id);
+    reset(toProviderModel(store.models[0]));
+  }, [creatingModel, selectedId, store.models, reset, toProviderModel]);
+
   function createModel() {
     setCreatingModel(true);
     setSelectedId(null);
+    setAdvancedOpen(false);
     reset(emptyModel());
   }
 
@@ -224,7 +246,8 @@ export default function SettingsPage() {
           model: draft.model,
           baseUrl: draft.baseUrl || null,
           secretEnvKey: draft.secretEnvKey || null,
-          enabled: draft.enabled
+          enabled: draft.enabled,
+          config: { capabilities: draft.capabilities }
         });
         setSelectedId(created.id);
         reset(toProviderModel(created));
@@ -232,7 +255,7 @@ export default function SettingsPage() {
         toast.success("Model created");
       } else {
         const id = (draft as ProviderModel).id;
-        await store.updateModel(id, { name: draft.label, provider: draft.provider as Model["provider"], model: draft.model, baseUrl: draft.baseUrl || null, secretEnvKey: draft.secretEnvKey || null, enabled: draft.enabled });
+        await store.updateModel(id, { name: draft.label, provider: draft.provider as Model["provider"], model: draft.model, baseUrl: draft.baseUrl || null, secretEnvKey: draft.secretEnvKey || null, enabled: draft.enabled, config: { capabilities: draft.capabilities } });
         markSaved();
         toast.success("Model saved");
       }
@@ -308,16 +331,20 @@ export default function SettingsPage() {
                     active={model.id === selectedId}
                     key={model.id}
                     metadata={
-                      <Pill tone={model.enabled ? "success" : "default"} className="shrink-0 text-3xs">
-                        {model.enabled ? "On" : "Off"}
-                      </Pill>
+                      <span className="flex shrink-0 items-center gap-1">
+                        {model.config?.source === "environment" || model.secretEnvKey ? <Pill className="text-3xs" tone="info">Env</Pill> : null}
+                        <Pill tone={model.enabled ? "success" : "default"} className="text-3xs">
+                          {model.enabled ? "On" : "Off"}
+                        </Pill>
+                      </span>
                     }
                     onClick={() => {
                       setCreatingModel(false);
                       setSelectedId(model.id);
+                      setAdvancedOpen(false);
                       reset(toProviderModel(model));
                     }}
-                    subtitle={`${model.provider} / ${model.model}`}
+                    subtitle={`${model.provider} · ${compactTokens(capabilitiesForModel(model).contextWindow)} context · ${capabilitiesForModel(model).reasoningEffort === "xhigh" ? "ultra" : capabilitiesForModel(model).reasoningEffort}`}
                     title={model.name}
                   />
                 ))}
@@ -349,47 +376,117 @@ export default function SettingsPage() {
                       </Button>
                     </div>
                   </div>
-                  <div className="grid gap-3">
-                    <Field label="Provider">
-                      <NativeSelect
-                        ariaLabel="Provider"
-                        value={draft.provider}
-                        options={PROVIDER_OPTIONS}
-                        onChange={(value) => setDraft({ ...draft, provider: value })}
+                  <div className="grid gap-4">
+                    <div className="grid items-start gap-3 md:grid-cols-2">
+                      <Field label="Provider">
+                        <NativeSelect
+                          ariaLabel="Provider"
+                          value={draft.provider}
+                          options={PROVIDER_OPTIONS}
+                          onChange={(value) => setDraft({ ...draft, provider: value })}
+                        />
+                      </Field>
+                      <Field label="Enabled">
+                        <ToggleRow
+                          checked={draft.enabled}
+                          description={draft.enabled ? "Available in chat" : "Hidden from chat"}
+                          onCheckedChange={(checked) => setDraft({ ...draft, enabled: checked })}
+                        />
+                      </Field>
+                      <Field label="Display name">
+                        <Input
+                          onChange={(event) => setDraft({ ...draft, label: event.target.value })}
+                          value={draft.label}
+                        />
+                      </Field>
+                      <Field label="Model id">
+                        <Input
+                          onChange={(event) => setDraft({ ...draft, model: event.target.value })}
+                          value={draft.model}
+                        />
+                      </Field>
+                      <div className="md:col-span-2">
+                        <Field hint="Name of the secure environment variable that contains this provider token. Credential values are never shown here." label="API credential">
+                          <div className="flex items-center gap-2">
+                            <Input
+                              className="min-w-0 flex-1 font-mono"
+                              placeholder="MISTRAL_API_KEY"
+                              onChange={(event) => setDraft({ ...draft, secretEnvKey: event.target.value || null })}
+                              value={draft.secretEnvKey ?? ""}
+                            />
+                            <Pill className="h-8 shrink-0 px-2" tone={draft.secretEnvKey ? "success" : "default"}>
+                              <Icon name={draft.secretEnvKey ? "shield" : "lock"} size={11} />
+                              {draft.secretEnvKey ? "Secure env" : "Not set"}
+                            </Pill>
+                          </div>
+                        </Field>
+                      </div>
+                    </div>
+                    <Field hint="Sets the default power level. Every chat can override it before the first message or mid-conversation." label="Reasoning power">
+                      <ReasoningEffortControl
+                        onChange={(reasoningEffort) => setDraft({ ...draft, capabilities: { ...draft.capabilities, reasoningEffort } })}
+                        value={draft.capabilities.reasoningEffort}
                       />
                     </Field>
-                    <Field label="Label">
-                      <Input
-                        onChange={(event) => setDraft({ ...draft, label: event.target.value })}
-                        value={draft.label}
-                      />
-                    </Field>
-                    <Field label="Model id">
-                      <Input
-                        onChange={(event) => setDraft({ ...draft, model: event.target.value })}
-                        value={draft.model}
-                      />
-                    </Field>
-                    <Field label="Base URL">
-                      <Input
-                        onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })}
-                        value={draft.baseUrl ?? ""}
-                      />
-                    </Field>
-                    <Field label="API key (env variable name)">
-                      <Input
-                        placeholder="MISTRAL_API_KEY"
-                        onChange={(event) => setDraft({ ...draft, secretEnvKey: event.target.value || null })}
-                        value={draft.secretEnvKey ?? ""}
-                      />
-                    </Field>
-                    <Field label="Enabled">
-                      <ToggleRow
-                        checked={draft.enabled}
-                        description={draft.enabled ? "Enabled" : "Disabled"}
-                        onCheckedChange={(checked) => setDraft({ ...draft, enabled: checked })}
-                      />
-                    </Field>
+                    <button
+                      aria-expanded={advancedOpen}
+                      className="flex w-full items-center gap-3 rounded-md border border-border bg-panel-raised px-3 py-2.5 text-left transition-colors hover:bg-hover"
+                      onClick={() => setAdvancedOpen((open) => !open)}
+                      type="button"
+                    >
+                      <span className="flex h-7 w-7 items-center justify-center rounded-md bg-panel text-muted-foreground"><Icon name="settings" size={13} /></span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-xs font-medium text-foreground">Advanced runtime</span>
+                        <span className="block truncate text-3xs text-muted-foreground">{compactTokens(draft.capabilities.contextWindow)} context · {compactTokens(draft.capabilities.maxOutputTokens)} output · {Math.round(draft.capabilities.compactionThreshold * 100)}% compact</span>
+                      </span>
+                      <Icon className="text-muted-foreground" name={advancedOpen ? "chevron-up" : "chevron-down"} size={13} />
+                    </button>
+                    {advancedOpen ? <div className="grid gap-5 rounded-md bg-panel-raised p-4">
+                      <section className="grid gap-3">
+                        <div>
+                          <h3 className="text-xs font-medium text-foreground">Capacity</h3>
+                          <p className="mt-0.5 text-2xs text-muted-foreground">The runtime uses these limits for context assembly, output, and automatic compaction.</p>
+                        </div>
+                        <div className="grid items-start gap-3 [grid-template-columns:repeat(auto-fit,minmax(var(--editor-field-min),1fr))]">
+                          <Field label="Context window">
+                            <div className="grid gap-1.5">
+                              <Input min={1024} onChange={(event) => setDraft({ ...draft, capabilities: { ...draft.capabilities, contextWindow: Math.max(1024, Number(event.target.value) || 1024) } })} type="number" value={draft.capabilities.contextWindow} />
+                              <div aria-label="Context window presets" className="grid grid-cols-3 gap-1 rounded-md bg-panel p-1">
+                                {CONTEXT_PRESETS.map((preset) => <Button aria-pressed={draft.capabilities.contextWindow === preset.value} key={preset.value} onClick={() => setDraft({ ...draft, capabilities: { ...draft.capabilities, contextWindow: preset.value } })} size="xs" type="button" variant={draft.capabilities.contextWindow === preset.value ? "outline" : "ghost"}>{preset.label}</Button>)}
+                              </div>
+                            </div>
+                          </Field>
+                          <Field label="Maximum output">
+                            <Input min={1} onChange={(event) => setDraft({ ...draft, capabilities: { ...draft.capabilities, maxOutputTokens: Math.max(1, Number(event.target.value) || 1) } })} type="number" value={draft.capabilities.maxOutputTokens} />
+                          </Field>
+                          <Field label="Compaction threshold">
+                            <Input max={0.95} min={0.5} onChange={(event) => setDraft({ ...draft, capabilities: { ...draft.capabilities, compactionThreshold: Math.min(0.95, Math.max(0.5, Number(event.target.value) || 0.8)) } })} step={0.05} type="number" value={draft.capabilities.compactionThreshold} />
+                          </Field>
+                        </div>
+                      </section>
+                      <section className="grid gap-3 border-t border-border pt-4">
+                        <div>
+                          <h3 className="text-xs font-medium text-foreground">Provider routing</h3>
+                          <p className="mt-0.5 text-2xs text-muted-foreground">Only change these when using a proxy, compatible endpoint, or provider-specific token behavior.</p>
+                        </div>
+                        <div className="grid items-start gap-3 md:grid-cols-2">
+                          <Field label="Base URL"><Input onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} value={draft.baseUrl ?? ""} /></Field>
+                          <Field label="Token counter"><NativeSelect ariaLabel="Token counter" onChange={(value) => setDraft({ ...draft, capabilities: { ...draft.capabilities, tokenCounter: value as ProviderModel["capabilities"]["tokenCounter"] } })} options={[{ label: "Provider", value: "provider" }, { label: "Tiktoken", value: "tiktoken" }, { label: "Estimate", value: "estimate" }]} value={draft.capabilities.tokenCounter} /></Field>
+                          {(draft.provider === "openai" || draft.provider === "openai-compatible") ? <Field label="Output token parameter"><NativeSelect ariaLabel="Output token parameter" onChange={(value) => setDraft({ ...draft, capabilities: { ...draft.capabilities, outputTokenParameter: value as ProviderModel["capabilities"]["outputTokenParameter"] } })} options={[{ label: "max_tokens", value: "max_tokens" }, { label: "max_completion_tokens", value: "max_completion_tokens" }]} value={draft.capabilities.outputTokenParameter} /></Field> : null}
+                        </div>
+                      </section>
+                      <section className="grid gap-3 border-t border-border pt-4">
+                        <div>
+                          <h3 className="text-xs font-medium text-foreground">Runtime capabilities</h3>
+                          <p className="mt-0.5 text-2xs text-muted-foreground">Enable only features supported by this exact model and provider.</p>
+                        </div>
+                        <div className="grid gap-2 md:grid-cols-3">
+                          <ToggleRow checked={draft.capabilities.toolCalling} description="Native tools" onCheckedChange={(checked) => setDraft({ ...draft, capabilities: { ...draft.capabilities, toolCalling: checked } })} />
+                          <ToggleRow checked={draft.capabilities.parallelToolCalling} description="Parallel tools" onCheckedChange={(checked) => setDraft({ ...draft, capabilities: { ...draft.capabilities, parallelToolCalling: checked } })} />
+                          <ToggleRow checked={draft.capabilities.reasoningSummaries} description="Reasoning summaries" onCheckedChange={(checked) => setDraft({ ...draft, capabilities: { ...draft.capabilities, reasoningSummaries: checked } })} />
+                        </div>
+                      </section>
+                    </div> : null}
                   </div>
                 </div>
               </div>
@@ -530,31 +627,7 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {activeTab === "workspace" && (
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <div className="mx-auto w-full max-w-2xl px-6 py-6">
-              <div className="rounded-md border border-border bg-panel p-5">
-                <div className="mb-4 flex items-center gap-2">
-                  <h2 className="text-sm font-semibold text-foreground">Workspace</h2>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Reset clears all locally stored chats, artifacts, roles, models, and folders. This
-                  cannot be undone.
-                </p>
-                <div className="mt-4">
-                  <Button
-                    onClick={() => setResetOpen(true)}
-                    size="md"
-                    variant="danger"
-                  >
-                    <Icon name="wand" size={14} />
-                    Reset workspace
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+        {activeTab === "workspace" && <WorkspaceTab />}
 
         <ConfirmDialog
           confirmLabel="Delete model"
@@ -578,19 +651,386 @@ export default function SettingsPage() {
           open={disconnecting !== null}
           title={disconnecting ? `Disconnect ${disconnecting.name}?` : "Disconnect connection?"}
         />
-        <ConfirmDialog
-          confirmLabel="Reset workspace"
-          description="This permanently clears locally stored chats, artifacts, roles, models, and folders. This action cannot be undone."
-          onConfirm={() => {
-            store.resetWorkspace();
-            setResetOpen(false);
-            toast.success("Workspace reset");
-          }}
-          onOpenChange={setResetOpen}
-          open={resetOpen}
-          title="Reset the workspace?"
-        />
       </div>
     </AppShell>
+  );
+}
+
+type Member = {
+  profile_id: string;
+  email: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  role: string;
+  created_at: string;
+};
+
+type OrgInfo = {
+  org_id: string;
+  org_name: string;
+  org_slug: string;
+  role: string;
+};
+
+function WorkspaceTab() {
+  const store = useWorkspaceStore();
+  const { workspace } = useWorkspace();
+  const [orgInfo, setOrgInfo] = useState<OrgInfo | null>(null);
+  const [orgNameDraft, setOrgNameDraft] = useState("");
+  const [savingOrg, setSavingOrg] = useState(false);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [membersLoading, setMembersLoading] = useState(true);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviting, setInviting] = useState(false);
+  const [selectedMember, setSelectedMember] = useState<Member | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [syncingStarterFiles, setSyncingStarterFiles] = useState(false);
+  const [starterSyncResult, setStarterSyncResult] = useState<string | null>(null);
+
+  const isOwner = workspace?.role === "owner";
+
+  useEffect(() => {
+    if (!workspace) return;
+    setOrgInfo({
+      org_id: workspace.org_id,
+      org_name: workspace.org_name,
+      org_slug: "",
+      role: workspace.role,
+    });
+    setOrgNameDraft(workspace.org_name);
+    setMembersLoading(true);
+    fetch(`/api/orgs/${workspace.org_id}/members`)
+      .then((res) => (res.ok ? res.json() : { members: [] }))
+      .then((data: { members?: Member[] }) => setMembers(data.members ?? []))
+      .catch(() => {})
+      .finally(() => setMembersLoading(false));
+  }, [workspace]);
+
+  const orgDirty = orgNameDraft !== orgInfo?.org_name;
+
+  async function saveOrgSettings() {
+    setSavingOrg(true);
+    try {
+      const slug = orgNameDraft.trim().toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 30);
+      const res = await fetch("/api/orgs", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: orgNameDraft.trim(), slug }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        toast.error(err.error || "Failed to save workspace settings");
+        return;
+      }
+      toast.success("Workspace settings saved");
+      document.cookie = `spielos.org-name=${encodeURIComponent(orgNameDraft.trim())}; path=/; max-age=${60 * 60 * 24 * 365}`;
+    } catch {
+      toast.error("Failed to save workspace settings");
+    } finally {
+      setSavingOrg(false);
+    }
+  }
+
+  async function invite() {
+    if (!inviteEmail.trim() || !orgInfo) return;
+    setInviting(true);
+    try {
+      const memberRes = await fetch(`/api/orgs/${orgInfo.org_id}/members`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: inviteEmail.trim() }),
+      });
+      if (!memberRes.ok) {
+        const err = await memberRes.json();
+        toast.error(err.error || "Failed to add member");
+        return;
+      }
+      toast.success("Admin added");
+      setInviteEmail("");
+      const fetchMembers = () => {
+        if (orgInfo) {
+          fetch(`/api/orgs/${orgInfo.org_id}/members`)
+            .then((r) => (r.ok ? r.json() : { members: [] }))
+            .then((d) => setMembers(d.members ?? []));
+        }
+      };
+      fetchMembers();
+    } catch {
+      toast.error("Failed to add member");
+    } finally {
+      setInviting(false);
+    }
+  }
+
+  async function removeMember() {
+    if (!selectedMember || !orgInfo) return;
+    setRemoving(true);
+    try {
+      const memberRes = await fetch(
+        `/api/orgs/${orgInfo.org_id}/members?userId=${selectedMember.profile_id}`,
+        { method: "DELETE" }
+      );
+      if (!memberRes.ok) {
+        const err = await memberRes.json();
+        toast.error(err.error || "Failed to remove member");
+        return;
+      }
+      toast.success("Member removed");
+      setSelectedMember(null);
+      setConfirmRemove(false);
+      const fetchMembers = () => {
+        if (orgInfo) {
+          fetch(`/api/orgs/${orgInfo.org_id}/members`)
+            .then((r) => (r.ok ? r.json() : { members: [] }))
+            .then((d) => setMembers(d.members ?? []));
+        }
+      };
+      fetchMembers();
+    } catch {
+      toast.error("Failed to remove member");
+    } finally {
+      setRemoving(false);
+    }
+  }
+
+  async function deleteWorkspace() {
+    if (!orgInfo) return;
+    setDeleting(true);
+    try {
+      const res = await fetch("/api/orgs", { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json();
+        toast.error(err.error || "Failed to delete workspace");
+        return;
+      }
+      toast.success("Workspace deleted");
+      window.location.href = "/login";
+    } catch {
+      toast.error("Failed to delete workspace");
+    } finally {
+      setDeleting(false);
+      setDeleteOpen(false);
+    }
+  }
+
+  async function syncStarterFiles() {
+    setSyncingStarterFiles(true);
+    setStarterSyncResult(null);
+    try {
+      const response = await fetch("/api/harness/seed", { method: "POST" });
+      const payload = await response.json() as { error?: string; message?: string; seeded?: number; updated?: number; discovered?: number };
+      if (!response.ok) throw new Error(payload.error ?? "Starter files could not be synchronized.");
+      window.dispatchEvent(new Event("spielos:workspace-reload"));
+      setStarterSyncResult(`${payload.message ?? `Inserted ${payload.seeded ?? 0}, updated ${payload.updated ?? 0}.`} ${payload.discovered ?? 0} seed resources discovered.`);
+      toast.success("Starter files synchronized", { description: payload.message });
+    } catch (cause) {
+      toast.error("Starter files could not be synchronized", { description: cause instanceof Error ? cause.message : undefined });
+    } finally {
+      setSyncingStarterFiles(false);
+    }
+  }
+
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto w-full max-w-2xl px-6 py-6 space-y-6">
+
+        {/* Workspace Details */}
+        <div className="rounded-md border border-border bg-panel p-5">
+          <div className="mb-4 flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-foreground">Workspace Details</h2>
+          </div>
+          <div className="grid gap-3">
+            <Field label="Workspace name">
+              <Input
+                value={orgNameDraft}
+                onChange={(e) => setOrgNameDraft(e.target.value)}
+                disabled={!isOwner}
+              />
+            </Field>
+            {isOwner && (
+              <div className="flex justify-end">
+                <Button
+                  disabled={!orgDirty || !orgNameDraft.trim()}
+                  icon="save"
+                  loading={savingOrg}
+                  onClick={saveOrgSettings}
+                  size="md"
+                  variant={orgDirty ? "primary" : "outline"}
+                >
+                  Save
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Team */}
+        <div className="rounded-md border border-border bg-panel p-5">
+          <div className="mb-4 flex items-center gap-2">
+            <Icon name="users" size={14} />
+            <h2 className="text-sm font-semibold text-foreground">Team</h2>
+            <Pill>{members.length}</Pill>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Manage team members and their access to this workspace.
+          </p>
+
+          {isOwner && (
+            <div className="mt-4 grid gap-3 rounded-md bg-panel-raised p-3 md:grid-cols-[1fr_auto]">
+              <Field label="Email">
+                <Input
+                  placeholder="colleague@example.com"
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  value={inviteEmail}
+                />
+              </Field>
+              <div className="flex items-end">
+                <Button
+                  disabled={!inviteEmail.trim()}
+                  icon="plus"
+                  loading={inviting}
+                  onClick={invite}
+                  size="md"
+                  variant="primary"
+                >
+                  Add admin
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {membersLoading ? (
+            <p className="mt-4 text-xs text-muted-foreground">Loading members...</p>
+          ) : (
+            <div className="mt-4 grid gap-2">
+              {members.map((member) => (
+                <div
+                  className="flex items-center gap-3 rounded-md bg-panel-raised p-3"
+                  key={member.profile_id}
+                >
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-panel text-sm font-medium text-foreground-strong">
+                    {(member.display_name || member.email)[0]?.toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-foreground">
+                      {member.display_name || member.email}
+                    </div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      {member.email}
+                    </div>
+                  </div>
+                  <Pill
+                    tone={member.role === "owner" ? "primary" : "success"}
+                  >
+                    {member.role}
+                  </Pill>
+                  {isOwner && member.role !== "owner" ? (
+                    <Tooltip content="Remove member" side="bottom">
+                      <Button
+                        aria-label={`Remove ${member.display_name || member.email}`}
+                        icon="trash"
+                        onClick={() => {
+                          setSelectedMember(member);
+                          setConfirmRemove(true);
+                        }}
+                        size="icon-xs"
+                        variant="ghost"
+                      />
+                    </Tooltip>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {isOwner ? (
+          <div className="rounded-md border border-border bg-panel p-5">
+            <div className="flex items-start gap-3">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-panel-raised text-info"><Icon name="refresh" size={14} /></span>
+              <div className="min-w-0 flex-1">
+                <h2 className="text-sm font-semibold text-foreground">Starter library</h2>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">Synchronize the editable file-backed roles, skills, workflows, evals, prompts, and templates shipped with this workspace. Your generated Outputs and Google Drive files are not modified.</p>
+                {starterSyncResult ? <p className="mt-2 text-2xs text-success">{starterSyncResult}</p> : null}
+              </div>
+              <Button loading={syncingStarterFiles} onClick={() => void syncStarterFiles()} size="md" variant="outline">Sync files</Button>
+            </div>
+          </div>
+        ) : null}
+
+        {/* Danger Zone */}
+        {isOwner && (
+          <div className="rounded-md border border-border bg-panel p-5">
+            <div className="mb-4 flex items-center gap-2">
+              <Icon name="alert" size={14} className="text-destructive" />
+              <h2 className="text-sm font-semibold text-destructive">Danger Zone</h2>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Irreversible actions for this workspace. Proceed with caution.
+            </p>
+            <div className="mt-4 flex gap-3">
+              <Button
+                onClick={() => setResetOpen(true)}
+                size="md"
+                variant="danger"
+              >
+                <Icon name="wand" size={14} />
+                Reset workspace
+              </Button>
+              <Button
+                onClick={() => setDeleteOpen(true)}
+                size="md"
+                variant="danger"
+              >
+                <Icon name="trash" size={14} />
+                Delete workspace
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <ConfirmDialog
+        confirmLabel="Reset workspace"
+        description="This permanently clears locally stored chats, artifacts, roles, models, and folders. This action cannot be undone."
+        onConfirm={() => {
+          store.resetWorkspace();
+          setResetOpen(false);
+          toast.success("Workspace reset");
+        }}
+        onOpenChange={setResetOpen}
+        open={resetOpen}
+        title="Reset the workspace?"
+      />
+
+      <ConfirmDialog
+        busy={removing}
+        confirmLabel="Remove member"
+        description={`${selectedMember?.display_name || selectedMember?.email} will lose access to this workspace.`}
+        onConfirm={removeMember}
+        onOpenChange={(open) => {
+          if (!open) {
+            setConfirmRemove(false);
+            setSelectedMember(null);
+          }
+        }}
+        open={confirmRemove}
+        title={`Remove ${selectedMember?.display_name || "member"}?`}
+      />
+
+      <ConfirmDialog
+        busy={deleting}
+        confirmLabel="Delete workspace"
+        description="This workspace and all its data will be permanently deleted. You will be signed out."
+        onConfirm={deleteWorkspace}
+        onOpenChange={setDeleteOpen}
+        open={deleteOpen}
+        title="Delete this workspace?"
+      />
+    </div>
   );
 }

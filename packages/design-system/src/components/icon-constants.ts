@@ -9,6 +9,8 @@ export const ENTITY_ICONS = {
   file: "file",
   strategy: "strategy",
   settings: "settings",
+  assistant: "psychology",
+  profile: "head",
 } as const;
 
 export const ACTION_ICONS = {
@@ -53,13 +55,16 @@ export const EVENT_ICONS = {
   status: "activity",
 } as const;
 
+/** Canonical icon for the Context workspace and its entry points. */
+export const CONTEXT_ICON = "reading-glass" as const;
+
 export const CONTEXT_KIND_ICONS: Record<string, string> = {
   role: ENTITY_ICONS.role,
-   skill: ENTITY_ICONS.skill,
+  skill: ENTITY_ICONS.skill,
   library: "archive",
   workstream: ENTITY_ICONS.workflow,
   workflow: ENTITY_ICONS.workflow,
-  strategy: "file-text",
+  strategy: ENTITY_ICONS.strategy,
   knowledge: ENTITY_ICONS.knowledge,
   prompt: ENTITY_ICONS.prompt,
   eval: ENTITY_ICONS.eval,
@@ -77,6 +82,7 @@ export const MENTION_KIND_ICONS: Record<string, string> = {
 export const SETTINGS_TAB_ICONS: Record<string, string> = {
   models: "server",
   integrations: "tool",
+  variables: "file",
   theme: "sun",
   workspace: "database",
 };
