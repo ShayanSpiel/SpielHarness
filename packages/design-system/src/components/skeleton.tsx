@@ -1,10 +1,18 @@
+"use client";
+
+import { forwardRef, type HTMLAttributes } from "react";
 import { cn } from "../index";
 
-export function Skeleton({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return (
-    <div
-      className={cn("animate-pulse rounded-md bg-panel-raised", className)}
-      {...props}
-    />
-  );
-}
+export interface SkeletonProps extends HTMLAttributes<HTMLDivElement> {}
+
+export const Skeleton = forwardRef<HTMLDivElement, SkeletonProps>(
+  function Skeleton({ className, ...props }, ref) {
+    return (
+      <div
+        ref={ref}
+        className={cn("skeleton", className)}
+        {...props}
+      />
+    );
+  }
+);

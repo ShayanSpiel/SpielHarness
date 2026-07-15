@@ -85,10 +85,11 @@ export {
   SelectValue
 } from "./select";
 export { SearchInput, type SearchInputProps } from "./search-input";
-export { Skeleton } from "./skeleton";
 export { ResizableSidebar, type ResizableSidebarProps } from "./resizable-sidebar";
 export { ActionRow, type ActionRowProps } from "./action-row";
 export { SidebarListPanel } from "./sidebar-list-panel";
+export { Skeleton, type SkeletonProps } from "./skeleton";
+export { Spinner, type SpinnerProps } from "./spinner";
 export { Switch } from "./switch";
 export { StatusIcon, type StatusIconProps, type StatusTone } from "./status-icon";
 export { ToggleRow } from "./toggle-row";

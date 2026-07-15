@@ -2,6 +2,7 @@
 
 import { Toaster } from "sonner";
 import { Icon } from "./icons";
+import { Spinner } from "./spinner";
 
 export function AppToaster() {
   return (
@@ -12,7 +13,7 @@ export function AppToaster() {
         error: <Icon name="alert-circle" className="text-destructive" size={16} />,
         warning: <Icon name="alert-triangle" className="text-warning" size={16} />,
         info: <Icon name="info" className="text-info" size={16} />,
-        loading: <Icon name="loader" className="animate-spin text-info" size={16} />
+        loading: <Spinner size="sm" className="text-info" />
       }}
       position="bottom-right"
       toastOptions={{

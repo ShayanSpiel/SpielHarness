@@ -5,6 +5,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { forwardRef, type ButtonHTMLAttributes } from "react";
 import { cn } from "../index";
 import { Icon } from "./icons";
+import { Spinner } from "./spinner";
 
 const buttonStyles = cva(
   "inline-flex items-center justify-center rounded-md border border-transparent text-sm font-medium transition-colors duration-[var(--duration)] disabled:pointer-events-none disabled:border-[var(--disabled-border)] disabled:bg-[var(--disabled-surface)] disabled:text-[var(--disabled-foreground)] disabled:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--background)]",
@@ -68,8 +69,10 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       disabled={disabled || loading}
       {...props}
     >
-      {loading || icon ? (
-        <Icon name={loading ? "loader" : icon!} className={loading ? "animate-spin" : undefined} size={iconSize} />
+      {loading ? (
+        <Spinner size={size === "xs" || size === "icon-xs" ? "xs" : size === "sm" || size === "icon-sm" ? "sm" : "md"} />
+      ) : icon ? (
+        <Icon name={icon!} size={iconSize} />
       ) : null}
       <Slottable>{children}</Slottable>
     </Comp>

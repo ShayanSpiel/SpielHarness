@@ -3,6 +3,7 @@
 import { type HTMLAttributes } from "react";
 import { cn } from "../index";
 import { Icon } from "./icons";
+import { Spinner } from "./spinner";
 
 export type StatusTone = "neutral" | "info" | "success" | "warning" | "destructive";
 
@@ -34,7 +35,11 @@ export function StatusIcon({
       className={cn("inline-flex shrink-0 items-center justify-center", toneClasses[tone], className)}
       {...props}
     >
-      <Icon aria-hidden name={busy ? "loader" : icon} className={busy ? "animate-spin" : undefined} size={size} />
+      {busy ? (
+        <Spinner size={size <= 12 ? "xs" : "sm"} />
+      ) : (
+        <Icon aria-hidden name={icon} size={size} />
+      )}
     </span>
   );
 }
