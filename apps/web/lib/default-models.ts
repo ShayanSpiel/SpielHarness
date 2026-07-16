@@ -55,7 +55,7 @@ export function environmentModelDefaults(): EnvironmentModel[] {
   const defaults: EnvironmentModel[] = [];
   if (process.env.MISTRAL_API_KEY) {
     defaults.push({
-      provider: "mistral",
+      provider: "openai-compatible",
       name: process.env.MISTRAL_MODEL_NAME?.trim() || "Mistral",
       model: process.env.MISTRAL_MODEL?.trim() || "mistral-small-latest",
       secretEnvKey: "MISTRAL_API_KEY",
@@ -63,7 +63,7 @@ export function environmentModelDefaults(): EnvironmentModel[] {
       capabilities: capabilities("MISTRAL", 128_000, 8_192)
     });
     defaults.push({
-      provider: "mistral",
+      provider: "openai-compatible",
       name: process.env.MISTRAL_MEDIUM_MODEL_NAME?.trim() || "Mistral Medium 3.5",
       model: process.env.MISTRAL_MEDIUM_MODEL?.trim() || "mistral-medium-3-5",
       secretEnvKey: "MISTRAL_API_KEY",
@@ -73,7 +73,7 @@ export function environmentModelDefaults(): EnvironmentModel[] {
   }
   if (process.env.OPENAI_API_KEY) {
     defaults.push({
-      provider: "openai",
+      provider: "openai-compatible",
       name: process.env.OPENAI_MODEL_NAME?.trim() || "OpenAI",
       model: process.env.OPENAI_MODEL?.trim() || "gpt-5.1",
       secretEnvKey: "OPENAI_API_KEY",

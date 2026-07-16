@@ -455,7 +455,7 @@ export default function EvalsPage() {
                   <Button aria-label="Import" icon="upload" onClick={importJson} size="icon-xs" variant="ghost" />
                 </Tooltip>
                 <Button
-                  icon="bar-chart"
+                  icon={ENTITY_ICONS.eval}
                   loading={running}
                   onClick={runEval}
                   size="md"
@@ -727,13 +727,13 @@ function CriteriaRow({
   const config = CHECK_TYPES[rubric.type];
 
   return (
-    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,var(--editor-field-min-compact)),1fr))] items-end gap-3 rounded-md bg-background px-3 py-3 transition-colors hover:bg-panel-raised">
+    <div className="grid grid-cols-[1.5fr_1fr_2fr_0.5fr_0.5fr_min-content] items-end gap-2 rounded-md bg-background px-2 py-2 transition-colors hover:bg-panel-raised">
       <div className="grid gap-1.5">
         <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
           Criterion
         </span>
-        <div className="flex items-center gap-2">
-          <span className="w-5 shrink-0 text-right text-3xs font-mono text-muted-foreground">
+        <div className="flex items-center gap-1">
+          <span className="w-5 shrink-0 text-center text-3xs font-mono text-muted-foreground">
             {index + 1}
           </span>
           <Input
@@ -934,10 +934,10 @@ function EditableChips({
   }
 
   return (
-    <div className="flex min-h-8 min-w-0 flex-wrap items-center gap-1 rounded-md border border-border bg-input px-1.5 py-1 transition-colors focus-within:border-[var(--focus-border)] focus-within:ring-2 focus-within:ring-[var(--focus-ring)]">
+    <div className="flex min-h-8 min-w-0 items-center gap-1 overflow-x-auto rounded-md border border-border bg-input px-1.5 py-1 transition-colors focus-within:border-[var(--focus-border)] focus-within:ring-2 focus-within:ring-[var(--focus-ring)]">
       {values.map((value) => (
         <span
-          className="inline-flex h-5 max-w-40 shrink-0 items-center gap-1 rounded-sm bg-panel-raised px-1.5 text-2xs text-foreground"
+          className="inline-flex h-5 shrink-0 items-center gap-1 rounded-sm bg-panel-raised px-1.5 text-2xs text-foreground"
           key={value}
         >
           <span className="truncate">{value}</span>
@@ -952,7 +952,7 @@ function EditableChips({
         </span>
       ))}
       <input
-        className="h-5 min-w-24 flex-1 bg-transparent px-1 text-xs text-foreground outline-none placeholder:text-muted-foreground"
+        className="h-5 min-w-24 shrink-0 bg-transparent px-1 text-xs text-foreground outline-none placeholder:text-muted-foreground"
         onBlur={addValue}
         onChange={(event) => setDraftValue(event.target.value)}
         onKeyDown={onKeyDown}
@@ -973,9 +973,9 @@ function ResultInspector({
   if (!result) {
     return (
       <Inspector>
-        <InspectorHeader icon="bar-chart" title="Eval results" />
+        <InspectorHeader icon={ENTITY_ICONS.eval} title="Eval results" />
         <InspectorBody>
-          <InspectorEmptyState description="Test this eval to inspect its latest criterion scores and recommendations." icon="bar-chart" title="No results yet" />
+          <InspectorEmptyState description="Test this eval to inspect its latest criterion scores and recommendations." icon={ENTITY_ICONS.eval} title="No results yet" />
         </InspectorBody>
       </Inspector>
     );
@@ -989,7 +989,7 @@ function ResultInspector({
     <Inspector>
       <InspectorHeader
         actions={<Tooltip content="Per-criterion scores and overall pass/fail for the latest eval run." side="bottom"><Button aria-label="About eval results" icon="info" size="icon-xs" variant="ghost" /></Tooltip>}
-        icon="bar-chart"
+        icon={ENTITY_ICONS.eval}
         title="Eval results"
       />
       <InspectorBody>

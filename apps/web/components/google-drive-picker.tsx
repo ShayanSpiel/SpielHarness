@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Button, EmptyState, Input, Notice, ResizableSidebar, SIDEBAR, Tooltip, toast } from "@spielos/design-system";
+import { Button, EmptyState, Input, Notice, ResizableSidebar, SIDEBAR, Spinner, Tooltip, toast } from "@spielos/design-system";
 import { Icon } from "@spielos/design-system/components";
 
 interface DriveFile {
@@ -148,7 +148,7 @@ export function GoogleDrivePicker() {
   if (status === null) {
     return (
       <div className="flex h-full items-center justify-center">
-        <Icon name="loader" size={20} className="animate-spin text-muted-foreground" />
+        <Spinner size="lg" />
       </div>
     );
   }
@@ -210,7 +210,7 @@ export function GoogleDrivePicker() {
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
             {loading && files.length === 0 ? (
               <div className="flex items-center justify-center py-8">
-                <Icon name="loader" size={16} className="animate-spin text-muted-foreground" />
+                <Spinner size="md" />
               </div>
             ) : error ? (
               <Notice tone="destructive" title="Could not load Drive files">{error}</Notice>

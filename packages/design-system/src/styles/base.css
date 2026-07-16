@@ -198,6 +198,36 @@ button:disabled {
 }
 
 /* Skeleton pulse */
+@keyframes spiel-drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--motion-distance-sm));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes spiel-drawer-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(var(--motion-distance-sm));
+  }
+}
+
+.motion-drawer[data-state="open"] {
+  animation: spiel-drawer-in var(--duration-slow) var(--ease) both;
+}
+
+.motion-drawer[data-state="closed"] {
+  animation: spiel-drawer-out var(--duration-slow) var(--ease) both;
+}
+
 @keyframes skeleton-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
@@ -206,7 +236,7 @@ button:disabled {
 .skeleton {
   background: var(--skeleton-bg);
   border-radius: var(--radius-md);
-  animation: skeleton-pulse var(--duration-slow) var(--ease) infinite;
+  animation: skeleton-pulse 1.5s var(--ease) infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {

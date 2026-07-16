@@ -1,11 +1,14 @@
 import { getOrg, errorResponse, requireOwner } from "../../../../../lib/server";
 import {
   getMembership,
+  getProfile,
   findProfileByEmail,
   addMember as addMemberInDb,
   updateMemberRole as updateMemberRoleInDb,
   removeMember as removeMemberInDb,
+  createInvitation,
 } from "@spielos/db";
+import { sendInviteEmail } from "../../../../../lib/email";
 
 export async function GET(
   _request: Request,
@@ -75,10 +78,24 @@ export async function POST(
 
     const profile = await findProfileByEmail(org.sql, email.trim().toLowerCase());
     if (!profile) {
-      return Response.json(
-        { error: "User not found. They must sign up first." },
-        { status: 404 }
-      );
+      const inviterProfile = await getProfile(org.sql, org.userId!);
+      const inviterName = inviterProfile?.display_name ?? inviterProfile?.email ?? "Someone";
+
+      const orgRow = await org.sql<{ name: string }[]>`
+        select name from orgs where id = ${orgId} limit 1
+      `;
+      const orgName = orgRow[0]?.name ?? "a workspace";
+
+      const invitation = await createInvitation(org.sql, orgId, email.trim().toLowerCase(), "admin", org.userId!);
+
+      await sendInviteEmail({
+        email: email.trim().toLowerCase(),
+        inviterName,
+        orgName,
+        token: invitation.token,
+      });
+
+      return Response.json({ invitation, invited: true }, { status: 201 });
     }
 
     const member = await addMemberInDb(org.sql, orgId, profile.id);

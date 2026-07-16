@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { cn } from "../index";
+import { Icon } from "./icons";
 
 export function EmptyState({
   icon,
@@ -16,6 +17,16 @@ export function EmptyState({
   action?: ReactNode;
   className?: string;
 }) {
+  const iconElement = typeof icon === "string" ? (
+    <div className="rounded-full bg-panel-raised p-3 text-muted-foreground">
+      <Icon name={icon} size={20} />
+    </div>
+  ) : icon ? (
+    <div className="rounded-full bg-panel-raised p-3 text-muted-foreground">
+      {icon}
+    </div>
+  ) : null;
+
   return (
     <div
       className={cn(
@@ -23,11 +34,7 @@ export function EmptyState({
         className
       )}
     >
-      {icon ? (
-        <div className="rounded-full bg-panel-raised p-3 text-muted-foreground">
-          {icon}
-        </div>
-      ) : null}
+      {iconElement}
       <div className="space-y-1">
         <p className="text-sm font-semibold text-foreground">{title}</p>
         {description ? (

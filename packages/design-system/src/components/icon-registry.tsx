@@ -132,6 +132,7 @@ const DEFAULT_ICON_MAP: Record<string, string> = {
   "workflow-alt": "WorkflowAlt",
   wand: "MagicWand",
   flask: "Flask",
+  "medical-flask": "MedicalFlask",
   "square-terminal": "Terminal",
   "bar-chart": "BarChart",
   pencil: "Pencil",

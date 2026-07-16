@@ -28,8 +28,8 @@
   --destructive-soft: color-mix(in oklab, var(--gruvbox-dark-red) 20%, transparent);
   --info: var(--gruvbox-dark-blue);
   --info-soft: color-mix(in oklab, var(--gruvbox-dark-blue) 20%, transparent);
-  --accent: var(--gruvbox-dark-blue);
-  --accent-soft: color-mix(in oklab, var(--gruvbox-dark-blue) 20%, transparent);
+  --accent: var(--gruvbox-dark-aqua);
+  --accent-soft: color-mix(in oklab, var(--gruvbox-dark-aqua) 20%, transparent);
   --purple: var(--gruvbox-dark-purple);
   --purple-soft: color-mix(in oklab, var(--gruvbox-dark-purple) 20%, transparent);
 

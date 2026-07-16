@@ -24,9 +24,9 @@ function RoleNodeComponent({ data }: NodeProps<Node<WorkflowNodeData>>) {
       className={cn(
         "w-52 rounded-md border bg-panel shadow-panel",
         selected
-          ? "border-[var(--ring)] border-2 shadow-[var(--shadow-popover)]"
+          ? "border-ring border-2 shadow-popover"
           : "border-border",
-        isConnecting && "ring-2 ring-[var(--ring)]/30"
+        isConnecting && "ring-2 ring-ring/30"
       )}
       style={{ width: NODE_DIMENSIONS.width }}
     >

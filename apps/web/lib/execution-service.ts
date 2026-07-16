@@ -515,7 +515,7 @@ function resolveModel(
       id: "runtime.env.mistral",
       orgId,
       name: "Mistral",
-      provider: "mistral",
+      provider: "openai-compatible",
       model: modelId,
       baseUrl: process.env.MISTRAL_BASE_URL?.trim() || null,
       secretEnvKey: "MISTRAL_API_KEY",

@@ -493,7 +493,7 @@ export default function WorkflowsPage() {
                       size="sm"
                       variant="ghost"
                     >
-                      <Icon name="bar-chart" size={14} />
+                      <Icon name={ENTITY_ICONS.eval} size={14} />
                       QA: {evalFile.name}
                     </Button>
                   ))}

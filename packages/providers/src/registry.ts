@@ -1,15 +1,13 @@
 import { capabilitiesForModel, type Model, type ModelProvider } from "@spielos/core";
 import type { ChatAdapter, ChatRequest, ChatResponse } from "./types.ts";
 import { getEncoding, encodingForModel } from "js-tiktoken";
-import { mistralAdapter } from "./mistral.ts";
 import { openaiAdapter } from "./openai.ts";
 import { anthropicAdapter } from "./anthropic.ts";
 
 const REGISTRY: Record<string, ChatAdapter> = {
-  mistral: mistralAdapter,
-  openai: openaiAdapter,
   "openai-compatible": openaiAdapter,
-  anthropic: anthropicAdapter
+  anthropic: anthropicAdapter,
+  custom: openaiAdapter
 };
 
 export function adapterForProvider(provider: ModelProvider | { provider: string }): ChatAdapter {
@@ -45,7 +43,7 @@ export async function countInputTokens(req: ChatRequest): Promise<{ count: numbe
   }
   if (strategy !== "estimate") {
     try {
-      const encoding = req.provider.provider === "openai" || req.provider.provider === "openai-compatible"
+      const encoding = req.provider.provider === "openai-compatible" || req.provider.provider === "custom"
         ? encodingForModel(req.model.model as Parameters<typeof encodingForModel>[0])
         : getEncoding("cl100k_base");
       const count = req.messages.reduce((total, message) => total + 4 + encoding.encode(message.content).length, 2);

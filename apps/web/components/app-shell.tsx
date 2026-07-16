@@ -69,7 +69,7 @@ export function AppShell({
         <button
           aria-label="Close inspector"
           aria-hidden={!store.inspectorOpen}
-          className="motion-overlay fixed inset-0 z-30 bg-[color:color-mix(in_oklab,var(--background)_72%,transparent)] backdrop-blur-sm data-[state=closed]:pointer-events-none lg:hidden"
+          className="motion-overlay fixed inset-0 z-30 bg-[color:color-mix(in_oklab,var(--background)_70%,transparent)] backdrop-blur-sm data-[state=closed]:pointer-events-none lg:hidden"
           data-state={store.inspectorOpen ? "open" : "closed"}
           onClick={() => store.setInspectorOpen(false)}
           tabIndex={store.inspectorOpen ? 0 : -1}

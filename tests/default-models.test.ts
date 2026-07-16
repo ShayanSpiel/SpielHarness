@@ -17,7 +17,7 @@ test("a Mistral environment key exposes small and medium defaults", () => {
     process.env.MISTRAL_API_KEY = "test-key";
     for (const name of names.slice(1)) delete process.env[name];
 
-    const mistral = environmentModelDefaults().filter((model) => model.provider === "mistral");
+    const mistral = environmentModelDefaults().filter((model) => model.provider === "openai-compatible");
     assert.deepEqual(mistral.map((model) => model.model), ["mistral-small-latest", "mistral-medium-3-5"]);
 
     const medium = mistral[1];

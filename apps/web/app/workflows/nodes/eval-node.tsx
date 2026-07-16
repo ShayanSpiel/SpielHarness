@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
-import { Icon } from "@spielos/design-system/components";
+import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { Button, Pill, cn } from "@spielos/design-system";
 import type { WorkflowNodeData } from "./role-node";
 import { NODE_DIMENSIONS } from "../workflow-canvas-config";
@@ -13,9 +13,9 @@ function EvalNodeComponent({ data }: NodeProps<Node<WorkflowNodeData>>) {
       className={cn(
         "w-52 rounded-md border bg-panel shadow-panel",
         selected
-          ? "border-[var(--ring)] border-2 shadow-[var(--shadow-popover)]"
+          ? "border-ring border-2 shadow-popover"
           : "border-border",
-        isConnecting && "ring-2 ring-[var(--ring)]/30"
+        isConnecting && "ring-2 ring-ring/30"
       )}
       style={{ width: NODE_DIMENSIONS.width }}
     >
@@ -24,7 +24,7 @@ function EvalNodeComponent({ data }: NodeProps<Node<WorkflowNodeData>>) {
       </Handle>
       <div className="flex items-center gap-2 border-b border-border px-2 py-1.5 select-none">
         <span className="text-muted-foreground">
-          <Icon name="bar-chart" size={14} />
+          <Icon name={ENTITY_ICONS.eval} size={14} />
         </span>
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{node.title}</span>
         <Pill>QA</Pill>

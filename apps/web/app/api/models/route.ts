@@ -9,7 +9,7 @@ import { errorResponse, getOrg, HttpError, requireAdmin } from "../../../lib/ser
 import { listModelsWithEnvironmentDefaults } from "../../../lib/default-models";
 import { encryptConnectionSecret } from "../../../lib/connection-secrets";
 
-const ALLOWED_PROVIDERS = ["mistral", "openai", "anthropic", "openai-compatible"];
+const ALLOWED_PROVIDERS = ["openai-compatible", "anthropic", "custom"];
 
 function safeEnvironmentKey(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -27,7 +27,7 @@ function toClient(row: {
   config: Record<string, unknown>;
   enabled: boolean;
 }): Model {
-  const allowed = ["mistral", "openai", "anthropic", "openai-compatible"] as const;
+  const allowed = ["openai-compatible", "anthropic", "custom"] as const;
   const provider = (allowed.find((k) => k === row.provider) ?? "openai-compatible") as ModelProvider["provider"];
   const safeConfig = row.config ? Object.fromEntries(Object.entries(row.config).filter(([k]) => k !== "encryptedCredential")) : {};
   return {

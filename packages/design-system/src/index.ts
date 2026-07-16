@@ -13,12 +13,14 @@ export type ThemeId =
   | "blue-dark"
   | "blue-light"
   | "discord-dark"
-  | "discord-light";
+  | "discord-light"
+  | "black-gold-dark"
+  | "black-gold-light";
 
 export type ThemeDescriptor = {
   id: ThemeId;
   label: string;
-  group: "monochrome" | "gruvbox" | "blue" | "discord";
+  group: "monochrome" | "gruvbox" | "blue" | "discord" | "black-gold";
   mode: "dark" | "light";
 };
 
@@ -30,7 +32,9 @@ export const THEME_REGISTRY: ThemeDescriptor[] = [
   { id: "blue-dark", label: "Blue Dark", group: "blue", mode: "dark" },
   { id: "blue-light", label: "Blue Light", group: "blue", mode: "light" },
   { id: "discord-dark", label: "Discord Dark", group: "discord", mode: "dark" },
-  { id: "discord-light", label: "Discord Light", group: "discord", mode: "light" }
+  { id: "discord-light", label: "Discord Light", group: "discord", mode: "light" },
+  { id: "black-gold-dark", label: "Black Gold Dark", group: "black-gold", mode: "dark" },
+  { id: "black-gold-light", label: "Black Gold Light", group: "black-gold", mode: "light" }
 ];
 
 export const DEFAULT_THEME: ThemeId = "gruvbox-dark";

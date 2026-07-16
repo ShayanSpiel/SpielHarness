@@ -13,6 +13,7 @@ import {
   Notice,
   Pill,
   ResizableSidebar,
+  Skeleton,
   Textarea,
   ToggleRow,
   toast
@@ -236,10 +237,10 @@ export function MemoryWorkspace() {
         {error ? <div className="p-4"><Notice tone="destructive" title="Memory unavailable"><div className="flex flex-wrap items-center gap-2"><span>{error}</span><Button onClick={() => void load()} size="sm" variant="outline">Retry</Button></div></Notice></div> : null}
         {loading ? (
           <div aria-label="Loading memory state" className="mx-auto w-full max-w-3xl space-y-4 px-6 py-6">
-            <div className="h-5 w-40 animate-pulse rounded bg-panel-raised" />
-            <div className="h-16 animate-pulse rounded-md bg-panel-raised" />
-            <div className="h-32 animate-pulse rounded-md bg-panel-raised" />
-            <div className="grid grid-cols-2 gap-3"><div className="h-16 animate-pulse rounded-md bg-panel-raised" /><div className="h-16 animate-pulse rounded-md bg-panel-raised" /></div>
+            <Skeleton className="h-5 w-40" />
+            <Skeleton className="h-16" />
+            <Skeleton className="h-32" />
+            <div className="grid grid-cols-2 gap-3"><Skeleton className="h-16" /><Skeleton className="h-16" /></div>
           </div>
         ) : null}
         {!loading && selected?.type === "config" && configDraft ? (

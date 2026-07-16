@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Icon } from "@spielos/design-system/components";
+import { Spinner } from "@spielos/design-system";
 import { signIn } from "../../lib/auth-client";
 
 type Session = {
@@ -89,7 +90,7 @@ function LoginForm() {
               className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-border bg-panel-raised px-4 text-sm font-medium text-foreground transition-colors duration-[var(--duration)] hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:pointer-events-none disabled:opacity-50"
             >
               {signingIn ? (
-                <div className="h-4 w-4 animate-spin rounded-full border-2 border-border border-t-transparent" />
+                <Spinner size="sm" />
               ) : (
                 <svg
                   className="h-4 w-4"

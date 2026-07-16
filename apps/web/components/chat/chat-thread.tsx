@@ -1,6 +1,7 @@
 "use client";
 
 import { CONTEXT_ICON, ENTITY_ICONS, EVENT_ICONS, Icon } from "@spielos/design-system/components";
+import { Spinner } from "@spielos/design-system";
 import {
   ActionBarPrimitive,
   AssistantRuntimeProvider,
@@ -383,7 +384,7 @@ function HumanInputPrompt({ flow }: { flow: HumanInputFlow }) {
           Back
         </Button>
         <Button disabled={!flow.canAdvance || flow.submitting} onClick={() => void flow.advance()} size="sm" type="button">
-          {flow.submitting ? <Icon name="loader" className="animate-spin" size={12} /> : null}
+          {flow.submitting ? <Spinner size="xs" /> : null}
           {finalStep ? "Confirm" : "Next"}
           {!finalStep ? <Icon name="arrow-right" size={12} /> : null}
         </Button>

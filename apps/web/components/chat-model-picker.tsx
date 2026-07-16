@@ -10,6 +10,7 @@ function compactTokens(value: number): string {
 }
 
 function providerLabel(provider: string): string {
+  if (provider === "openai-compatible") return "OpenAI Compatible";
   return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 

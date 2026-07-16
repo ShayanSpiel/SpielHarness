@@ -18,20 +18,20 @@
 
   --primary: var(--discord-dark-blue);
   --primary-foreground: #ffffff;
-  --primary-soft: color-mix(in oklab, var(--discord-dark-blue) 25%, transparent);
+  --primary-soft: color-mix(in oklab, var(--discord-dark-blue) 20%, transparent);
 
   --success: var(--discord-dark-green);
-  --success-soft: color-mix(in oklab, var(--discord-dark-green) 25%, transparent);
+  --success-soft: color-mix(in oklab, var(--discord-dark-green) 20%, transparent);
   --warning: var(--discord-dark-yellow);
-  --warning-soft: color-mix(in oklab, var(--discord-dark-yellow) 25%, transparent);
+  --warning-soft: color-mix(in oklab, var(--discord-dark-yellow) 20%, transparent);
   --destructive: var(--discord-dark-red);
-  --destructive-soft: color-mix(in oklab, var(--discord-dark-red) 25%, transparent);
+  --destructive-soft: color-mix(in oklab, var(--discord-dark-red) 20%, transparent);
   --info: var(--discord-dark-blue);
-  --info-soft: color-mix(in oklab, var(--discord-dark-blue) 25%, transparent);
+  --info-soft: color-mix(in oklab, var(--discord-dark-blue) 20%, transparent);
   --accent: var(--discord-dark-purple);
-  --accent-soft: color-mix(in oklab, var(--discord-dark-purple) 25%, transparent);
+  --accent-soft: color-mix(in oklab, var(--discord-dark-purple) 20%, transparent);
   --purple: var(--discord-dark-purple);
-  --purple-soft: color-mix(in oklab, var(--discord-dark-purple) 25%, transparent);
+  --purple-soft: color-mix(in oklab, var(--discord-dark-purple) 20%, transparent);
 
   --code-block: var(--discord-dark-bg0_h);
 

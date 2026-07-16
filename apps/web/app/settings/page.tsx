@@ -16,6 +16,7 @@ import {
   Pill,
   ResizableSidebar,
   SIDEBAR,
+  Spinner,
   ToggleRow,
   Tooltip,
   cn,
@@ -41,10 +42,9 @@ const SETTINGS_TABS: { id: SettingsTab; label: string; icon: string }[] = [
 ];
 
 const PROVIDER_OPTIONS = [
-  { label: "OpenAI", value: "openai" },
-  { label: "Anthropic", value: "anthropic" },
-  { label: "Mistral", value: "mistral" },
   { label: "OpenAI Compatible", value: "openai-compatible" },
+  { label: "Anthropic", value: "anthropic" },
+  { label: "Custom", value: "custom" },
 ];
 
 const CONTEXT_PRESETS = [
@@ -61,7 +61,7 @@ function compactTokens(value: number): string {
 
 function emptyModel(): Omit<ProviderModel, "id"> {
   return {
-    provider: "openai",
+    provider: "openai-compatible",
     label: "",
     model: "",
     baseUrl: "",
@@ -343,7 +343,7 @@ export default function SettingsPage() {
                       key={model.id}
                       metadata={
                         <span className="flex shrink-0 items-center gap-1">
-                          {isEnv || model.secretEnvKey ? <Pill className="text-3xs" tone="info">Env</Pill> : null}
+                          {isEnv || model.secretEnvKey ? <Pill className="text-3xs" tone="info">Default</Pill> : null}
                           <Pill tone={model.enabled ? "success" : "default"} className="text-3xs">
                             {model.enabled ? "On" : "Off"}
                           </Pill>
@@ -356,7 +356,7 @@ export default function SettingsPage() {
                         setApiKey("");
                         reset(toProviderModel(model));
                       }}
-                      subtitle={`${model.provider} · ${compactTokens(capabilitiesForModel(model).contextWindow)} context · ${capabilitiesForModel(model).reasoningEffort === "xhigh" ? "ultra" : capabilitiesForModel(model).reasoningEffort}`}
+                      subtitle={compactTokens(capabilitiesForModel(model).contextWindow)}
                       title={model.name}
                     />
                   );
@@ -378,12 +378,12 @@ export default function SettingsPage() {
                         </Tooltip>
                       ) : null}
                       <Button
-                        disabled={isEnvModel || !dirty || !draft.label.trim() || !draft.model.trim()}
+                        disabled={!dirty || !draft.label.trim() || !draft.model.trim()}
                         icon="save"
                         loading={saving}
                         onClick={save}
                         size="md"
-                        variant={dirty && !isEnvModel ? "primary" : "outline"}
+                        variant={dirty ? "primary" : "outline"}
                       >
                         Save
                       </Button>
@@ -391,17 +391,18 @@ export default function SettingsPage() {
                   </div>
 
                   {isEnvModel ? (
-                    <Notice className="mb-4" tone="info" title="Environment model">
-                      This model is provided by your deployment environment. Create a custom
-                      model to override its settings.
+                    <Notice className="mb-4" tone="info" title="Default SpielOS model">
+                      This is a built-in model provided by default. Switch it off to hide it from
+                      chat, or create a custom model to override its settings.
                     </Notice>
                   ) : null}
 
-                  <div className={cn("grid gap-4", isEnvModel && "pointer-events-none opacity-50 select-none")}>
+                  <div className="grid gap-4">
                     <div className="grid items-start gap-3 md:grid-cols-2">
                       <Field label="Provider">
                         <NativeSelect
                           ariaLabel="Provider"
+                          disabled={isEnvModel}
                           value={draft.provider}
                           options={PROVIDER_OPTIONS}
                           onChange={(value) => setDraft({ ...draft, provider: value })}
@@ -416,12 +417,14 @@ export default function SettingsPage() {
                       </Field>
                       <Field label="Display name">
                         <Input
+                          disabled={isEnvModel}
                           onChange={(event) => setDraft({ ...draft, label: event.target.value })}
                           value={draft.label}
                         />
                       </Field>
                       <Field label="Model id">
                         <Input
+                          disabled={isEnvModel}
                           onChange={(event) => setDraft({ ...draft, model: event.target.value })}
                           value={draft.model}
                         />
@@ -431,7 +434,8 @@ export default function SettingsPage() {
                           <div className="flex items-center gap-2">
                             <Input
                               className="min-w-0 flex-1 font-mono"
-                              placeholder="MISTRAL_API_KEY"
+                              disabled={isEnvModel}
+                              placeholder="API_KEY_REF"
                               onChange={(event) => setDraft({ ...draft, secretEnvKey: event.target.value || null })}
                               value={draft.secretEnvKey ?? ""}
                             />
@@ -445,6 +449,7 @@ export default function SettingsPage() {
                           <div className="flex items-center gap-2">
                             <Input
                               className="min-w-0 flex-1"
+                              disabled={isEnvModel}
                               onChange={(event) => setApiKey(event.target.value)}
                               type="password"
                               value={apiKey}
@@ -460,10 +465,12 @@ export default function SettingsPage() {
                       </div>
                     </div>
                     <Field hint="Sets the default power level. Every chat can override it before the first message or mid-conversation." label="Reasoning power">
-                      <ReasoningEffortControl
-                        onChange={(reasoningEffort) => setDraft({ ...draft, capabilities: { ...draft.capabilities, reasoningEffort } })}
-                        value={draft.capabilities.reasoningEffort}
-                      />
+                      <div className={cn(isEnvModel && "pointer-events-none opacity-50")}>
+                        <ReasoningEffortControl
+                          onChange={(reasoningEffort) => setDraft({ ...draft, capabilities: { ...draft.capabilities, reasoningEffort } })}
+                          value={draft.capabilities.reasoningEffort}
+                        />
+                      </div>
                     </Field>
                     <button
                       aria-expanded={advancedOpen}
@@ -478,7 +485,7 @@ export default function SettingsPage() {
                       </span>
                       <Icon className="text-muted-foreground" name={advancedOpen ? "chevron-up" : "chevron-down"} size={13} />
                     </button>
-                    {advancedOpen ? <div className="grid gap-5 rounded-md bg-panel-raised p-4">
+                    {advancedOpen ? <div className={cn("grid gap-5 rounded-md bg-panel-raised p-4", isEnvModel && "pointer-events-none opacity-50")}>
                       <section className="grid gap-3">
                         <div>
                           <h3 className="text-xs font-medium text-foreground">Capacity</h3>
@@ -509,7 +516,7 @@ export default function SettingsPage() {
                         <div className="grid items-start gap-3 md:grid-cols-2">
                           <Field label="Base URL"><Input onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} value={draft.baseUrl ?? ""} /></Field>
                           <Field label="Token counter"><NativeSelect ariaLabel="Token counter" onChange={(value) => setDraft({ ...draft, capabilities: { ...draft.capabilities, tokenCounter: value as ProviderModel["capabilities"]["tokenCounter"] } })} options={[{ label: "Provider", value: "provider" }, { label: "Tiktoken", value: "tiktoken" }, { label: "Estimate", value: "estimate" }]} value={draft.capabilities.tokenCounter} /></Field>
-                          {(draft.provider === "openai" || draft.provider === "openai-compatible") ? <Field label="Output token parameter"><NativeSelect ariaLabel="Output token parameter" onChange={(value) => setDraft({ ...draft, capabilities: { ...draft.capabilities, outputTokenParameter: value as ProviderModel["capabilities"]["outputTokenParameter"] } })} options={[{ label: "max_tokens", value: "max_tokens" }, { label: "max_completion_tokens", value: "max_completion_tokens" }]} value={draft.capabilities.outputTokenParameter} /></Field> : null}
+                          {(draft.provider === "openai-compatible" || draft.provider === "custom") ? <Field label="Output token parameter"><NativeSelect ariaLabel="Output token parameter" onChange={(value) => setDraft({ ...draft, capabilities: { ...draft.capabilities, outputTokenParameter: value as ProviderModel["capabilities"]["outputTokenParameter"] } })} options={[{ label: "max_tokens", value: "max_tokens" }, { label: "max_completion_tokens", value: "max_completion_tokens" }]} value={draft.capabilities.outputTokenParameter} /></Field> : null}
                         </div>
                       </section>
                       <section className="grid gap-3 border-t border-border pt-4">
@@ -804,6 +811,18 @@ type Member = {
   created_at: string;
 };
 
+type Invitation = {
+  id: string;
+  org_id: string;
+  email: string;
+  role: string;
+  token: string;
+  status: string;
+  invited_by: string;
+  created_at: string;
+  expires_at: string;
+};
+
 type OrgInfo = {
   org_id: string;
   org_name: string;
@@ -824,6 +843,9 @@ function WorkspaceTab() {
   const [selectedMember, setSelectedMember] = useState<Member | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [invitations, setInvitations] = useState<Invitation[]>([]);
+  const [invitationsLoading, setInvitationsLoading] = useState(true);
+  const [cancellingInvite, setCancellingInvite] = useState<string | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -842,11 +864,20 @@ function WorkspaceTab() {
     });
     setOrgNameDraft(workspace.org_name);
     setMembersLoading(true);
-    fetch(`/api/orgs/${workspace.org_id}/members`)
-      .then((res) => (res.ok ? res.json() : { members: [] }))
-      .then((data: { members?: Member[] }) => setMembers(data.members ?? []))
+    setInvitationsLoading(true);
+    Promise.all([
+      fetch(`/api/orgs/${workspace.org_id}/members`).then((r) => r.ok ? r.json() : { members: [] }),
+      fetch(`/api/orgs/${workspace.org_id}/invitations`).then((r) => r.ok ? r.json() : { invitations: [] }),
+    ])
+      .then(([membersData, invitationsData]) => {
+        setMembers((membersData as { members?: Member[] }).members ?? []);
+        setInvitations((invitationsData as { invitations?: Invitation[] }).invitations ?? []);
+      })
       .catch(() => {})
-      .finally(() => setMembersLoading(false));
+      .finally(() => {
+        setMembersLoading(false);
+        setInvitationsLoading(false);
+      });
   }, [workspace]);
 
   const orgDirty = orgNameDraft !== orgInfo?.org_name;
@@ -874,6 +905,19 @@ function WorkspaceTab() {
     }
   }
 
+  async function refetchTeam() {
+    if (!orgInfo) return;
+    Promise.all([
+      fetch(`/api/orgs/${orgInfo.org_id}/members`).then((r) => r.ok ? r.json() : { members: [] }),
+      fetch(`/api/orgs/${orgInfo.org_id}/invitations`).then((r) => r.ok ? r.json() : { invitations: [] }),
+    ])
+      .then(([membersData, invitationsData]) => {
+        setMembers((membersData as { members?: Member[] }).members ?? []);
+        setInvitations((invitationsData as { invitations?: Invitation[] }).invitations ?? []);
+      })
+      .catch(() => {});
+  }
+
   async function invite() {
     if (!inviteEmail.trim() || !orgInfo) return;
     setInviting(true);
@@ -888,20 +932,39 @@ function WorkspaceTab() {
         toast.error(err.error || "Failed to add member");
         return;
       }
-      toast.success("Admin added");
+      const data = await memberRes.json();
+      if (data.invited) {
+        toast.success("Invitation sent");
+      } else {
+        toast.success("Admin added");
+      }
       setInviteEmail("");
-      const fetchMembers = () => {
-        if (orgInfo) {
-          fetch(`/api/orgs/${orgInfo.org_id}/members`)
-            .then((r) => (r.ok ? r.json() : { members: [] }))
-            .then((d) => setMembers(d.members ?? []));
-        }
-      };
-      fetchMembers();
+      refetchTeam();
     } catch {
       toast.error("Failed to add member");
     } finally {
       setInviting(false);
+    }
+  }
+
+  async function cancelInvitation(invitationId: string) {
+    if (!orgInfo) return;
+    setCancellingInvite(invitationId);
+    try {
+      const res = await fetch(`/api/orgs/${orgInfo.org_id}/invitations?invitationId=${invitationId}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        toast.error(err.error || "Failed to cancel invitation");
+        return;
+      }
+      toast.success("Invitation cancelled");
+      refetchTeam();
+    } catch {
+      toast.error("Failed to cancel invitation");
+    } finally {
+      setCancellingInvite(null);
     }
   }
 
@@ -1083,6 +1146,46 @@ function WorkspaceTab() {
                   ) : null}
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Pending Invitations */}
+          {isOwner && invitations.length > 0 && (
+            <div className="mt-6">
+              <div className="mb-2 flex items-center gap-2">
+                <h3 className="text-xs font-semibold text-muted-foreground">Pending Invitations</h3>
+                {invitationsLoading && <Spinner />}
+              </div>
+              <div className="grid gap-2">
+                {invitations.map((inv) => (
+                  <div
+                    className="flex items-center gap-3 rounded-md bg-panel-raised p-3 opacity-60"
+                    key={inv.id}
+                  >
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-panel text-sm font-medium text-muted-foreground">
+                      {inv.email[0]?.toUpperCase()}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm text-muted-foreground">
+                        {inv.email}
+                      </div>
+                      <div className="text-2xs text-muted-foreground">
+                        Invited &middot; expires {new Date(inv.expires_at).toLocaleDateString()}
+                      </div>
+                    </div>
+                    <Tooltip content="Cancel invitation" side="bottom">
+                      <Button
+                        aria-label={`Cancel invitation for ${inv.email}`}
+                        icon="trash"
+                        loading={cancellingInvite === inv.id}
+                        onClick={() => cancelInvitation(inv.id)}
+                        size="icon-xs"
+                        variant="ghost"
+                      />
+                    </Tooltip>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>

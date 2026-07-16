@@ -1,7 +1,7 @@
 "use client";
 
 import { Outfit, JetBrains_Mono } from "next/font/google";
-import { AppToaster, DEFAULT_THEME, THEME_REGISTRY, TooltipProvider } from "@spielos/design-system";
+import { AppToaster, DEFAULT_THEME, IconRegistryProvider, THEME_REGISTRY, TooltipProvider } from "@spielos/design-system";
 import { RunContextProvider } from "../lib/run-context";
 import { WorkspaceStoreProvider } from "../lib/use-workspace-store";
 import "../components/chat/chat-markdown.css";
@@ -40,9 +40,11 @@ export default function AppProviders({ children }: { children: React.ReactNode }
       <body>
         <RunContextProvider>
           <WorkspaceStoreProvider>
-            <TooltipProvider delayDuration={200} skipDelayDuration={300}>
-              {children}
-            </TooltipProvider>
+            <IconRegistryProvider>
+              <TooltipProvider delayDuration={200} skipDelayDuration={300}>
+                {children}
+              </TooltipProvider>
+            </IconRegistryProvider>
           </WorkspaceStoreProvider>
           <AppToaster />
         </RunContextProvider>

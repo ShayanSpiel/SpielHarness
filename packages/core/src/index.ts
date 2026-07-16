@@ -303,10 +303,9 @@ export type Artifact = z.infer<typeof artifactSchema>;
 
 // ── Models (LLM provider configurations) ───────────────────────
 export const modelProviderSchema = z.enum([
-  "mistral",
-  "openai",
+  "openai-compatible",
   "anthropic",
-  "openai-compatible"
+  "custom"
 ]);
 export type ModelProviderName = z.infer<typeof modelProviderSchema>;
 

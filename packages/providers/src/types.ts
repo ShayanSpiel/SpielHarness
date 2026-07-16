@@ -96,9 +96,6 @@ export function readSecret(req: ChatRequest): string {
 
 export function envKeyFor(provider: string): string | null {
   switch (provider) {
-    case "mistral":
-      return "MISTRAL_API_KEY";
-    case "openai":
     case "openai-compatible":
       return "OPENAI_API_KEY";
     case "anthropic":
@@ -121,7 +118,7 @@ export function reasoningConfig(req: ChatRequest): Record<string, unknown> {
   if (req.provider.provider === "anthropic") {
     return { output_config: { effort } };
   }
-  if (req.provider.provider === "mistral") {
+  if (req.provider.provider === "custom") {
     return { reasoning_effort: effort === "low" ? "none" : "high" };
   }
   return { reasoning_effort: effort === "max" ? "xhigh" : effort };
@@ -135,8 +132,7 @@ export function outputTokenConfig(req: ChatRequest): Record<string, number> {
 
 export function envBaseFor(provider: string): string | null {
   const env = process.env;
-  if (provider === "mistral") return env.MISTRAL_BASE_URL?.replace(/\/$/, "") ?? null;
-  if (provider === "openai" || provider === "openai-compatible") {
+  if (provider === "openai-compatible") {
     return env.OPENAI_BASE_URL?.replace(/\/$/, "") ?? null;
   }
   if (provider === "anthropic") return env.ANTHROPIC_BASE_URL?.replace(/\/$/, "") ?? null;

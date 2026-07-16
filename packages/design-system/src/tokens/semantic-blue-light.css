@@ -14,24 +14,24 @@
   --foreground: var(--blue-light-fg1);
   --foreground-strong: var(--blue-light-fg0);
   --foreground-muted: var(--blue-light-fg3);
-  --muted-foreground: var(--blue-light-gray);
+  --muted-foreground: var(--blue-light-fg4);
 
   --primary: var(--blue-light-blue);
-  --primary-foreground: #ffffff;
-  --primary-soft: color-mix(in oklab, var(--blue-light-blue) 18%, transparent);
+  --primary-foreground: var(--blue-light-bg0);
+  --primary-soft: color-mix(in oklab, var(--blue-light-blue) 15%, transparent);
 
   --success: var(--blue-light-green);
-  --success-soft: color-mix(in oklab, var(--blue-light-green) 18%, transparent);
+  --success-soft: color-mix(in oklab, var(--blue-light-green) 15%, transparent);
   --warning: var(--blue-light-yellow);
-  --warning-soft: color-mix(in oklab, var(--blue-light-yellow) 18%, transparent);
+  --warning-soft: color-mix(in oklab, var(--blue-light-yellow) 15%, transparent);
   --destructive: var(--blue-light-red);
-  --destructive-soft: color-mix(in oklab, var(--blue-light-red) 18%, transparent);
+  --destructive-soft: color-mix(in oklab, var(--blue-light-red) 15%, transparent);
   --info: var(--blue-light-blue);
-  --info-soft: color-mix(in oklab, var(--blue-light-blue) 18%, transparent);
+  --info-soft: color-mix(in oklab, var(--blue-light-blue) 15%, transparent);
   --accent: var(--blue-light-purple);
-  --accent-soft: color-mix(in oklab, var(--blue-light-purple) 18%, transparent);
+  --accent-soft: color-mix(in oklab, var(--blue-light-purple) 15%, transparent);
   --purple: var(--blue-light-purple);
-  --purple-soft: color-mix(in oklab, var(--blue-light-purple) 18%, transparent);
+  --purple-soft: color-mix(in oklab, var(--blue-light-purple) 15%, transparent);
 
   --code-block: var(--blue-light-bg1);
 

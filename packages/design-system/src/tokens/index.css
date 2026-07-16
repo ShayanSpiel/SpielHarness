@@ -26,6 +26,10 @@
 @import "./semantic-blue-light.css";
 @import "./semantic-discord-dark.css";
 @import "./semantic-discord-light.css";
+@import "./black-gold-dark.css";
+@import "./black-gold-light.css";
+@import "./semantic-black-gold-dark.css";
+@import "./semantic-black-gold-light.css";
 
 /*
  * Base scale. These are theme-agnostic structural tokens.

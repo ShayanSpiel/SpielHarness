@@ -1345,6 +1345,99 @@ export async function findProfileByEmail(
   return rows[0] ?? null;
 }
 
+// ── Invitations ────────────────────────────────────────────────────
+
+export type InvitationRow = {
+  id: string;
+  org_id: string;
+  email: string;
+  role: string;
+  token: string;
+  status: string;
+  invited_by: string;
+  created_at: string;
+  expires_at: string;
+};
+
+export type InvitationWithOrg = InvitationRow & {
+  org_name: string;
+};
+
+export async function createInvitation(
+  sql: Sql,
+  orgId: string,
+  email: string,
+  role: string,
+  invitedBy: string
+): Promise<InvitationRow> {
+  const rows = await sql<InvitationRow[]>`
+    insert into invitations (org_id, email, role, invited_by)
+    values (${orgId}, ${email}, ${role}, ${invitedBy})
+    returning id, org_id, email, role::text as role, token, status, invited_by, created_at, expires_at
+  `;
+  return rows[0];
+}
+
+export async function findInvitationByToken(
+  sql: Sql,
+  token: string
+): Promise<InvitationWithOrg | null> {
+  const rows = await sql<InvitationWithOrg[]>`
+    select i.id, i.org_id, i.email, i.role::text as role, i.token, i.status, i.invited_by, i.created_at, i.expires_at, o.name as org_name
+    from invitations i
+    join orgs o on o.id = i.org_id
+    where i.token = ${token}
+    limit 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function findPendingInvitationsByEmail(
+  sql: Sql,
+  email: string
+): Promise<InvitationWithOrg[]> {
+  return sql<InvitationWithOrg[]>`
+    select i.id, i.org_id, i.email, i.role::text as role, i.token, i.status, i.invited_by, i.created_at, i.expires_at, o.name as org_name
+    from invitations i
+    join orgs o on o.id = i.org_id
+    where i.email = ${email} and i.status = 'pending' and i.expires_at > now()
+  `;
+}
+
+export async function getOrgInvitations(
+  sql: Sql,
+  orgId: string
+): Promise<InvitationRow[]> {
+  return sql<InvitationRow[]>`
+    select id, org_id, email, role::text as role, token, status, invited_by, created_at, expires_at
+    from invitations
+    where org_id = ${orgId}
+    order by created_at desc
+  `;
+}
+
+export async function acceptInvitation(
+  sql: Sql,
+  invitationId: string
+): Promise<void> {
+  await sql`
+    update invitations set status = 'accepted'
+    where id = ${invitationId}
+  `;
+}
+
+export async function cancelInvitation(
+  sql: Sql,
+  invitationId: string
+): Promise<boolean> {
+  const rows = await sql`
+    delete from invitations
+    where id = ${invitationId}
+    returning id
+  `;
+  return rows.length > 0;
+}
+
 // ── Credits ───────────────────────────────────────────────────────
 
 export type CreditRow = {
