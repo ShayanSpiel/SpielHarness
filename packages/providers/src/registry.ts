@@ -3,10 +3,12 @@ import type { ChatAdapter, ChatRequest, ChatResponse } from "./types.ts";
 import { getEncoding, encodingForModel } from "js-tiktoken";
 import { openaiAdapter } from "./openai.ts";
 import { anthropicAdapter } from "./anthropic.ts";
+import { mistralAdapter } from "./mistral.ts";
 
 const REGISTRY: Record<string, ChatAdapter> = {
   "openai-compatible": openaiAdapter,
   anthropic: anthropicAdapter,
+  mistral: mistralAdapter,
   custom: openaiAdapter
 };
 
@@ -43,7 +45,7 @@ export async function countInputTokens(req: ChatRequest): Promise<{ count: numbe
   }
   if (strategy !== "estimate") {
     try {
-      const encoding = req.provider.provider === "openai-compatible" || req.provider.provider === "custom"
+      const encoding = req.provider.provider === "openai-compatible" || req.provider.provider === "custom" || req.provider.provider === "mistral"
         ? encodingForModel(req.model.model as Parameters<typeof encodingForModel>[0])
         : getEncoding("cl100k_base");
       const count = req.messages.reduce((total, message) => total + 4 + encoding.encode(message.content).length, 2);

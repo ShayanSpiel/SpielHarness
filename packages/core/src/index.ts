@@ -72,7 +72,7 @@ export const evalRuleSchema = z.object({
   label: z.string(),
   type: z.enum(["contains", "missing", "min_words", "max_words", "regex", "llm_judge"]),
   value: z.string(),
-  weight: z.number().default(10)
+  importance: z.number().default(10)
 });
 export type EvalRule = z.infer<typeof evalRuleSchema>;
 
@@ -259,7 +259,12 @@ export const eventTypeSchema = z.enum([
   "artifact_created",
   "eval_score_updated",
   "text_delta",
-  "status"
+  "status",
+  "compaction_started",
+  "pinned_state_updated",
+  "milestone_created",
+  "context_overflow",
+  "compaction_pass_escalated"
 ]);
 export type EventType = z.infer<typeof eventTypeSchema>;
 
@@ -305,6 +310,7 @@ export type Artifact = z.infer<typeof artifactSchema>;
 export const modelProviderSchema = z.enum([
   "openai-compatible",
   "anthropic",
+  "mistral",
   "custom"
 ]);
 export type ModelProviderName = z.infer<typeof modelProviderSchema>;
@@ -402,6 +408,312 @@ export const chatMessageSchema = z.object({
   createdAt: z.string()
 });
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
+
+// ── Long-horizon chat state (Phase 2) ──────────────────────────
+//
+// Pinned working state and milestone history are kept in `chat.metadata`.
+// The schema below is the canonical shape. Models propose typed
+// operations; deterministic reducer code applies them. State items are
+// attributable so a cheap model cannot supersede a user-authored item.
+
+export const stateItemAuthoritySchema = z.enum(["user", "workflow", "system", "model"]);
+export type StateItemAuthority = z.infer<typeof stateItemAuthoritySchema>;
+
+export const stateItemStatusSchema = z.enum(["active", "completed", "rejected", "superseded"]);
+export type StateItemStatus = z.infer<typeof stateItemStatusSchema>;
+
+export const stateItemSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  authority: stateItemAuthoritySchema,
+  status: stateItemStatusSchema,
+  sourceMessageId: z.string().nullable(),
+  supersedes: z.string().nullable().default(null),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+export type StateItem = z.infer<typeof stateItemSchema>;
+
+export const chatPinnedReferenceSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  source: z.enum(["chat", "file", "memory", "tool_result"]),
+  ref: z.string()
+});
+export type ChatPinnedReference = z.infer<typeof chatPinnedReferenceSchema>;
+
+export const chatPinnedStateSchema = z.object({
+  version: z.number().int().nonnegative(),
+  primaryGoal: stateItemSchema.nullable(),
+  currentPhase: z.string().nullable(),
+  decisions: z.array(stateItemSchema).default([]),
+  constraints: z.array(stateItemSchema).default([]),
+  openWork: z.array(stateItemSchema).default([]),
+  successCriteria: z.array(stateItemSchema).default([]),
+  importantReferences: z.array(chatPinnedReferenceSchema).default([]),
+  updatedAt: z.string()
+});
+export type ChatPinnedState = z.infer<typeof chatPinnedStateSchema>;
+
+export const milestoneSummarySchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  decisionsMade: z.array(z.string()).default([]),
+  workCompleted: z.array(z.string()).default([]),
+  unresolvedItems: z.array(z.string()).default([]),
+  sourceMessageIds: z.array(z.string()).default([]),
+  createdAt: z.string()
+});
+export type MilestoneSummary = z.infer<typeof milestoneSummarySchema>;
+
+// Bounded operations a model may propose against pinned state. The
+// reducer in `state-reducer.ts` validates and applies them.
+export const stateOperationSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("set_goal"), text: z.string(), sourceMessageId: z.string() }),
+  z.object({ op: z.literal("add_decision"), text: z.string(), sourceMessageId: z.string() }),
+  z.object({ op: z.literal("supersede_decision"), targetId: z.string(), text: z.string(), sourceMessageId: z.string() }),
+  z.object({ op: z.literal("add_constraint"), text: z.string(), sourceMessageId: z.string() }),
+  z.object({ op: z.literal("add_open_work"), text: z.string(), sourceMessageId: z.string() }),
+  z.object({ op: z.literal("complete_work"), targetId: z.string(), sourceMessageId: z.string() })
+]);
+export type StateOperation = z.infer<typeof stateOperationSchema>;
+
+export const compactionOperationSchema = z.object({
+  stateOperations: z.array(stateOperationSchema).default([]),
+  milestone: milestoneSummarySchema
+});
+export type CompactionOperation = z.infer<typeof compactionOperationSchema>;
+
+// ── Reducer for typed state operations (Phase 2) ────────────────
+//
+// The model never replaces canonical state. It returns bounded
+// `StateOperation` items; the deterministic reducer below validates
+// each one against the current `ChatPinnedState` and applies it.
+//
+// Authority rules:
+//   * A model may supersede a model-authored decision.
+//   * A model may not supersede a user-authored or workflow-authored
+//     decision. The reducer rejects those operations and counts them
+//     as `rejected` so callers can surface a metric.
+//   * Anyone may supersede a system-authored item (status updates).
+//
+// Optimistic concurrency: callers pass an `expectedVersion`. If the
+// state's `version` does not match, the reducer throws
+// `StateVersionMismatch` and the caller re-reads the state, replays
+// the operations, and tries again.
+
+export class StateVersionMismatch extends Error {
+  readonly expected: number;
+  readonly actual: number;
+  constructor(expected: number, actual: number) {
+    super(`State version mismatch (expected ${expected}, found ${actual}). Re-read and retry.`);
+    this.name = "StateVersionMismatch";
+    this.expected = expected;
+    this.actual = actual;
+  }
+}
+
+export class StateOperationRejected extends Error {
+  readonly op: StateOperation;
+  readonly reason: string;
+  constructor(op: StateOperation, reason: string) {
+    super(`State operation rejected: ${reason}`);
+    this.name = "StateOperationRejected";
+    this.op = op;
+    this.reason = reason;
+  }
+}
+
+function compareItems(left: StateItem, right: StateItem): boolean {
+  return left.text.trim().toLowerCase() === right.text.trim().toLowerCase();
+}
+
+function mergeDedupe(existing: StateItem[], candidate: StateItem): StateItem[] {
+  if (existing.some((item) => compareItems(item, candidate))) return existing;
+  return [...existing, candidate];
+}
+
+function applySetGoal(state: ChatPinnedState, op: Extract<StateOperation, { op: "set_goal" }>, now: string): ChatPinnedState {
+  if (state.primaryGoal && compareItems(state.primaryGoal, { id: "synthetic", text: op.text, authority: "model", status: "active", sourceMessageId: op.sourceMessageId, supersedes: null, createdAt: now, updatedAt: now })) {
+    return state;
+  }
+  if (state.primaryGoal && state.primaryGoal.authority === "user") {
+    return { ...state, primaryGoal: { ...state.primaryGoal, status: "superseded", updatedAt: now }, currentPhase: state.currentPhase };
+  }
+  return {
+    ...state,
+    primaryGoal: {
+      id: crypto.randomUUID(),
+      text: op.text,
+      authority: "model",
+      status: "active",
+      sourceMessageId: op.sourceMessageId,
+      supersedes: state.primaryGoal?.id ?? null,
+      createdAt: now,
+      updatedAt: now
+    }
+  };
+}
+
+function applyAddDecision(state: ChatPinnedState, op: Extract<StateOperation, { op: "add_decision" }>, now: string): ChatPinnedState {
+  const candidate: StateItem = {
+    id: crypto.randomUUID(),
+    text: op.text,
+    authority: "model",
+    status: "active",
+    sourceMessageId: op.sourceMessageId,
+    supersedes: null,
+    createdAt: now,
+    updatedAt: now
+  };
+  return { ...state, decisions: mergeDedupe(state.decisions, candidate) };
+}
+
+function applySupersedeDecision(state: ChatPinnedState, op: Extract<StateOperation, { op: "supersede_decision" }>, now: string): ChatPinnedState {
+  const target = state.decisions.find((decision) => decision.id === op.targetId);
+  if (!target) throw new StateOperationRejected(op, "decision not found");
+  if (target.authority === "user" || target.authority === "workflow") {
+    throw new StateOperationRejected(op, `cannot supersede ${target.authority}-authored decision`);
+  }
+  const nextDecisions = state.decisions
+    .map((decision) =>
+      decision.id === op.targetId
+        ? { ...decision, status: "superseded" as const, updatedAt: now }
+        : decision
+    )
+    .concat([
+      {
+        id: crypto.randomUUID(),
+        text: op.text,
+        authority: "model",
+        status: "active",
+        sourceMessageId: op.sourceMessageId,
+        supersedes: op.targetId,
+        createdAt: now,
+        updatedAt: now
+      }
+    ]);
+  return { ...state, decisions: nextDecisions };
+}
+
+function applyAddConstraint(state: ChatPinnedState, op: Extract<StateOperation, { op: "add_constraint" }>, now: string): ChatPinnedState {
+  const candidate: StateItem = {
+    id: crypto.randomUUID(),
+    text: op.text,
+    authority: "model",
+    status: "active",
+    sourceMessageId: op.sourceMessageId,
+    supersedes: null,
+    createdAt: now,
+    updatedAt: now
+  };
+  return { ...state, constraints: mergeDedupe(state.constraints, candidate) };
+}
+
+function applyAddOpenWork(state: ChatPinnedState, op: Extract<StateOperation, { op: "add_open_work" }>, now: string): ChatPinnedState {
+  const candidate: StateItem = {
+    id: crypto.randomUUID(),
+    text: op.text,
+    authority: "model",
+    status: "active",
+    sourceMessageId: op.sourceMessageId,
+    supersedes: null,
+    createdAt: now,
+    updatedAt: now
+  };
+  return { ...state, openWork: mergeDedupe(state.openWork, candidate) };
+}
+
+function applyCompleteWork(state: ChatPinnedState, op: Extract<StateOperation, { op: "complete_work" }>, now: string): ChatPinnedState {
+  const target = state.openWork.find((work) => work.id === op.targetId);
+  if (!target) throw new StateOperationRejected(op, "open work item not found");
+  if (target.authority === "user") {
+    throw new StateOperationRejected(op, "cannot mark user-authored open work as complete");
+  }
+  return {
+    ...state,
+    openWork: state.openWork.map((work) =>
+      work.id === op.targetId
+        ? { ...work, status: "completed" as const, updatedAt: now }
+        : work
+    )
+  };
+}
+
+export type ReducerResult = {
+  state: ChatPinnedState;
+  applied: StateOperation[];
+  rejected: Array<{ op: StateOperation; reason: string }>;
+};
+
+export function reduceState(
+  state: ChatPinnedState,
+  operations: StateOperation[],
+  options: { expectedVersion?: number; now?: string } = {}
+): ReducerResult {
+  if (options.expectedVersion !== undefined && state.version !== options.expectedVersion) {
+    throw new StateVersionMismatch(options.expectedVersion, state.version);
+  }
+  let next: ChatPinnedState = state;
+  const applied: StateOperation[] = [];
+  const rejected: ReducerResult["rejected"] = [];
+  const now = options.now ?? new Date().toISOString();
+  for (const op of operations) {
+    try {
+      switch (op.op) {
+        case "set_goal":
+          next = applySetGoal(next, op, now);
+          break;
+        case "add_decision":
+          next = applyAddDecision(next, op, now);
+          break;
+        case "supersede_decision":
+          next = applySupersedeDecision(next, op, now);
+          break;
+        case "add_constraint":
+          next = applyAddConstraint(next, op, now);
+          break;
+        case "add_open_work":
+          next = applyAddOpenWork(next, op, now);
+          break;
+        case "complete_work":
+          next = applyCompleteWork(next, op, now);
+          break;
+        default: {
+          const _exhaustive: never = op;
+          throw new StateOperationRejected(_exhaustive, "unknown operation");
+        }
+      }
+      applied.push(op);
+    } catch (err) {
+      if (err instanceof StateOperationRejected) {
+        rejected.push({ op, reason: err.reason });
+      } else {
+        throw err;
+      }
+    }
+  }
+  return {
+    state: { ...next, version: next.version + 1, updatedAt: now },
+    applied,
+    rejected
+  };
+}
+
+export function emptyPinnedState(now: string = new Date().toISOString()): ChatPinnedState {
+  return {
+    version: 0,
+    primaryGoal: null,
+    currentPhase: null,
+    decisions: [],
+    constraints: [],
+    openWork: [],
+    successCriteria: [],
+    importantReferences: [],
+    updatedAt: now
+  };
+}
 
 // ── Durable execution state ───────────────────────────────────
 export const runGoalSchema = z.object({

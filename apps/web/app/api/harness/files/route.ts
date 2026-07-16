@@ -9,6 +9,7 @@ import {
 } from "@spielos/db";
 import type { FileRecord } from "@spielos/core";
 import { errorResponse, getOrg, HttpError, requireWrite } from "../../../../lib/server";
+import { publishDomainEvent } from "../../../../lib/realtime";
 
 function toClient(row: {
   id: string;
@@ -104,6 +105,14 @@ export async function POST(request: Request) {
       entityId: row.id,
       after: { id: row.id, fileType: row.file_type, status: row.status, title: row.title }
     });
+    publishDomainEvent(`org:${org.orgId}`, {
+      type: "file.created",
+      orgId: org.orgId,
+      fileId: row.id,
+      fileType: row.file_type,
+      title: row.title,
+      ts: new Date().toISOString()
+    });
     return Response.json({ file: toClient(row) }, { status: 201 });
   } catch (err) {
     return errorResponse(err);
@@ -147,6 +156,14 @@ export async function PUT(request: Request) {
       before: { id: before.id, fileType: before.file_type, status: before.status, title: before.title, body: before.body, metadata: before.metadata },
       after: { id: row.id, fileType: row.file_type, status: row.status, title: row.title, body: row.body, metadata: row.metadata }
     });
+    publishDomainEvent(`org:${org.orgId}`, {
+      type: "file.updated",
+      orgId: org.orgId,
+      fileId: row.id,
+      fileType: row.file_type,
+      title: row.title,
+      ts: new Date().toISOString()
+    });
     return Response.json({ file: toClient(row) });
   } catch (err) {
     return errorResponse(err);
@@ -173,6 +190,12 @@ export async function DELETE(request: Request) {
       entityType: "file",
       entityId: id,
       before: { id: before.id, fileType: before.file_type, status: before.status, title: before.title }
+    });
+    publishDomainEvent(`org:${org.orgId}`, {
+      type: "file.deleted",
+      orgId: org.orgId,
+      fileId: id,
+      ts: new Date().toISOString()
     });
     return Response.json({ ok: true });
   } catch (err) {

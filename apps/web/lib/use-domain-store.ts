@@ -23,6 +23,8 @@ import type {
 import { toast } from "@spielos/design-system";
 import { fileRecordToItem, type WorkspaceItem } from "./workspace-data";
 import { fetchJsonWithRetry } from "./fetch-json";
+import { useRealtimeSubscription } from "./use-realtime";
+import type { DomainEvent } from "./realtime";
 
 
 export type DomainStore = {
@@ -294,8 +296,33 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
   const [libraryFolders, setLibraryFolders] = useState<string[]>([]);
   const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const loadErrorShown = useRef(false);
+  const reloadRef = useRef<(() => Promise<void>) | null>(null);
+
+  // Phase 4: subscribe to org-scoped domain events. File mutations
+  // published by the server trigger a fresh `reload()` so the UI sees
+  // the canonical state without polling. The store stays unaware of
+  // the transport; `useRealtimeSubscription` is the only thing that
+  // knows about EventSource.
+  const orgCookie = typeof document === "undefined" ? null : document.cookie
+    .split("; ")
+    .find((row) => row.startsWith("spielos.org="))
+    ?.split("=")[1] ?? null;
+  const realtimeListener = useCallback((event: DomainEvent) => {
+    if (
+      event.type === "file.created" ||
+      event.type === "file.updated" ||
+      event.type === "file.deleted" ||
+      event.type === "context.invalidated"
+    ) {
+      void reloadRef.current?.();
+    }
+  }, []);
+  useRealtimeSubscription(orgCookie ? `org:${orgCookie}` : null, orgCookie, realtimeListener);
 
   const reload = useCallback(async () => {
+    // Phase 4: expose the latest reload so the realtime listener
+    // (registered above) can trigger it on file.* events.
+    reloadRef.current = reload;
     // The Better Auth session cookie is HttpOnly by design and therefore cannot
     // be inspected through document.cookie. Protected app routes can ask the
     // server directly; only the public sign-in surface should skip eager loads.
@@ -675,9 +702,9 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
   );
 
   const updateModel = useCallback(
-    async (id: string, patch: Partial<Model> & { apiKey?: string }) => {
+    async (id: string, patch: Partial<Model> & { apiKey?: string | null }) => {
       const { apiKey, ...rest } = patch;
-      const payload = apiKey ? { ...rest, apiKey } : rest;
+      const payload = apiKey !== undefined ? { ...rest, apiKey } : rest;
       const res = await fetch("/api/models", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },

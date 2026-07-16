@@ -14,7 +14,7 @@ export type DeterministicRule = {
   label: string;
   type: "contains" | "missing" | "max_words" | "min_words" | "regex" | "llm_judge";
   value: string;
-  weight: number;
+  importance: number;
 };
 
 function scoreLength(text: string): EvalFinding {
@@ -96,9 +96,9 @@ export function evaluateRules(text: string, rules: DeterministicRule[]): EvalRes
       notes: pass ? "Rule passed." : `Rule failed: ${rule.type} ${rule.value}.`
     };
   });
-  const totalWeight = Math.max(1, rules.reduce((sum, rule) => sum + rule.weight, 0));
+  const totalWeight = Math.max(1, rules.reduce((sum, rule) => sum + rule.importance, 0));
   const overall = Math.round(
-    findings.reduce((sum, finding, index) => sum + finding.score * rules[index].weight, 0) /
+    findings.reduce((sum, finding, index) => sum + finding.score * rules[index].importance, 0) /
       totalWeight
   );
   return {

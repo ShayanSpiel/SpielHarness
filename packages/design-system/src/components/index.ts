@@ -89,6 +89,13 @@ export { ResizableSidebar, type ResizableSidebarProps } from "./resizable-sideba
 export { ActionRow, type ActionRowProps } from "./action-row";
 export { SidebarListPanel } from "./sidebar-list-panel";
 export { Skeleton, type SkeletonProps } from "./skeleton";
+export {
+  SkeletonListItem,
+  SkeletonCard,
+  SkeletonFormField,
+  SkeletonMemberRow,
+  SkeletonBlock,
+} from "./skeleton-patterns";
 export { Spinner, type SpinnerProps } from "./spinner";
 export { Switch } from "./switch";
 export { StatusIcon, type StatusIconProps, type StatusTone } from "./status-icon";
@@ -96,5 +103,6 @@ export { ToggleRow } from "./toggle-row";
 export { Tabs, TabsContent, TabsList, TabsTrigger } from "./tabs";
 export { ThemeToggle } from "./theme-toggle";
 export { Tooltip, TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from "./tooltip";
+export { ProviderLogo } from "./provider-logos";
 
 export { toast } from "sonner";

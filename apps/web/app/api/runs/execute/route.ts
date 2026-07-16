@@ -1,34 +1,30 @@
 import {
+  atomicCheckpoint,
   appendChatMessage,
-  appendRunEvents,
   createChat,
   createFile,
   createRun,
   getRun,
+  instrumentSql,
   linkRunInputFiles,
   linkRunOutputFile,
   recordUsage,
   updateChatMetadata,
   updateRun,
-  type Sql
+  upsertRunMetrics,
+  type InstrumentedSql,
+  type RunEventInput
 } from "@spielos/db";
 import { errorResponse, getOrg, HttpError, requireWrite } from "../../../../lib/server";
 import { resolveExecution, type ExecuteBody } from "../../../../lib/execution-service";
 import { generatedFileFolder } from "../../../../lib/workspace-data";
 import { streamChatRun, streamRun, type RunCheckpoint, type RunYield } from "@spielos/graph";
+import { registerRun, onRunSignal } from "../../../../lib/run-registry";
+import { publishDomainEvent } from "../../../../lib/realtime";
 import type { RunEvent, RunStatus } from "@spielos/core";
 
 function frame(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
-}
-
-function instrumentSql(originalSql: Sql): { sql: Sql } {
-  const sql = new Proxy(originalSql, {
-    apply(target: (...args: unknown[]) => unknown, thisArg: unknown, args: unknown[]) {
-      return Reflect.apply(target, thisArg, args);
-    }
-  }) as unknown as Sql;
-  return { sql };
 }
 
 export async function POST(request: Request) {
@@ -38,7 +34,7 @@ export async function POST(request: Request) {
     requireWrite(org);
     const authMs = performance.now() - reqStart;
 
-    const { sql } = instrumentSql(org.sql);
+    const sql = instrumentSql(org.sql);
 
     const body = (await request.json()) as ExecuteBody;
     if (!body.prompt?.trim()) throw new HttpError(400, "prompt is required");
@@ -111,12 +107,17 @@ export async function POST(request: Request) {
         let errorMessage: string | null = null;
         let checkpoint: RunCheckpoint | null = null;
         let compaction: Record<string, unknown> | null = null;
-        const compactionMs = 0;
-        const inputTokensEstimate = 0;
-        const systemPromptTokensEstimate = 0;
+        let compactionMs = 0;
+        let inputTokensEstimate = 0;
+        let systemPromptTokensEstimate = 0;
+        const providerStart = performance.now();
+        let firstProviderByteAt: number | null = null;
+        let firstClientByteAt: number | null = null;
+        let eventPersistMs = 0;
         const usage = { input: 0, output: 0, tools: 0 };
         const billableUsage = { input: 0, output: 0 };
         const onUsage = (next: { input: number; output: number }) => {
+          if (firstProviderByteAt === null) firstProviderByteAt = performance.now();
           billableUsage.input += next.input;
           billableUsage.output += next.output;
           usage.input = Math.max(usage.input, next.input);
@@ -125,8 +126,18 @@ export async function POST(request: Request) {
             kind: "usage",
             usage: { inputTokens: usage.input, outputTokens: usage.output, toolCalls: usage.tools }
           })));
+          publishDomainEvent(`run:${run.id}`, {
+            type: "run.usage.updated",
+            orgId: org.orgId,
+            runId: run.id,
+            inputTokens: usage.input,
+            outputTokens: usage.output,
+            toolCalls: usage.tools,
+            ts: new Date().toISOString()
+          });
         };
         const onToolUsage = (count: number) => {
+          if (firstProviderByteAt === null) firstProviderByteAt = performance.now();
           const next = usage.tools + count;
           if (body.budget?.maxToolCalls && next > body.budget.maxToolCalls) {
             throw new Error(`Tool-call budget exceeded (${body.budget.maxToolCalls}).`);
@@ -139,7 +150,7 @@ export async function POST(request: Request) {
         };
         const liveEventIds = new Set<string>();
         const queuedEventIds = new Set<string>();
-        const queuedEvents: Parameters<typeof appendRunEvents>[3] = [];
+        const queuedEvents: RunEventInput[] = [];
         const queueEvent = (event: RunEvent) => {
           if (queuedEventIds.has(event.id)) return;
           queuedEventIds.add(event.id);
@@ -153,25 +164,90 @@ export async function POST(request: Request) {
             payload: event.payload ?? {}
           });
         };
-        const flushQueuedEvents = async () => {
-          if (queuedEvents.length === 0) return;
+        // Phase 2.5: events are persisted atomically with the run state.
+        // `flushAtomicCheckpoint` drains the queue and bundles the events
+        // with the current checkpoint state in a single transaction.
+        // A crash anywhere in the transaction rolls everything back; the
+        // next attempt re-reads the run row and resumes from the
+        // authoritative `checkpoint_version`.
+        let checkpointVersion = Number(run.checkpoint_version ?? 0);
+        const flushAtomicCheckpoint = async (stateOverride?: RunCheckpoint) => {
+          if (queuedEvents.length === 0 && stateOverride === undefined) return;
           const batch = queuedEvents.splice(0, queuedEvents.length);
+          const persistStart = performance.now();
           try {
-            await appendRunEvents(sql, org.orgId, run.id, batch);
-          } catch (eventError) {
-            queuedEvents.unshift(...batch);
-            console.error("[runs/execute] event batch persist failed:", eventError);
+            const result = await atomicCheckpoint(sql, org.orgId, run.id, {
+              events: batch,
+              state: stateOverride ?? checkpoint ?? undefined,
+              expectedCheckpointVersion: checkpointVersion
+            });
+            checkpointVersion = result.checkpointVersion;
+            eventPersistMs += performance.now() - persistStart;
+            // Phase 3: refresh the in-memory durable flags from the row
+            // we just locked. The atomic checkpoint took a `for update`
+            // lock, so any cancel/pause written before this point is
+            // now visible. This catches signals that arrived via the DB
+            // from a different process or a stale connection.
+            if (!durableCancel || !durablePause) {
+              const refreshed = await getRun(sql, org.orgId, run.id);
+              if (refreshed?.cancel_requested_at) durableCancel = true;
+              if (refreshed?.pause_requested_at) durablePause = true;
+            }
+          } catch (checkpointError) {
+            if (batch.length > 0) queuedEvents.unshift(...batch);
+            console.error("[runs/execute] atomic checkpoint failed:", checkpointError);
+            throw checkpointError;
           }
         };
         const onEvent = (event: RunEvent) => {
           liveEventIds.add(event.id);
           queueEvent(event);
           controller.enqueue(encoder.encode(frame({ kind: "event", event })));
+          publishDomainEvent(`run:${run.id}`, {
+            type: "run.event.appended",
+            orgId: org.orgId,
+            runId: run.id,
+            eventId: event.id,
+            eventType: event.type,
+            ts: new Date().toISOString()
+          });
         };
         const executionController = new AbortController();
         const abortFromRequest = () => executionController.abort(request.signal.reason);
         if (request.signal.aborted) abortFromRequest();
         else request.signal.addEventListener("abort", abortFromRequest, { once: true });
+
+        // Phase 3: register the controller so cancel/pause routes can
+        // signal this run from another request. The local signal is the
+        // fast path; the DB column is the durable record. We track the
+        // durable flag in memory and refresh it on checkpoint flush.
+        let durableCancel = Boolean(run.cancel_requested_at);
+        let durablePause = Boolean(run.pause_requested_at);
+        const unregister = registerRun(run.id, executionController);
+        const signalListener = onRunSignal(run.id, (reason) => {
+          if (reason === "cancel") {
+            durableCancel = true;
+            if (!executionController.signal.aborted) executionController.abort("cancel");
+          } else if (reason === "pause") {
+            durablePause = true;
+          }
+        });
+
+        const checkControl = (): "cancel" | "pause" | null => {
+          if (durableCancel || executionController.signal.aborted) return "cancel";
+          if (durablePause) return "pause";
+          return null;
+        };
+
+        const systemPrompt = resolved.directorPrompt ?? "";
+        if (systemPrompt) {
+          systemPromptTokensEstimate = Math.ceil(systemPrompt.length / 4);
+        }
+        if (Array.isArray(body.messages)) {
+          inputTokensEstimate = body.messages.reduce((sum: number, m: { content?: string }) => {
+            return sum + (typeof m?.content === "string" ? Math.ceil(m.content.length / 4) : 0);
+          }, 0);
+        }
 
         const gen: AsyncGenerator<RunYield, void, void> =
           resolved.type === "chat"
@@ -184,33 +260,41 @@ export async function POST(request: Request) {
                 goal: body.goal,
                 budget: body.budget,
                 onUsage,
-                signal: executionController.signal
+                signal: executionController.signal,
+                checkControl
               })
-            : streamRun({ ...resolved.runRequest, runId: run.id, goal: body.goal, budget: body.budget, onUsage, onToolUsage, onEvent, signal: executionController.signal });
+            : streamRun({ ...resolved.runRequest, runId: run.id, goal: body.goal, budget: body.budget, onUsage, onToolUsage, onEvent, signal: executionController.signal, checkControl });
 
         try {
           for await (const item of gen) {
             if (!firstByteSent) {
               firstByteSent = true;
+              if (firstProviderByteAt === null) firstProviderByteAt = performance.now();
             }
             if (item.kind === "text") {
+              if (firstProviderByteAt === null) firstProviderByteAt = performance.now();
               outputText += item.text;
+              if (firstClientByteAt === null) firstClientByteAt = performance.now();
               controller.enqueue(encoder.encode(frame({ kind: "text", text: item.text })));
             } else if (item.kind === "status") {
+              if (firstProviderByteAt === null) firstProviderByteAt = performance.now();
               controller.enqueue(encoder.encode(frame({ kind: "status", message: item.message })));
             } else if (item.kind === "event") {
-              queueEvent(item.event);
+              if (firstProviderByteAt === null) firstProviderByteAt = performance.now();
               if (item.event.type === "status" && item.event.payload?.category === "compaction") {
                 compaction = {
                   summary: item.event.payload.summary,
                   compactedMessageCount: item.event.payload.compactedMessageCount,
                   createdAt: item.event.payload.createdAt
                 };
+                const compactionEventStart = performance.now();
+                compactionMs = Math.max(compactionMs, compactionEventStart - providerStart);
               }
+              queueEvent(item.event);
               if (!liveEventIds.has(item.event.id)) {
                 controller.enqueue(encoder.encode(frame({ kind: "event", event: item.event })));
               }
-              if (queuedEvents.length >= 12) await flushQueuedEvents();
+              if (queuedEvents.length >= 12) await flushAtomicCheckpoint();
             } else if (item.kind === "artifact") {
               controller.enqueue(encoder.encode(frame({ kind: "artifact", artifact: item.artifact })));
               try {
@@ -230,7 +314,7 @@ export async function POST(request: Request) {
               controller.enqueue(encoder.encode(frame({ kind: "human_input", request: item.request })));
             } else if (item.kind === "checkpoint") {
               checkpoint = item.state;
-              await updateRun(sql, org.orgId, run.id, { state: checkpoint });
+              await flushAtomicCheckpoint(checkpoint);
               controller.enqueue(encoder.encode(frame({
                 kind: "run_state",
                 state: {
@@ -243,12 +327,20 @@ export async function POST(request: Request) {
             } else if (item.kind === "done") {
               const allowed: RunStatus[] = ["running", "waiting_human", "completed", "failed", "cancelled"];
               terminalStatus = (allowed.includes(item.status as RunStatus) ? item.status : "completed") as RunStatus;
+              publishDomainEvent(`run:${run.id}`, {
+                type: "run.status.changed",
+                orgId: org.orgId,
+                runId: run.id,
+                status: terminalStatus,
+                checkpointVersion,
+                ts: new Date().toISOString()
+              });
             }
           }
         } catch (err) {
           errorMessage = err instanceof Error ? err.message : "Run failed";
           const durable = await getRun(sql, org.orgId, run.id);
-          if (request.signal.aborted) {
+          if (request.signal.aborted || durableCancel || executionController.signal.aborted) {
             terminalStatus = "cancelled";
             if (durable?.state) checkpoint = durable.state as RunCheckpoint;
             errorMessage = null;
@@ -258,7 +350,11 @@ export async function POST(request: Request) {
           }
         } finally {
           request.signal.removeEventListener("abort", abortFromRequest);
-          await flushQueuedEvents();
+          unregister();
+          signalListener();
+          // Best-effort drain. The final atomic checkpoint below is the
+          // durable write; if this throws we still attempt the final one.
+          try { await flushAtomicCheckpoint(); } catch { /* logged inside */ }
         }
 
         const completedAt =
@@ -278,25 +374,55 @@ export async function POST(request: Request) {
           };
         }
 
+        const finalizeStart = performance.now();
+        const counter = (sql as InstrumentedSql).__counter;
+        const providerTtftMs = firstProviderByteAt !== null ? firstProviderByteAt - providerStart : 0;
+        const firstByteToClientMs = firstClientByteAt !== null ? firstClientByteAt - providerStart : 0;
         const timings = {
           authMs,
           harnessResolutionMs,
           runCreationMs,
           totalMs: performance.now() - reqStart,
-          dbQueryCount: 0,
-          dbTotalMs: 0,
+          dbQueryCount: counter?.count ?? 0,
+          dbTotalMs: counter?.totalMs ?? 0,
           compactionMs,
+          providerTtftMs,
+          firstByteToClientMs,
+          eventPersistMs,
           inputTokensEstimate,
           systemPromptTokensEstimate
         };
 
-        await updateRun(sql, org.orgId, run.id, {
-          status: terminalStatus,
-          outputs: { text: outputText },
-          state: { ...(checkpoint ?? {}), _timings: timings },
-          error: errorMessage,
-          completedAt
-        });
+        // Final atomic checkpoint: bundles the final state, outputs,
+        // status, and any remaining events in one transaction. On a
+        // process crash here, the next call to getRun sees the prior
+        // checkpoint and the next atomicCheckpoint picks up from there.
+        try {
+          const finalResult = await atomicCheckpoint(sql, org.orgId, run.id, {
+            events: queuedEvents.splice(0, queuedEvents.length),
+            state: { ...(checkpoint ?? {}), _timings: timings },
+            outputs: { text: outputText },
+            status: terminalStatus,
+            error: errorMessage,
+            completedAt,
+            expectedCheckpointVersion: checkpointVersion
+          });
+          checkpointVersion = finalResult.checkpointVersion;
+        } catch (finalError) {
+          // Fall back to a non-transactional update so the run still
+          // reaches a terminal state. The events that were about to be
+          // persisted are dropped, but the run status is what callers
+          // observe via SSE; the lost events are recovered on resume
+          // through the durable state.
+          console.error("[runs/execute] final atomic checkpoint failed, falling back:", finalError);
+          await updateRun(sql, org.orgId, run.id, {
+            status: terminalStatus,
+            outputs: { text: outputText },
+            state: { ...(checkpoint ?? {}), _timings: timings },
+            error: errorMessage,
+            completedAt
+          });
+        }
         if (chatId && compaction && resolved.type === "chat") {
           await updateChatMetadata(sql, org.orgId, chatId, { compaction });
         }
@@ -332,6 +458,36 @@ export async function POST(request: Request) {
           } catch (err) {
             console.warn("[runs/execute] chat persist failed:", err);
           }
+        }
+
+        const runFinalizeMs = performance.now() - finalizeStart;
+        try {
+          await upsertRunMetrics(sql, {
+            run_id: run.id,
+            org_id: org.orgId,
+            type: resolved.type,
+            status: terminalStatus,
+            auth_ms: authMs,
+            harness_resolution_ms: harnessResolutionMs,
+            run_creation_ms: runCreationMs,
+            file_load_ms: 0,
+            file_parse_ms: 0,
+            compaction_ms: compactionMs,
+            provider_ttft_ms: providerTtftMs,
+            first_byte_to_client_ms: firstByteToClientMs,
+            event_persist_ms: eventPersistMs,
+            run_finalize_ms: runFinalizeMs,
+            total_ms: timings.totalMs,
+            db_query_count: counter?.count ?? 0,
+            db_total_ms: counter?.totalMs ?? 0,
+            hidden_pre_stream_calls: 0,
+            input_tokens_estimate: inputTokensEstimate,
+            system_prompt_tokens_estimate: systemPromptTokensEstimate,
+            provider_name: resolved.runRequest.provider?.name ?? null,
+            model_name: resolved.runRequest.model?.model ?? null
+          });
+        } catch (metricsError) {
+          console.warn("[runs/execute] run metrics persist failed:", metricsError);
         }
 
         if (checkpoint) {

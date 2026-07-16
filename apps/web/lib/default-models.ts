@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createModel, listModels, type ModelRow, type Sql } from "@spielos/db";
+import { ensureEnvironmentModels, listModels, type ModelRow, type Sql } from "@spielos/db";
 import type { ModelCapabilities, ModelProvider } from "@spielos/core";
 
 type EnvironmentModel = {
@@ -55,7 +55,7 @@ export function environmentModelDefaults(): EnvironmentModel[] {
   const defaults: EnvironmentModel[] = [];
   if (process.env.MISTRAL_API_KEY) {
     defaults.push({
-      provider: "openai-compatible",
+      provider: "mistral",
       name: process.env.MISTRAL_MODEL_NAME?.trim() || "Mistral",
       model: process.env.MISTRAL_MODEL?.trim() || "mistral-small-latest",
       secretEnvKey: "MISTRAL_API_KEY",
@@ -63,7 +63,7 @@ export function environmentModelDefaults(): EnvironmentModel[] {
       capabilities: capabilities("MISTRAL", 128_000, 8_192)
     });
     defaults.push({
-      provider: "openai-compatible",
+      provider: "mistral",
       name: process.env.MISTRAL_MEDIUM_MODEL_NAME?.trim() || "Mistral Medium 3.5",
       model: process.env.MISTRAL_MEDIUM_MODEL?.trim() || "mistral-medium-3-5",
       secretEnvKey: "MISTRAL_API_KEY",
@@ -94,12 +94,116 @@ export function environmentModelDefaults(): EnvironmentModel[] {
   return defaults;
 }
 
+const modelCache = new Map<string, {
+  revision: string;
+  rows: ModelRow[];
+  refreshedAt: number;
+  stale: boolean;
+  refreshInFlight: boolean;
+}>();
+const MODEL_CACHE_FRESH_MS = 30_000;
+const MODEL_CACHE_HARD_MS = 5 * 60 * 1000;
+const modelCacheTimers = new Map<string, NodeJS.Timeout>();
+
+function environmentRevision(defaults: EnvironmentModel[]): string {
+  const material = defaults.map((model) => `${model.provider}:${model.model}:${model.secretEnvKey}:${model.baseUrl ?? ""}`).join("|");
+  return createHash("sha256").update(material).digest("hex").slice(0, 16);
+}
+
+function clearModelCacheTimer(orgId: string) {
+  const timer = modelCacheTimers.get(orgId);
+  if (timer) {
+    clearTimeout(timer);
+    modelCacheTimers.delete(orgId);
+  }
+}
+
+function scheduleHardExpire(orgId: string) {
+  clearModelCacheTimer(orgId);
+  modelCacheTimers.set(
+    orgId,
+    setTimeout(() => {
+      modelCache.delete(orgId);
+      modelCacheTimers.delete(orgId);
+    }, MODEL_CACHE_HARD_MS)
+  );
+}
+
+async function refreshModelCache(sql: Sql, orgId: string): Promise<void> {
+  const entry = modelCache.get(orgId);
+  if (!entry || entry.refreshInFlight) return;
+  entry.refreshInFlight = true;
+  try {
+    const defaults = environmentModelDefaults();
+    const revision = environmentRevision(defaults);
+    await ensureEnvironmentModels(
+      sql,
+      orgId,
+      defaults.map((model) => ({
+        id: stableUuid(`${orgId}:environment-model:${model.provider}:${model.model}`),
+        name: model.name,
+        provider: model.provider,
+        model: model.model,
+        baseUrl: model.baseUrl,
+        secretEnvKey: model.secretEnvKey,
+        config: { source: "environment", capabilities: model.capabilities },
+        enabled: true
+      }))
+    );
+    const rows = await listModels(sql, orgId);
+    modelCache.set(orgId, {
+      revision,
+      rows,
+      refreshedAt: Date.now(),
+      stale: false,
+      refreshInFlight: false
+    });
+    scheduleHardExpire(orgId);
+  } catch (err) {
+    const current = modelCache.get(orgId);
+    if (current) {
+      current.refreshInFlight = false;
+      current.stale = true;
+    }
+    console.warn(`[models] background refresh failed for org ${orgId}:`, err instanceof Error ? err.message : err);
+  }
+}
+
+export function invalidateModelCache(orgId?: string) {
+  if (orgId) {
+    modelCache.delete(orgId);
+    clearModelCacheTimer(orgId);
+  } else {
+    modelCache.clear();
+    for (const id of [...modelCacheTimers.keys()]) clearModelCacheTimer(id);
+  }
+}
+
 export async function listModelsWithEnvironmentDefaults(sql: Sql, orgId: string): Promise<ModelRow[]> {
-  const rows = await listModels(sql, orgId);
   const defaults = environmentModelDefaults();
-  for (const model of defaults) {
-    if (rows.some((row) => row.provider === model.provider && row.model === model.model)) continue;
-    const created = await createModel(sql, orgId, {
+  const revision = environmentRevision(defaults);
+  const now = Date.now();
+  const cached = modelCache.get(orgId);
+
+  if (cached && cached.revision === revision) {
+    const age = now - cached.refreshedAt;
+    if (!cached.stale) {
+      if (age >= MODEL_CACHE_FRESH_MS) {
+        cached.stale = true;
+        void refreshModelCache(sql, orgId);
+      }
+      return cached.rows;
+    }
+    // Stale: serve the previous value, kick a background refresh, do not await.
+    void refreshModelCache(sql, orgId);
+    return cached.rows;
+  }
+
+  // Cold load: no entry or env revision changed.
+  await ensureEnvironmentModels(
+    sql,
+    orgId,
+    defaults.map((model) => ({
       id: stableUuid(`${orgId}:environment-model:${model.provider}:${model.model}`),
       name: model.name,
       provider: model.provider,
@@ -108,8 +212,16 @@ export async function listModelsWithEnvironmentDefaults(sql: Sql, orgId: string)
       secretEnvKey: model.secretEnvKey,
       config: { source: "environment", capabilities: model.capabilities },
       enabled: true
-    });
-    rows.push(created);
-  }
+    }))
+  );
+  const rows = await listModels(sql, orgId);
+  modelCache.set(orgId, {
+    revision,
+    rows,
+    refreshedAt: now,
+    stale: false,
+    refreshInFlight: false
+  });
+  scheduleHardExpire(orgId);
   return rows;
 }

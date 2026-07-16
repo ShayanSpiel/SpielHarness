@@ -1,3 +1,4 @@
+import { createDecipheriv, createHash } from "node:crypto";
 import { capabilitiesForModel, type Model, type ModelProvider } from "@spielos/core";
 
 export type ChatMessage = {
@@ -52,8 +53,6 @@ function tryDecryptCredential(config: Record<string, unknown>): string | null {
   const encrypted = config.encryptedCredential as string | undefined;
   if (!encrypted) return null;
   try {
-    const crypto = require("node:crypto") as typeof import("node:crypto");
-    const { createDecipheriv, createHash } = crypto;
     const source =
       process.env.CONNECTION_ENCRYPTION_KEY ||
       (process.env.NODE_ENV !== "production"
@@ -100,6 +99,8 @@ export function envKeyFor(provider: string): string | null {
       return "OPENAI_API_KEY";
     case "anthropic":
       return "ANTHROPIC_API_KEY";
+    case "mistral":
+      return "MISTRAL_API_KEY";
     default:
       return null;
   }
@@ -136,5 +137,6 @@ export function envBaseFor(provider: string): string | null {
     return env.OPENAI_BASE_URL?.replace(/\/$/, "") ?? null;
   }
   if (provider === "anthropic") return env.ANTHROPIC_BASE_URL?.replace(/\/$/, "") ?? null;
+  if (provider === "mistral") return env.MISTRAL_BASE_URL?.replace(/\/$/, "") ?? null;
   return null;
 }

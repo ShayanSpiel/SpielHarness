@@ -1001,7 +1001,7 @@ function WelcomeScreen() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-4 text-center">
       <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-md bg-selected text-foreground-strong">
-        <Icon name="reading-glass" size={18} />
+        <Icon name={CONTEXT_ICON} size={18} />
       </div>
       <h1 className="text-xl font-semibold tracking-tight text-foreground">
         How can I help?
@@ -1070,16 +1070,22 @@ function ChatThreadInner() {
     currentRun.setLiveUsage(null);
     currentRun.clearEvents();
     currentRun.clearArtifacts();
-    if (restorableRunId && !isDedicatedRunPage) {
-      currentRun.setActiveRunId(restorableRunId);
-      fetch(`/api/runs/${restorableRunId}`, { cache: "no-store" })
+
+    // The restoration fetch owns its own AbortController. Cleanup aborts
+    // any in-flight request when the chat identity changes again so a
+    // stale response cannot replace fresher state.
+    const restorationController = new AbortController();
+    let debounceTimer: number | null = null;
+    const performRestore = (runId: string) => {
+      currentRun.setActiveRunId(runId);
+      fetch(`/api/runs/${runId}`, { cache: "no-store", signal: restorationController.signal })
         .then((response) => response.ok ? response.json() : null)
         .then((payload: null | { run: { type: string; status: RunStatus; state: Record<string, unknown> }; events: Array<{ id: string; org_id: string; run_id: string; event_type: string; sequence: number; node_id: string | null; node_title: string | null; skill_id: string | null; skill_name: string | null; message: string; payload: Record<string, unknown>; created_at: string }>; artifacts: import("@spielos/core").Artifact[] }) => {
           if (!payload) return;
           const latestStore = restoreStoreRef.current;
           const latestRun = restoreRunRef.current;
           if (latestStore.activeChatId !== activeChatId) return;
-          if (latestRun.activeRunId && latestRun.activeRunId !== restorableRunId) return;
+          if (latestRun.activeRunId && latestRun.activeRunId !== runId) return;
           latestRun.setRunType(payload.run.type as import("@spielos/core").RunType);
           latestRun.setRunStatus(payload.run.status);
           latestRun.setDurableState(payload.run.state as import("../../lib/run-context").DurableRunState);
@@ -1100,8 +1106,31 @@ function ChatThreadInner() {
           }
           for (const artifact of payload.artifacts) latestRun.appendArtifact(artifact);
         })
-        .catch(() => undefined);
+        .catch((err: unknown) => {
+          // AbortError is the normal cleanup path; ignore it. Other errors
+          // (network, parse) are also swallowed — the chat simply starts
+          // with no restored run.
+          if (err instanceof DOMException && err.name === "AbortError") return;
+        });
+    };
+
+    if (restorableRunId && !isDedicatedRunPage) {
+      // Debounce the restore on the home page so rapid chat switches do
+      // not fire a flood of /api/runs/:id calls. The dedicated run page
+      // restores immediately because the URL is the run's identity.
+      if (isDedicatedRunPage) {
+        performRestore(restorableRunId);
+      } else {
+        debounceTimer = window.setTimeout(() => {
+          debounceTimer = null;
+          performRestore(restorableRunId);
+        }, 200);
+      }
     }
+    return () => {
+      if (debounceTimer !== null) window.clearTimeout(debounceTimer);
+      restorationController.abort();
+    };
   // Restore only when the durable chat identity changes.
   }, [activeChatId, isDedicatedRunPage]);
 

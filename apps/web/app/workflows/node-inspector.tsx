@@ -2,6 +2,7 @@
 
 import type { Role } from "@spielos/core";
 import { Field, Input, Inspector, InspectorBody, InspectorEmptyState, InspectorHeader, InspectorSection, NativeSelect } from "@spielos/design-system";
+import { ENTITY_ICONS } from "@spielos/design-system/components";
 import { MentionTextarea } from "../../components/mention-textarea";
 import { ContractFlow } from "./contract-flow";
 import { PickList } from "./pick-list";
@@ -227,7 +228,7 @@ export function NodeInspector({
                 id: skill.id,
                 title: skill.name,
               }))}
-            iconName="reading-glass"
+            iconName={ENTITY_ICONS.skill}
             label="Skills"
             searchPlaceholder="Search skills"
             onToggle={(id) => toggleNodeList(node.id, "skillIds", id)}

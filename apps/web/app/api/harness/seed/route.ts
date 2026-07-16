@@ -10,12 +10,39 @@ import {
   listHarnessFiles,
   organizeUnfolderedGeneratedFiles,
   updateFile,
+  upsertBillingProvider,
+  upsertConnection,
   audit
 } from "@spielos/db";
 import { errorResponse, getOrg, requireAdmin } from "../../../../lib/server";
 import { SEED_ROOT } from "../../../../lib/repo-paths";
 
 const MANIFEST_PATH = path.join(SEED_ROOT, "harness-manifest.json");
+
+type CatalogEntry = {
+  id: string;
+  name: string;
+  description: string;
+  kind: "builtin" | "oauth" | "mcp" | "api";
+  icon: string;
+  logo?: string;
+  baseUrl?: string;
+  secretEnvKey?: string;
+  operations: Array<{
+    id: string;
+    label: string;
+    effect: "read" | "write" | "send";
+    method?: string;
+    inputParam?: string;
+  }>;
+};
+
+type BillingProviderEntry = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+};
 
 type ManifestEntry = {
   fileType?: string;
@@ -235,7 +262,7 @@ async function walk(
     }
     if (!entry.isFile()) continue;
     if (entry.name.startsWith(".")) continue;
-    if (rel.replaceAll(path.sep, "/") === "harness-manifest.json") continue;
+    if (/^(harness-manifest\.json|billing-providers\.json)$/.test(rel.replaceAll(path.sep, "/"))) continue;
     if (!/\.(md|markdown|json|yaml|yml)$/i.test(entry.name)) continue;
     const body = await readFile(full, "utf8");
     const { fileType: classifiedFileType, metadata: classifiedMetadata } = classify(rel, manifest);
@@ -329,6 +356,60 @@ function applyManifestToRole(
   return file;
 }
 
+const CATALOG_PATH = path.join(SEED_ROOT, "integrations", "catalog.json");
+const BILLING_PROVIDERS_PATH = path.join(SEED_ROOT, "billing-providers.json");
+
+async function seedConnections(sql: import("@spielos/db").Sql, orgId: string): Promise<number> {
+  let raw: string;
+  try {
+    raw = await readFile(CATALOG_PATH, "utf8");
+  } catch {
+    return 0;
+  }
+  const catalog: CatalogEntry[] = JSON.parse(raw);
+  let count = 0;
+  for (const entry of catalog) {
+    const status = entry.kind === "builtin" ? "configured"
+      : entry.kind === "oauth" ? "configured"
+      : entry.kind === "mcp" ? "needs_secret"
+      : entry.secretEnvKey ? "needs_secret"
+      : "configured";
+    await upsertConnection(sql, orgId, {
+      name: entry.name,
+      kind: entry.kind,
+      status,
+      baseUrl: entry.baseUrl ?? null,
+      secretEnvKey: entry.secretEnvKey ?? null,
+      config: { icon: entry.icon, logo: entry.logo, description: entry.description },
+      operations: entry.operations,
+      enabled: true
+    });
+    count += 1;
+  }
+  return count;
+}
+
+async function seedBillingProviders(sql: import("@spielos/db").Sql): Promise<number> {
+  let raw: string;
+  try {
+    raw = await readFile(BILLING_PROVIDERS_PATH, "utf8");
+  } catch {
+    return 0;
+  }
+  const providers: BillingProviderEntry[] = JSON.parse(raw);
+  let count = 0;
+  for (const bp of providers) {
+    await upsertBillingProvider(sql, {
+      id: bp.id,
+      name: bp.name,
+      enabled: bp.enabled,
+      config: bp.config
+    });
+    count += 1;
+  }
+  return count;
+}
+
 export async function GET() {
   try {
     const org = await getOrg();
@@ -401,16 +482,21 @@ export async function POST() {
       }));
     }
 
+    const seededConnections = await seedConnections(org.sql, org.orgId);
+    const seededBillingProviders = await seedBillingProviders(org.sql);
+
     const removedPlaceholders = await deleteEmptyPlaceholderFiles(org.sql, org.orgId);
     const removedLegacyDuplicates = await deleteLegacySeedDuplicates(org.sql, org.orgId);
     const organizedGeneratedFiles = await organizeUnfolderedGeneratedFiles(org.sql, org.orgId);
     const removedEmptyFolders = await deleteEmptyFolders(org.sql, org.orgId);
 
     return Response.json({
-      message: `Seed sync complete. Inserted ${seeded}, updated ${updated}, organized ${organizedGeneratedFiles} outputs, removed ${removedPlaceholders} empty placeholders, ${removedLegacyDuplicates} legacy duplicates, and ${removedEmptyFolders} empty folders.`,
+      message: `Seed sync complete. Inserted ${seeded}, updated ${updated}, seeded ${seededConnections} connections and ${seededBillingProviders} billing providers, organized ${organizedGeneratedFiles} outputs, removed ${removedPlaceholders} empty placeholders, ${removedLegacyDuplicates} legacy duplicates, and ${removedEmptyFolders} empty folders.`,
       discovered: seed.length,
       seeded,
       updated,
+      seededConnections,
+      seededBillingProviders,
       organizedGeneratedFiles,
       removedPlaceholders,
       removedLegacyDuplicates,

@@ -381,7 +381,7 @@ function RoleInspector({
   }
 
   const tabs: Array<{ id: typeof tab; label: string; icon: string }> = [
-    { id: "skills", label: "Skills", icon: "reading-glass" },
+    { id: "skills", label: "Skills", icon: ENTITY_ICONS.skill },
     { id: "input", label: "Input", icon: "arrow-down" },
     { id: "output", label: "Output", icon: "arrow-up" }
   ];
@@ -394,7 +394,7 @@ function RoleInspector({
             <Button aria-label="About role settings" icon="info" size="icon-xs" variant="ghost" />
           </Tooltip>
         }
-        icon="reading-glass"
+        icon={ENTITY_ICONS.skill}
         title="Role settings"
       />
       <InspectorTabs

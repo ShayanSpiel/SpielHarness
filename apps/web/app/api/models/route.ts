@@ -6,10 +6,10 @@ import {
 } from "@spielos/db";
 import type { Model, ModelProvider } from "@spielos/core";
 import { errorResponse, getOrg, HttpError, requireAdmin } from "../../../lib/server";
-import { listModelsWithEnvironmentDefaults } from "../../../lib/default-models";
+import { invalidateModelCache, listModelsWithEnvironmentDefaults } from "../../../lib/default-models";
 import { encryptConnectionSecret } from "../../../lib/connection-secrets";
 
-const ALLOWED_PROVIDERS = ["openai-compatible", "anthropic", "custom"];
+const ALLOWED_PROVIDERS = ["openai-compatible", "anthropic", "mistral", "custom"];
 
 function safeEnvironmentKey(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -27,9 +27,12 @@ function toClient(row: {
   config: Record<string, unknown>;
   enabled: boolean;
 }): Model {
-  const allowed = ["openai-compatible", "anthropic", "custom"] as const;
+  const allowed = ["openai-compatible", "anthropic", "mistral", "custom"] as const;
   const provider = (allowed.find((k) => k === row.provider) ?? "openai-compatible") as ModelProvider["provider"];
   const safeConfig = row.config ? Object.fromEntries(Object.entries(row.config).filter(([k]) => k !== "encryptedCredential")) : {};
+  if (row.config?.encryptedCredential) {
+    safeConfig.hasApiKey = true;
+  }
   return {
     id: row.id,
     orgId: row.org_id,
@@ -49,6 +52,7 @@ export async function GET() {
     const models = await listModelsWithEnvironmentDefaults(org.sql, org.orgId);
     return Response.json({ models: models.map(toClient) });
   } catch (err) {
+    console.error("[api/models] GET failed:", err);
     return errorResponse(err);
   }
 }
@@ -91,6 +95,7 @@ export async function POST(request: Request) {
       config,
       enabled: body.enabled ?? true
     });
+    invalidateModelCache(org.orgId);
     return Response.json({ model: toClient(row) }, { status: 201 });
   } catch (err) {
     return errorResponse(err);
@@ -140,6 +145,7 @@ export async function PUT(request: Request) {
       enabled: body.enabled
     });
     if (!row) throw new HttpError(404, "Model not found");
+    invalidateModelCache(org.orgId);
     return Response.json({ model: toClient(row) });
   } catch (err) {
     return errorResponse(err);
@@ -154,6 +160,7 @@ export async function DELETE(request: Request) {
     if (!id) throw new HttpError(400, "id is required");
     const ok = await deleteModel(org.sql, org.orgId, id);
     if (!ok) throw new HttpError(404, "Model not found");
+    invalidateModelCache(org.orgId);
     return Response.json({ ok: true });
   } catch (err) {
     return errorResponse(err);

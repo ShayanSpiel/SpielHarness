@@ -198,7 +198,33 @@ export type RunRequest = {
   checkpoint?: RunCheckpoint;
   // Cancellation signal.
   signal?: AbortSignal;
+  // Phase 3: durable control-plane check. Called at node boundaries.
+  // Returns `"cancel"` to stop the run, `"pause"` to checkpoint with
+  // waiting_human, or `null` to continue. This is the durable path —
+  // the in-memory abort is handled separately via `signal`.
+  checkControl?: () => "cancel" | "pause" | null;
 };
+
+// ── Node output disposition (controls artifact persistence) ───
+type ToolKindForDisposition = "http" | "mcp_call" | "knowledge_search" | "harness_file" | "memory_write";
+
+export type NodeOutputDisposition =
+  | { kind: "assistant_text" }
+  | { kind: "tool_evidence"; persist: boolean }
+  | { kind: "artifact"; artifactType: Artifact["type"] }
+  | { kind: "harness_file"; fileType: string }
+  | { kind: "eval_report" };
+
+export type NodeOutput = {
+  text: string;
+  disposition: NodeOutputDisposition;
+};
+
+function toolKindToDisposition(kind: ToolKindForDisposition): NodeOutputDisposition {
+  if (kind === "harness_file") return { kind: "harness_file", fileType: "harness_role" };
+  if (kind === "memory_write") return { kind: "artifact", artifactType: "evidence" };
+  return { kind: "tool_evidence", persist: false };
+}
 
 // ── Yielded items (the streaming protocol) ────────────────────
 export type RunYield =
@@ -234,6 +260,7 @@ const RunStateAnnotation = Annotation.Root({
   harnessFileAction: Annotation<HarnessFileAction | undefined>(),
   memoryProposalAction: Annotation<MemoryProposalAction | undefined>(),
   resume: Annotation<Record<string, unknown> | undefined>(),
+  checkControl: Annotation<(() => "cancel" | "pause" | null) | undefined>(),
 
   // Dynamic state
   completedNodes: Annotation<string[]>({
@@ -500,7 +527,7 @@ function executeEval(
       label: r.label,
       type: r.type,
       value: r.value,
-      weight: r.weight
+      importance: r.importance
     }))
   );
 }
@@ -752,7 +779,7 @@ async function reactLoop(
   input: string,
   emitEvent: (event: RunEvent) => RunEvent,
   signal?: AbortSignal
-): Promise<string> {
+): Promise<NodeOutput> {
   if (!state.provider || !state.model) {
     throw new Error(
       `Role "${role.name}" needs an LLM. Configure a model in Settings before running.`
@@ -762,10 +789,18 @@ async function reactLoop(
   const toolDefs = buildToolDefinitions(toolSkills);
   const system = buildToolSystemPrompt(state, node, role, toolDefs);
 
-  const messages: ChatMessage[] = [
+  // Immutable base conversation context. The runtime assembles system +
+  // user input exactly once before the first ReAct iteration. Later
+  // iterations only append iteration-local assistant, tool-call, and
+  // observation messages; retrieval and full context assembly do not
+  // re-run.
+  const baseMessages: ChatMessage[] = [
     { role: "system", content: system },
     { role: "user", content: input },
   ];
+  const messages: ChatMessage[] = [...baseMessages];
+  let baseAssembled = false;
+  let lastContextTokens: number | null = null;
 
   const callHistory: string[] = [];
   const modelCapabilities = capabilitiesForModel(state.model);
@@ -777,35 +812,64 @@ async function reactLoop(
   let missingRequiredToolAttempts = 0;
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
-    const contextAssembly = await assembleConversationContext({
-      provider: state.provider,
-      model: state.model,
-      system,
-      history: messages.slice(1),
-      onUsage: state.onUsage,
-      signal
-    });
-    if (contextAssembly.compacted) {
-      messages.splice(0, messages.length, ...contextAssembly.messages);
-      emitEvent(makeEvent(
-        state.orgId,
-        state.runId,
-        "status",
-        `${node.title} compacted its working context and preserved recent tool evidence.`,
-        {
-          nodeId: node.id,
-          nodeTitle: node.title,
-          payload: {
-            category: "compaction",
-            scope: "node",
-            summary: contextAssembly.compaction?.summary ?? "",
-            compactedMessageCount: contextAssembly.compaction?.compactedMessageCount ?? contextAssembly.removedMessages,
-            removedMessages: contextAssembly.removedMessages,
-            createdAt: contextAssembly.compaction?.createdAt ?? new Date().toISOString()
-          }
-        }
-      ));
+    // Phase 3: durable control check at each tool iteration boundary.
+    if (state.checkControl) {
+      const action = state.checkControl();
+      if (action === "cancel") {
+        emitEvent(makeEvent(
+          state.orgId,
+          state.runId,
+          "run_cancelled",
+          `${node.title} cancelled mid-loop.`,
+          { nodeId: node.id, nodeTitle: node.title, payload: { category: "cancel" } }
+        ));
+        throw new Error("Run cancelled.");
+      }
+      if (action === "pause") {
+        emitEvent(makeEvent(
+          state.orgId,
+          state.runId,
+          "status",
+          `${node.title} paused at iteration ${iteration + 1}.`,
+          { nodeId: node.id, nodeTitle: node.title, payload: { category: "pause" } }
+        ));
+        return { text: `${node.title} paused.`, disposition: { kind: "assistant_text" } };
+      }
     }
+    if (!baseAssembled) {
+      const contextAssembly = await assembleConversationContext({
+        provider: state.provider,
+        model: state.model,
+        system,
+        history: messages.slice(1),
+        onUsage: state.onUsage,
+        signal
+      });
+      if (contextAssembly.compacted) {
+        messages.splice(0, messages.length, ...contextAssembly.messages);
+        emitEvent(makeEvent(
+          state.orgId,
+          state.runId,
+          "status",
+          `${node.title} compacted its working context and preserved recent tool evidence.`,
+          {
+            nodeId: node.id,
+            nodeTitle: node.title,
+            payload: {
+              category: "compaction",
+              scope: "node",
+              summary: contextAssembly.compaction?.summary ?? "",
+              compactedMessageCount: contextAssembly.compaction?.compactedMessageCount ?? contextAssembly.removedMessages,
+              removedMessages: contextAssembly.removedMessages,
+              createdAt: contextAssembly.compaction?.createdAt ?? new Date().toISOString()
+            }
+          }
+        ));
+      }
+      baseAssembled = true;
+      lastContextTokens = contextAssembly.inputTokens;
+    }
+    const writer = getWriter();
     let response = "";
     const stream = streamChat(state.provider, state.model, messages, {
       signal,
@@ -814,7 +878,13 @@ async function reactLoop(
     });
     for await (const delta of stream) {
       response += delta;
+      // Stream deltas during generation so the UI sees text as it
+      // arrives, rather than receiving the entire response only at the
+      // end of the ReAct iteration.
+      writer?.({ kind: "text_delta", text: delta });
     }
+    // Avoid retaining unused state from the prior iteration.
+    void lastContextTokens;
 
     const calls = parseToolCalls(response);
     if (calls.length === 0) {
@@ -838,11 +908,15 @@ async function reactLoop(
         ));
         continue;
       }
-      if (toolEvidence.length === 0) return response;
-      const ledger = toolEvidence.map((entry, index) =>
-        `${index + 1}. \`${entry.tool}\` — ${entry.success ? "success" : "failure"}\n   ${entry.result.replace(/\s+/g, " ").slice(0, 1200)}`
-      ).join("\n");
-      return `${response}\n\n## Runtime Tool Evidence (authoritative)\n\n${ledger}`;
+      // Final assistant text. Tool evidence lives in events; we do not
+      // append a ledger to the assistant output. The disposition carries
+      // the tool-evidence kind so the node executor can decide whether
+      // the model's synthesis is a real artifact or just evidence.
+      const usesTools = toolEvidence.length > 0;
+      const disposition: NodeOutputDisposition = usesTools
+        ? { kind: "tool_evidence", persist: false }
+        : { kind: "assistant_text" };
+      return { text: response, disposition };
     }
     missingRequiredToolAttempts = 0;
 
@@ -1426,11 +1500,14 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
     const toolSkills = nodeSkills.filter(
       (s): s is ToolSkill => s.kind === "http" || s.kind === "mcp_call" || s.kind === "knowledge_search" || s.kind === "harness_file" || s.kind === "memory_write"
     );
+    let nodeOutputDisposition: NodeOutputDisposition = { kind: "assistant_text" };
     if (toolSkills.length > 0) {
       const hasLLM = state.provider && state.model;
       if (hasLLM) {
         try {
-          output = await reactLoop(state, workflowNode, role, toolSkills, output, emitEvent, signal);
+          const nodeOutput = await reactLoop(state, workflowNode, role, toolSkills, output, emitEvent, signal);
+          output = nodeOutput.text;
+          nodeOutputDisposition = nodeOutput.disposition;
         } catch (err) {
           const message = err instanceof Error ? err.message : "ReAct loop failed.";
           emitEvent(makeEvent(
@@ -1452,6 +1529,7 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
           ));
           try {
             output = await executeDirectTool(skill, output, state, workflowNode, signal);
+            nodeOutputDisposition = toolKindToDisposition(skill.kind);
           } catch (err) {
             const message = err instanceof Error ? err.message : `Tool ${skill.name} failed.`;
             emitEvent(makeEvent(
@@ -1483,8 +1561,14 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
       return { events, status: "failed", failed: true, failedNode: workflowNode.id, error: errorEvent.message };
     }
 
+    // Persist a terminal artifact only when the disposition allows it.
+    // `tool_evidence` with `persist: false` (search/knowledge) lives in the
+    // events timeline and never produces an artifact. Other dispositions
+    // (assistant_text, artifact, harness_file, eval_report) follow the
+    // existing persistence path.
+    const suppressArtifact = nodeOutputDisposition.kind === "tool_evidence" && nodeOutputDisposition.persist === false;
     const alreadyEmittedNodeArtifact = artifacts.some((artifact) => artifact.metadata.nodeId === workflowNode.id);
-    if (isTerminalNode && output.trim() && !alreadyEmittedNodeArtifact) {
+    if (isTerminalNode && !suppressArtifact && output.trim() && !alreadyEmittedNodeArtifact) {
       const artifact = makeArtifact(
         state.orgId,
         state.runId,
@@ -1675,6 +1759,7 @@ function buildInitialState(req: RunRequest) {
     harnessFileAction: req.harnessFileAction,
     memoryProposalAction: req.memoryProposalAction,
     resume: req.resume,
+    checkControl: req.checkControl,
     completedNodes: cp?.completedNodes ?? [],
     outputs: cp?.outputs ?? {},
     artifacts: cp?.artifacts ?? [],
@@ -1747,6 +1832,47 @@ export async function* streamRun(
     signal: runtimeRequest.signal
   });
 
+  // Phase 3: durable control check helper. Called at the start of
+  // each chunk. Returns the control action (or null to continue).
+  const checkControl = req.checkControl ?? (() => null);
+  const consumeControl = (boundary: "pre-chunk" | "pre-chat"): RunYield[] | null => {
+    const action = checkControl();
+    if (!action) return null;
+    if (action === "cancel") {
+      return [{ kind: "done", status: "cancelled" }];
+    }
+    if (action === "pause") {
+      const paused: RunCheckpoint = {
+        completedNodes: [],
+        outputs: {},
+        artifacts: [],
+        events: [],
+        evalAttempts: {},
+        pendingHumanInput: null,
+        status: "waiting_human",
+        failed: false,
+        failedNode: null,
+        error: null,
+        retryNodeId: null,
+        goal: initial.goal,
+        budget: initial.budget,
+        progress: {
+          milestone: "Run paused",
+          completedActions: [],
+          nextActions: ["Resume the run when ready."],
+          unresolvedIssues: []
+        },
+        verification: { required: true, status: "pending", evidence: [], checkedAt: null },
+        pause: { requested: true, reason: "Paused at " + boundary, requestedAt: new Date().toISOString() }
+      };
+      return [
+        { kind: "checkpoint", state: paused },
+        { kind: "done", status: "waiting_human" }
+      ];
+    }
+    return null;
+  };
+
   const yieldedEvents = new Set(req.checkpoint?.events.map((event) => event.id) ?? []);
   const yieldedArtifacts = new Set(req.checkpoint?.artifacts.map((artifact) => artifact.id) ?? []);
   let lastHumanRequest: HumanInputRequest | null = null;
@@ -1758,6 +1884,12 @@ export async function* streamRun(
   let yieldedText = false;
 
   for await (const chunk of stream) {
+    // Phase 3: durable control check at every graph boundary.
+    const control = consumeControl("pre-chunk");
+    if (control) {
+      for (const item of control) yield item;
+      return;
+    }
     const [mode, payload] = chunk as ["values" | "custom", unknown];
     if (mode === "custom") {
       const c = payload as {
@@ -1956,6 +2088,54 @@ export async function* streamChatRun(
   if (history.at(-1)?.role !== "user" || history.at(-1)?.content !== req.prompt) {
     history.push({ role: "user", content: req.prompt });
   }
+
+  // Phase 3: durable control check before the model call.
+  const checkControl = req.checkControl ?? (() => null);
+  {
+    const action = checkControl();
+    if (action === "cancel") {
+      yield {
+        kind: "event",
+        event: makeEvent(req.orgId, req.runId, "run_cancelled", "Run cancelled before model call.")
+      };
+      yield { kind: "done", status: "cancelled" };
+      return;
+    }
+    if (action === "pause") {
+      const paused: RunCheckpoint = {
+        completedNodes: [],
+        outputs: {},
+        artifacts: [],
+        events: [],
+        evalAttempts: {},
+        pendingHumanInput: null,
+        status: "waiting_human",
+        failed: false,
+        failedNode: null,
+        error: null,
+        retryNodeId: null,
+        goal: req.goal ?? { objective: req.prompt, constraints: [], successCriteria: ["Return a grounded response."] },
+        budget: {
+          maxInputTokens: null,
+          maxOutputTokens: null,
+          maxDurationMs: null,
+          maxToolCalls: null,
+          inputTokens: 0,
+          outputTokens: 0,
+          toolCalls: 0,
+          startedAt,
+          deadlineAt
+        },
+        progress: { milestone: "Run paused", completedActions: [], nextActions: ["Resume the run when ready."], unresolvedIssues: [] },
+        verification: { required: true, status: "pending", evidence: [], checkedAt: null },
+        pause: { requested: true, reason: "Paused before model call", requestedAt: new Date().toISOString() }
+      };
+      yield { kind: "checkpoint", state: paused };
+      yield { kind: "done", status: "waiting_human" };
+      return;
+    }
+  }
+
   let assembly;
   let content = "";
   try {

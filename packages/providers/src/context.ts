@@ -79,14 +79,30 @@ export async function assembleConversationContext(args: {
       : [])
   ];
   const initial = [...prefix, ...uncompactedHistory];
+
+  // First turn (no prior history worth compacting) returns before any token
+  // count call. The runtime never blocks the first token on a token-count
+  // round-trip when there is nothing to compact.
+  if (uncompactedHistory.length <= 1) {
+    const estimate = uncompactedHistory.reduce((sum, message) => sum + roughTokens(message), 0) + prefix.reduce((sum, message) => sum + roughTokens(message), 0);
+    return {
+      messages: initial,
+      inputTokens: estimate,
+      inputLimit,
+      tokenCountSource: "estimate",
+      compacted: false,
+      compaction: args.previousCompaction ?? null,
+      removedMessages: 0
+    };
+  }
+
   const initialCount = await countInputTokens({
     provider: args.provider,
     model: args.model,
     messages: initial,
     signal: args.signal
   });
-  // Skip compaction on first turn — nothing to compact yet.
-  if (initialCount.count <= inputLimit * capabilities.compactionThreshold || uncompactedHistory.length <= 1) {
+  if (initialCount.count <= inputLimit * capabilities.compactionThreshold) {
     return {
       messages: initial,
       inputTokens: initialCount.count,

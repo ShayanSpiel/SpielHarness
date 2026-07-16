@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
+    "dev:webpack": "next dev",
+    "dev:turbopack": "next dev --turbopack",
     "build": "next build --experimental-app-only",
     "lint": "eslint . --max-warnings=0",
     "check:colors": "bash ../../scripts/check-no-raw-colors.sh"

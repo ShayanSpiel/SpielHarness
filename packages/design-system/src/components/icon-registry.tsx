@@ -126,6 +126,7 @@ const DEFAULT_ICON_MAP: Record<string, string> = {
   "external-link": "LinkAlt",
   activity: "TrendingUp",
   layers: "Layers",
+  "layers-down-right": "LayersDownRight",
   "grip-vertical": "Move",
   move: "Move",
   brain: "Brain",

@@ -3,9 +3,9 @@
   "description": "Runs mechanical checks before a draft can be marked ready.",
   "overallThreshold": 75,
   "rubrics": [
-    { "id": "rubric-em-dash", "label": "No Em Dashes", "type": "missing", "value": "\u2014", "weight": 15, "passThreshold": 100 },
-    { "id": "rubric-banned-phrases", "label": "No Banned Phrases", "type": "missing", "value": "Like if you agree,Share if this resonates,Follow for more,TOFU,MOFU,BOFU,Consistency is king", "weight": 25, "passThreshold": 100 },
-    { "id": "rubric-frontmatter", "label": "Required Frontmatter", "type": "contains", "value": "title,platform,reader,pain,belief,point,meaning,proof,status,source", "weight": 35, "passThreshold": 80 },
-    { "id": "rubric-char-count", "label": "Character Count Limit", "type": "max_words", "value": "280", "weight": 25, "passThreshold": 90 }
+    { "id": "rubric-em-dash", "label": "No Em Dashes", "type": "missing", "value": "\u2014", "importance": 15 },
+    { "id": "rubric-banned-phrases", "label": "No Banned Phrases", "type": "missing", "value": "Like if you agree,Share if this resonates,Follow for more,TOFU,MOFU,BOFU,Consistency is king", "importance": 25 },
+    { "id": "rubric-frontmatter", "label": "Required Frontmatter", "type": "contains", "value": "title,platform,reader,pain,belief,point,meaning,proof,status,source", "importance": 35 },
+    { "id": "rubric-char-count", "label": "Character Count Limit", "type": "max_words", "value": "280", "importance": 25 }
   ]
 }

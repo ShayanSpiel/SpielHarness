@@ -92,8 +92,6 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
   const [humanInputRequest, setHumanInputRequest] = useState<HumanInputRequest | null>(null);
   const [status, setStatus] = useState<RunLifecycleStatus>("idle");
   const [runType, setRunType] = useState<RunType | null>(null);
-  const [activeActor, setActiveActor] = useState<{ roleId: string; roleName: string } | null>(null);
-  const [activeActors, setActiveActors] = useState<Array<{ agentId: string; roleId: string; roleName: string; nodeTitle: string }>>([]);
   const [continuationText, setContinuationText] = useState("");
 
   const addContext = useCallback((item: ContextItem) => {
@@ -113,8 +111,6 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
     setStatus(next);
     if (next !== "running") setActivity(null);
     if (next === "completed" || next === "failed" || next === "cancelled") {
-      setActiveActor(null);
-      setActiveActors([]);
       setHumanInputRequest(null);
     }
   }, []);
@@ -128,8 +124,6 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
     setActivity(initialActivity);
     setHumanInputRequest(null);
     setRunType(type);
-    setActiveActor(null);
-    setActiveActors([]);
     setContinuationText("");
     setStatus("running");
   }, []);
@@ -140,22 +134,6 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
         ? current
         : orderRunEvents([...current, event])
     );
-    const roleId = event.payload?.roleId;
-    const roleName = event.payload?.roleName;
-    if (
-      typeof roleId === "string" &&
-      typeof roleName === "string" &&
-      (event.type === "node_started" || event.type === "skill_started" || event.type === "tool_call_started")
-    ) {
-      setActiveActor({ roleId, roleName });
-      const agentId = typeof event.payload?.agentId === "string" ? event.payload.agentId : event.nodeId ?? roleId;
-      setActiveActors((current) => current.some((actor) => actor.agentId === agentId)
-        ? current
-        : [...current, { agentId, roleId, roleName, nodeTitle: event.nodeTitle ?? roleName }]);
-    }
-    if ((event.type === "node_completed" || event.type === "node_failed" || event.type === "node_skipped") && event.nodeId) {
-      setActiveActors((current) => current.filter((actor) => actor.agentId !== event.nodeId));
-    }
     if (
       event.type === "run_started" ||
       event.type === "node_started" ||
@@ -173,6 +151,35 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
   }, [setRunStatus]);
 
   const clearEvents = useCallback(() => setEvents([]), []);
+
+  // Derive `activeActor` and `activeActors` from the events timeline. The
+  // timeline is the source of truth; mirroring derived state was creating
+  // double bookkeeping and racing with later events. Use a memo so each
+  // event append recomputes once per render.
+  const { activeActor: derivedActiveActor, activeActors: derivedActiveActors } = useMemo(() => {
+    let latest: { roleId: string; roleName: string } | null = null;
+    const map = new Map<string, { agentId: string; roleId: string; roleName: string; nodeTitle: string }>();
+    const ordered = orderRunEvents(events);
+    for (const event of ordered) {
+      const roleId = event.payload?.roleId;
+      const roleName = event.payload?.roleName;
+      if (
+        typeof roleId === "string" &&
+        typeof roleName === "string" &&
+        (event.type === "node_started" || event.type === "skill_started" || event.type === "tool_call_started")
+      ) {
+        latest = { roleId, roleName };
+        const agentId = typeof event.payload?.agentId === "string" ? event.payload.agentId : event.nodeId ?? roleId;
+        if (!map.has(agentId)) {
+          map.set(agentId, { agentId, roleId, roleName, nodeTitle: event.nodeTitle ?? roleName });
+        }
+      }
+      if ((event.type === "node_completed" || event.type === "node_failed" || event.type === "node_skipped") && event.nodeId) {
+        map.delete(event.nodeId);
+      }
+    }
+    return { activeActor: latest, activeActors: Array.from(map.values()) };
+  }, [events]);
   const appendContinuationText = useCallback((text: string) => {
     setContinuationText((current) => current + text);
   }, []);
@@ -196,8 +203,6 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
     setHumanInputRequest(null);
     setStatus("idle");
     setRunType(null);
-    setActiveActor(null);
-    setActiveActors([]);
     setContinuationText("");
   }, []);
 
@@ -236,8 +241,8 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
       setRunStatus,
       runType,
       setRunType,
-      activeActor,
-      activeActors,
+      activeActor: derivedActiveActor,
+      activeActors: derivedActiveActors,
       continuationText,
       appendContinuationText,
       clearContinuationText,
@@ -271,8 +276,8 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
       startRun,
       setRunStatus,
       runType,
-      activeActor,
-      activeActors,
+      derivedActiveActor,
+      derivedActiveActors,
       continuationText,
       appendContinuationText,
       clearContinuationText,

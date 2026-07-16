@@ -14,6 +14,8 @@ import {
 import type { ChatMessage as DbChatMessage } from "@spielos/core";
 import { toast } from "@spielos/design-system";
 import { fetchJsonWithRetry } from "./fetch-json";
+import { useRealtimeSubscription } from "./use-realtime";
+import type { DomainEvent } from "./realtime";
 
 
 export type Chat = {
@@ -53,8 +55,26 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const initialLoaded = useRef(false);
   const loadErrorShown = useRef(false);
+  const reloadRef = useRef<(() => Promise<void>) | null>(null);
+
+  // Phase 4: org-scoped realtime. Any run status change fans out to
+  // every chat in the workspace so the active-run pointer and the
+  // waiting_human badges stay in sync without polling.
+  const orgCookie = typeof document === "undefined" ? null : document.cookie
+    .split("; ")
+    .find((row) => row.startsWith("spielos.org="))
+    ?.split("=")[1] ?? null;
+  const realtimeListener = useCallback((event: DomainEvent) => {
+    if (event.type === "run.status.changed" || event.type === "context.invalidated") {
+      void reloadRef.current?.();
+    }
+  }, []);
+  useRealtimeSubscription(orgCookie ? `org:${orgCookie}` : null, orgCookie, realtimeListener);
 
   const reload = useCallback(async () => {
+    // Phase 4: expose the latest reload so the realtime listener can
+    // trigger a refresh on run status changes.
+    reloadRef.current = reload;
     // HttpOnly session cookies are deliberately invisible to client code.
     // Protected routes should load through the authenticated API instead of
     // guessing authentication state from document.cookie.

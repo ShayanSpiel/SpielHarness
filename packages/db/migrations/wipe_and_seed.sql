@@ -1,13 +1,17 @@
--- SpielOS: Quick-wipe existing data and reseed the demo org.
+-- SpielOS: Wipe existing data and reseed the demo org.
 -- WARNING: This deletes ALL existing data.
 --
--- Prerequisite: Migrations must already be applied (run `npm run db:migrate` first).
+-- This file is DATA ONLY. Schema lives in the numbered migrations under
+-- packages/db/migrations (e.g. 0001_init.sql). Apply migrations with
+-- `npm run db:migrate` first; this file is then run as part of
+-- `npm run db:seed` and `npm run db:reset`.
 --
--- Usage:
---   1. psql "$DATABASE_URL" -f packages/db/migrations/0001_init.sql   (first time only)
---   2. psql "$DATABASE_URL" -f packages/db/migrations/0002_*.sql ...  (apply all)
---   3. psql "$DATABASE_URL" -f packages/db/migrations/wipe_and_seed.sql
---   4. curl -X POST http://localhost:3000/api/harness/seed
+-- Usage (manual):
+--   1. npm run db:migrate
+--   2. psql "$DATABASE_URL" -f packages/db/migrations/wipe_and_seed.sql
+--   3. curl -X POST http://localhost:3000/api/harness/seed
+-- Or in one step:
+--   npm run db:reset
 
 -- ── Step 1: Delete data (preserve schema) ────────────────────
 

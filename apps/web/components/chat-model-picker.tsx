@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Icon, Pill, Popover, PopoverContent, PopoverTrigger, cn } from "@spielos/design-system";
+import { Button, Icon, Pill, Popover, PopoverContent, PopoverTrigger, ProviderLogo, cn } from "@spielos/design-system";
 import { capabilitiesForModel, type Model } from "@spielos/core";
 import { useMemo, useState } from "react";
 
@@ -63,8 +63,9 @@ export function ChatModelPicker({
         <div className="max-h-72 overflow-y-auto">
           {groups.map(([provider, providerModels]) => (
             <section className="mb-1 last:mb-0" key={provider}>
-              <div className="flex items-center px-2 py-1 text-3xs font-medium uppercase tracking-wider text-muted-foreground">
-                <span>{providerLabel(provider)}</span>
+                <div className="flex items-center gap-1.5 px-2 py-1 text-3xs font-medium uppercase tracking-wider text-muted-foreground">
+                  <ProviderLogo provider={provider} size={10} />
+                  <span>{providerLabel(provider)}</span>
                 <span className="ml-auto tabular-nums">{providerModels.length}</span>
               </div>
               <div className="grid gap-0.5">

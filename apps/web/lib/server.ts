@@ -1,5 +1,5 @@
 import { cookies, headers } from "next/headers";
-import { createSql, getMembership, getUserOrgs, type Sql } from "@spielos/db";
+import { createSql, getUserOrgs, type OrgWithMembership, type Sql } from "@spielos/db";
 import { auth } from "./auth";
 
 export class HttpError extends Error {
@@ -29,11 +29,56 @@ export type OrgContext = {
 };
 
 const sessionCache = new Map<string, { userId: string; expiresAt: number }>();
-const SESSION_TTL = 30_000;
+const DEFAULT_SESSION_TTL_MS = 10 * 60 * 1000;
+const SESSION_TTL = (() => {
+  const raw = Number(process.env.SESSION_CACHE_TTL_MS);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_SESSION_TTL_MS;
+})();
+
+type CachedOrg = { userId: string; orgId: string; role: "owner" | "admin"; memberships: OrgWithMembership[] };
+const orgCache = new Map<string, { entry: CachedOrg; expiresAt: number }>();
+const ORG_CACHE_TTL_MS = (() => {
+  const raw = Number(process.env.ORG_CACHE_TTL_MS);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_SESSION_TTL_MS;
+})();
+
+function readOrgCache(userId: string): CachedOrg | null {
+  const hit = orgCache.get(userId);
+  if (!hit) return null;
+  if (hit.expiresAt <= Date.now()) {
+    orgCache.delete(userId);
+    return null;
+  }
+  return hit.entry;
+}
+
+function writeOrgCache(userId: string, entry: CachedOrg): void {
+  orgCache.set(userId, { entry, expiresAt: Date.now() + ORG_CACHE_TTL_MS });
+}
 
 function extractSessionToken(cookieHeader: string): string | null {
   const match = cookieHeader.match(/better-auth\.session_token=([^;]+)/);
   return match?.[1] ?? null;
+}
+
+function isRetriableSessionError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const message = err.message ?? "";
+  return /terminat|closed|reset|connection|timeout|ETIMEDOUT|ECONNRESET|EPIPE|pool/i.test(message);
+}
+
+async function getSessionWithRetry(cookieHeader: string, attempts = 1): Promise<Awaited<ReturnType<typeof auth.api.getSession>>> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await auth.api.getSession({ headers: new Headers({ cookie: cookieHeader }) });
+    } catch (err) {
+      lastError = err;
+      if (!isRetriableSessionError(err) || attempt === attempts - 1) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+  }
+  throw lastError;
 }
 
 async function resolveUserId(cookieHeader: string): Promise<string | null> {
@@ -43,9 +88,10 @@ async function resolveUserId(cookieHeader: string): Promise<string | null> {
   const cached = sessionCache.get(token);
   if (cached && cached.expiresAt > Date.now()) return cached.userId;
 
-  const session = await auth.api.getSession({
-    headers: new Headers({ cookie: cookieHeader }),
-  }).catch(() => null);
+  const session = await getSessionWithRetry(cookieHeader).catch((err) => {
+    console.warn("[auth] getSession failed after retries:", err instanceof Error ? err.message : err);
+    return null;
+  });
 
   if (session?.user) {
     sessionCache.set(token, {
@@ -77,45 +123,55 @@ export async function getOrg(): Promise<OrgContext> {
   const orgIdCookie = cookieStore.get("spielos.org")?.value;
   const roleCookie = cookieStore.get("spielos.org-role")?.value as "owner" | "admin" | undefined;
 
-  if (orgIdCookie && roleCookie) {
-    const membership = await getMembership(sql, userId, orgIdCookie);
-    if (membership) {
-      return {
-        sql,
-        orgId: orgIdCookie,
+  // Warm path: cached membership list for this user. OrgId from the cookie
+  // is honored if the user is still a member; otherwise we fall through to
+  // a single `getUserOrgs` and refresh the cache.
+  const cached = readOrgCache(userId);
+  let memberships: OrgWithMembership[] | null = cached?.memberships ?? null;
+
+  if (!memberships) {
+    memberships = await getUserOrgs(sql, userId);
+    if (memberships.length > 0) {
+      const first = memberships[0];
+      writeOrgCache(userId, {
         userId,
-        role: membership.role as "owner" | "admin",
-        isDemo: false,
-      };
+        orgId: first.org_id,
+        role: first.role as "owner" | "admin",
+        memberships
+      });
     }
   }
 
   if (orgIdCookie) {
-    const userOrgs = await getUserOrgs(sql, userId);
-    const match = userOrgs.find((o) => o.org_id === orgIdCookie);
+    const match = memberships.find((m) => m.org_id === orgIdCookie);
     if (match) {
+      const role = (roleCookie ?? (match.role as "owner" | "admin")) as "owner" | "admin";
       return {
         sql,
         orgId: orgIdCookie,
         userId,
-        role: match.role as "owner" | "admin",
-        isDemo: false,
+        role,
+        isDemo: false
       };
     }
   }
 
-  const userOrgs = await getUserOrgs(sql, userId);
-  if (userOrgs.length > 0) {
+  if (memberships.length > 0) {
+    const first = memberships[0];
     return {
       sql,
-      orgId: userOrgs[0].org_id,
+      orgId: first.org_id,
       userId,
-      role: userOrgs[0].role as "owner" | "admin",
-      isDemo: false,
+      role: first.role as "owner" | "admin",
+      isDemo: false
     };
   }
 
   throw new HttpError(403, "No workspace found.");
+}
+
+export function invalidateOrgCache(userId: string): void {
+  orgCache.delete(userId);
 }
 
 export function requireRole(

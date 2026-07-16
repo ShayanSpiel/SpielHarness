@@ -16,6 +16,11 @@ import {
   Pill,
   ResizableSidebar,
   SIDEBAR,
+  Skeleton,
+  SkeletonCard,
+  SkeletonFormField,
+  SkeletonListItem,
+  SkeletonMemberRow,
   Spinner,
   ToggleRow,
   Tooltip,
@@ -44,6 +49,7 @@ const SETTINGS_TABS: { id: SettingsTab; label: string; icon: string }[] = [
 const PROVIDER_OPTIONS = [
   { label: "OpenAI Compatible", value: "openai-compatible" },
   { label: "Anthropic", value: "anthropic" },
+  { label: "Mistral", value: "mistral" },
   { label: "Custom", value: "custom" },
 ];
 
@@ -88,9 +94,11 @@ export default function SettingsPage() {
     account: string | null;
     enabled: boolean;
   }>>([]);
+  const [integrationsLoading, setIntegrationsLoading] = useState(true);
   const [presets, setPresets] = useState<Array<{ id: string; name: string; description: string; kind: string; icon: string; logo?: string; secretEnvKey?: string; baseUrl?: string; oauthReady?: boolean; operations: Array<{ id: string }> }>>([]);
   const [connectionsSetupRequired, setConnectionsSetupRequired] = useState(false);
   const [variables, setVariables] = useState<Array<{ id: string; name: string; kind: "variable" | "secret_ref"; value: string | null; envKey: string | null; configured: boolean; description: string; enabled: boolean }>>([]);
+  const [variablesLoading, setVariablesLoading] = useState(true);
   const [connectionDraft, setConnectionDraft] = useState({ presetId: "", name: "", kind: "api", baseUrl: "", secretEnvKey: "", operations: "" });
   const [variableDraft, setVariableDraft] = useState({ name: "", kind: "variable", value: "", description: "" });
   const [selectedId, setSelectedId] = useState<string | null>(store.models[0]?.id ?? null);
@@ -111,21 +119,46 @@ export default function SettingsPage() {
   const [connectionSaving, setConnectionSaving] = useState(false);
   const [disconnecting, setDisconnecting] = useState<typeof integrations[number] | null>(null);
   const [disconnectingBusy, setDisconnectingBusy] = useState(false);
+  const selectedModel = selectedId ? store.models.find((m) => m.id === selectedId) : null;
   const isNew = selectedId === null;
-  const isEnvModel = !isNew && (store.models.find((m) => m.id === selectedId)?.config?.source === "environment");
+  const isEnvModel = !isNew && (selectedModel?.config?.source === "environment");
+  const hasApiKey = !isNew && selectedModel?.config?.hasApiKey === true;
 
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
     if (tab === "connections" || tab === "variables" || tab === "models" || tab === "theme" || tab === "workspace" || tab === "team") setActiveTab(tab === "team" ? "workspace" : tab);
+    setIntegrationsLoading(true);
     fetch("/api/integrations", { cache: "no-store" })
       .then((res) => res.ok ? res.json() : { integrations: [] })
-      .then((data: { integrations?: typeof integrations; presets?: typeof presets; setupRequired?: boolean }) => { setIntegrations(data.integrations ?? []); setPresets(data.presets ?? []); setConnectionsSetupRequired(Boolean(data.setupRequired)); })
-      .catch(() => setIntegrations([]));
+      .then((data: { integrations?: Array<Record<string, unknown>>; presets?: typeof presets; setupRequired?: boolean }) => {
+        const enriched = (data.integrations ?? []).map((i) => ({
+          id: String(i.id ?? ""),
+          name: String(i.name ?? ""),
+          kind: String(i.kind ?? ""),
+          status: String(i.status ?? ""),
+          secretEnvKey: i.secretEnvKey as string | null ?? null,
+          secretConfigured: i.secretConfigured as boolean | null ?? null,
+          operations: (i.operations ?? []) as typeof integrations[number]["operations"],
+          baseUrl: i.baseUrl as string | null ?? null,
+          logo: ((i as Record<string, unknown>).config as Record<string, unknown> | null)?.logo as string | null ?? null,
+          account: i.account as string | null ?? null,
+          enabled: Boolean(i.enabled),
+        }));
+        setIntegrations(enriched);
+        setPresets(data.presets ?? []);
+        setConnectionsSetupRequired(Boolean(data.setupRequired));
+      })
+      .catch(() => setIntegrations([]))
+      .finally(() => setIntegrationsLoading(false));
   }, []);
 
-  const reloadVariables = useCallback(() => fetch("/api/variables", { cache: "no-store" })
-    .then((res) => res.ok ? res.json() : { variables: [] })
-    .then((data: { variables?: typeof variables }) => setVariables(data.variables ?? [])), []);
+  const reloadVariables = useCallback(() => {
+    setVariablesLoading(true);
+    return fetch("/api/variables", { cache: "no-store" })
+      .then((res) => res.ok ? res.json() : { variables: [] })
+      .then((data: { variables?: typeof variables }) => setVariables(data.variables ?? []))
+      .finally(() => setVariablesLoading(false));
+  }, []);
 
   useEffect(() => { void reloadVariables(); }, [reloadVariables]);
 
@@ -243,7 +276,12 @@ export default function SettingsPage() {
     setSaving(true);
     try {
       const config = { capabilities: draft.capabilities };
-      const extra = apiKey ? { apiKey } : {};
+      let extra: Record<string, unknown> = {};
+      if (apiKey) {
+        extra = { apiKey };
+      } else if (hasApiKey && !apiKey) {
+        extra = { apiKey: null };
+      }
       if (isNew) {
         const created = await store.addModel({
           name: draft.label,
@@ -325,6 +363,12 @@ export default function SettingsPage() {
                 New model
               </Button>
               <ul className="space-y-1">
+                {!store.ready ? (
+                  Array.from({ length: 4 }).map((_, i) => (
+                    <SkeletonListItem key={i} />
+                  ))
+                ) : (
+                  <>
                 {creatingModel ? (
                   <ListItem
                     active
@@ -343,7 +387,7 @@ export default function SettingsPage() {
                       key={model.id}
                       metadata={
                         <span className="flex shrink-0 items-center gap-1">
-                          {isEnv || model.secretEnvKey ? <Pill className="text-3xs" tone="info">Default</Pill> : null}
+                          {isEnv ? <Pill className="text-3xs" tone="info">SpielOS</Pill> : <Pill className="text-3xs" tone="warning">Custom</Pill>}
                           <Pill tone={model.enabled ? "success" : "default"} className="text-3xs">
                             {model.enabled ? "On" : "Off"}
                           </Pill>
@@ -361,6 +405,8 @@ export default function SettingsPage() {
                     />
                   );
                 })}
+                  </>
+                )}
               </ul>
             </ResizableSidebar>
             <section className="min-w-0 flex-1 overflow-y-auto bg-background">
@@ -452,6 +498,7 @@ export default function SettingsPage() {
                               disabled={isEnvModel}
                               onChange={(event) => setApiKey(event.target.value)}
                               type="password"
+                              placeholder={hasApiKey && !apiKey ? "••••••••" : ""}
                               value={apiKey}
                             />
                             {apiKey ? (
@@ -459,6 +506,16 @@ export default function SettingsPage() {
                                 <Icon name="shield" size={11} />
                                 Encrypted
                               </Pill>
+                            ) : hasApiKey && !apiKey ? (
+                              <>
+                                <Pill className="h-8 shrink-0 px-2" tone="success">
+                                  <Icon name="shield" size={11} />
+                                  Saved
+                                </Pill>
+                                <button className="text-3xs text-link underline" onClick={() => setApiKey("")} type="button">
+                                  Clear
+                                </button>
+                              </>
                             ) : null}
                           </div>
                         </Field>
@@ -554,13 +611,18 @@ export default function SettingsPage() {
                 <div className="mt-4">
                   <div className="mb-2 text-xs font-medium text-foreground">Add an integration</div>
                   <div className="grid gap-2 md:grid-cols-3">
-                    {presets.map((preset) => {
+                    {integrationsLoading ? (
+                      Array.from({ length: 6 }).map((_, i) => (
+                        <SkeletonCard key={i} />
+                      ))
+                    ) : (
+                    presets.map((preset) => {
                       const added = integrations.some((integration) => integration.name === preset.name || integration.name.startsWith(`${preset.name} —`));
                       const action = preset.kind === "builtin" ? "Available" : added ? "Connected" : preset.kind === "oauth" ? "Connect" : "Configure";
-                      return <div className="flex min-h-36 flex-col rounded-lg bg-panel-raised p-3 transition-colors hover:bg-hover" key={preset.id}>
+                      return (<div className="flex min-h-36 flex-col rounded-lg bg-panel-raised p-3 transition-colors hover:bg-hover" key={preset.id}>
                         <div className="flex items-start gap-3">
                           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-panel shadow-panel">
-                            {preset.logo ? <Image alt={`${preset.name} logo`} height={24} src={preset.logo} width={24} /> : <Icon name={preset.icon} size={18} />}
+                            {preset.logo ? <Image alt={`${preset.name} logo`} height={24} src={preset.logo} unoptimized width={24} /> : <Icon name={preset.icon} size={18} />}
                           </span>
                           <span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-foreground">{preset.name}</span><span className="mt-1 block text-2xs leading-relaxed text-muted-foreground">{preset.description}</span></span>
                         </div>
@@ -568,8 +630,8 @@ export default function SettingsPage() {
                           <Pill tone={preset.kind === "oauth" ? "primary" : preset.kind === "builtin" ? "success" : "default"}>{preset.kind === "oauth" ? "OAuth" : preset.kind === "builtin" ? "SpielOS" : preset.kind.toUpperCase()}</Pill>
                           <Button className="ml-auto" disabled={preset.kind === "builtin" || added} onClick={() => openPreset(preset)} size="sm" variant={preset.kind === "oauth" ? "primary" : "outline"}>{action}</Button>
                         </div>
-                      </div>;
-                    })}
+                      </div>);
+                    }))}
                   </div>
                 </div>
                 <div className="mt-4 grid gap-3 rounded-md bg-panel-raised p-3 md:grid-cols-2" id="custom-connection">
@@ -581,10 +643,21 @@ export default function SettingsPage() {
                   <div className="md:col-span-2"><Button disabled={!connectionDraft.name.trim()} icon="plus" loading={connectionSaving} onClick={addConnection} size="md" variant="primary">Save connection</Button></div>
                 </div>
                 <div className="mt-4 grid gap-2">
-                  {integrations.map((integration) => (
+                  {integrationsLoading ? (
+                    Array.from({ length: 3 }).map((_, i) => (
+                      <div key={i} className="rounded-md bg-panel-raised p-3 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <SkeletonListItem className="flex-1 px-0" lines={1} metadata={false} />
+                        </div>
+                        <Skeleton className="h-3 w-1/3" />
+                        <Skeleton className="h-3 w-1/4" />
+                      </div>
+                    ))
+                  ) : (
+                  integrations.map((integration) => (
                     <div className="rounded-md bg-panel-raised p-3" key={integration.id}>
                       <div className="flex items-center gap-2">
-                        {integration.logo ? <Image alt={`${integration.name} logo`} height={18} src={integration.logo} width={18} /> : <Icon name={integration.kind === "mcp" ? "server" : integration.kind === "oauth" ? "lock" : "globe"} size={14} />}
+                        {integration.logo ? <Image alt={`${integration.name} logo`} height={18} src={integration.logo} unoptimized width={18} /> : <Icon name={integration.kind === "mcp" ? "server" : integration.kind === "oauth" ? "lock" : "globe"} size={14} />}
                         <span className="text-sm font-medium text-foreground">{integration.name}</span>
                         <Pill tone={integration.status === "configured" ? "success" : "warning"} className="ml-auto">
                           {integration.status === "configured" ? "Connected" : integration.kind === "oauth" ? "Needs login" : "Needs config"}
@@ -600,7 +673,8 @@ export default function SettingsPage() {
                         <div>Operations: {(Array.isArray(integration.operations) ? integration.operations : []).map((operation) => operation.id).join(", ") || "none"}</div>
                       </div>
                     </div>
-                  ))}
+                  ))
+                  )}
                 </div>
               </div>
             </div>
@@ -669,7 +743,21 @@ export default function SettingsPage() {
                 </div>
 
                 <div className="mt-4 grid gap-2">
-                  {variables.length === 0 ? (
+                  {variablesLoading ? (
+                    Array.from({ length: 3 }).map((_, i) => (
+                      <div key={i} className="flex items-center gap-3 rounded-md bg-panel-raised p-3">
+                        <Skeleton className="h-8 w-8 shrink-0 rounded-md" />
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <Skeleton className="h-3.5 w-1/3" />
+                            <Skeleton className="h-4 w-12 rounded-sm" />
+                          </div>
+                          <Skeleton className="h-3 w-1/4" />
+                        </div>
+                        <Skeleton className="h-5 w-14 rounded-sm" />
+                      </div>
+                    ))
+                  ) : variables.length === 0 ? (
                     <div className="flex flex-col items-center gap-2 py-8 text-sm text-muted-foreground">
                       <Icon name="key" size={20} />
                       <span>No variables yet. Add one above.</span>
@@ -1046,26 +1134,32 @@ function WorkspaceTab() {
             <h2 className="text-sm font-semibold text-foreground">Workspace Details</h2>
           </div>
           <div className="grid gap-3">
-            <Field label="Workspace name">
-              <Input
-                value={orgNameDraft}
-                onChange={(e) => setOrgNameDraft(e.target.value)}
-                disabled={!isOwner}
-              />
-            </Field>
-            {isOwner && (
-              <div className="flex justify-end">
-                <Button
-                  disabled={!orgDirty || !orgNameDraft.trim()}
-                  icon="save"
-                  loading={savingOrg}
-                  onClick={saveOrgSettings}
-                  size="md"
-                  variant={orgDirty ? "primary" : "outline"}
-                >
-                  Save
-                </Button>
-              </div>
+            {!workspace ? (
+              <SkeletonFormField />
+            ) : (
+              <>
+                <Field label="Workspace name">
+                  <Input
+                    value={orgNameDraft}
+                    onChange={(e) => setOrgNameDraft(e.target.value)}
+                    disabled={!isOwner}
+                  />
+                </Field>
+                {isOwner && (
+                  <div className="flex justify-end">
+                    <Button
+                      disabled={!orgDirty || !orgNameDraft.trim()}
+                      icon="save"
+                      loading={savingOrg}
+                      onClick={saveOrgSettings}
+                      size="md"
+                      variant={orgDirty ? "primary" : "outline"}
+                    >
+                      Save
+                    </Button>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -1106,7 +1200,11 @@ function WorkspaceTab() {
           )}
 
           {membersLoading ? (
-            <p className="mt-4 text-xs text-muted-foreground">Loading members...</p>
+            <div className="mt-4 grid gap-2">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <SkeletonMemberRow key={i} />
+              ))}
+            </div>
           ) : (
             <div className="mt-4 grid gap-2">
               {members.map((member) => (
@@ -1150,14 +1248,26 @@ function WorkspaceTab() {
           )}
 
           {/* Pending Invitations */}
-          {isOwner && invitations.length > 0 && (
+          {isOwner && (invitations.length > 0 || invitationsLoading) && (
             <div className="mt-6">
               <div className="mb-2 flex items-center gap-2">
                 <h3 className="text-xs font-semibold text-muted-foreground">Pending Invitations</h3>
                 {invitationsLoading && <Spinner />}
               </div>
               <div className="grid gap-2">
-                {invitations.map((inv) => (
+                {invitationsLoading ? (
+                  Array.from({ length: 2 }).map((_, i) => (
+                    <div key={i} className="flex items-center gap-3 rounded-md bg-panel-raised p-3 opacity-60">
+                      <Skeleton className="h-8 w-8 shrink-0 rounded-full" />
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <Skeleton className="h-3.5 w-1/3" />
+                        <Skeleton className="h-3 w-1/4" />
+                      </div>
+                      <Skeleton className="h-6 w-6 shrink-0 rounded-md" />
+                    </div>
+                  ))
+                ) : (
+                invitations.map((inv) => (
                   <div
                     className="flex items-center gap-3 rounded-md bg-panel-raised p-3 opacity-60"
                     key={inv.id}
@@ -1184,7 +1294,8 @@ function WorkspaceTab() {
                       />
                     </Tooltip>
                   </div>
-                ))}
+                ))
+                )}
               </div>
             </div>
           )}

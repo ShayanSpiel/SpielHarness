@@ -1,0 +1,1 @@
+../../packages/db/migrations/0010_durable_control.sql

@@ -23,6 +23,7 @@ import {
   audit,
   createFile,
   getFile,
+  getOrchestratorPrompt,
   listConnections,
   listHarnessFiles,
   updateFileIfVersion
@@ -32,7 +33,7 @@ import type { RunRequest, AttachedFile } from "@spielos/graph";
 import type { ConversationCompaction } from "@spielos/providers";
 import type { FileRow } from "@spielos/db";
 import { createHash } from "node:crypto";
-import { listModelsWithEnvironmentDefaults } from "./default-models";
+import { environmentModelDefaults, listModelsWithEnvironmentDefaults } from "./default-models";
 
 function stableUuid(value: string): string {
   const chars = createHash("sha256").update(value).digest("hex").slice(0, 32).split("");
@@ -109,15 +110,49 @@ export async function resolveExecution(
   const targetType: RunType = body.type ?? "chat";
   const contextFileIds = dedupe(body.contextFileIds ?? []);
   const isChat = targetType === "chat";
-
-  // For plain chat, skip connections and harness parsing (roles/skills/evals/workflows).
-  const [files, modelRows] = await Promise.all([
-    listHarnessFiles(org.sql, org.orgId),
-    listModelsWithEnvironmentDefaults(org.sql, org.orgId)
-  ]);
-  const connections = isChat ? [] : await listConnections(org.sql, org.orgId);
+  // Plain chat = no target, no workflow, no attached context, and no legacy
+  // direct-node payload. The orchestrator prompt and an env-defined model
+  // are enough; skip the full harness enumeration and connection load.
+  const isPlainChat = isChat
+    && !body.targetId
+    && !body.workflowId
+    && contextFileIds.length === 0
+    && !(body.nodes && body.nodes.length > 0);
 
   const toRecord = (f: FileRow) => fileRowToRecord(f);
+
+  // For plain chat, only the orchestrator prompt and an env-defined model
+  // are required. Skip listHarnessFiles, listConnections, and the
+  // listModels+createModel round-trip.
+  let files: FileRow[];
+  let modelRows: Awaited<ReturnType<typeof listModelsWithEnvironmentDefaults>>;
+  let connections: Awaited<ReturnType<typeof listConnections>> = [];
+  if (isPlainChat) {
+    const orchestrator = await getOrchestratorPrompt(org.sql, org.orgId);
+    files = orchestrator ? [orchestrator] : [];
+    modelRows = environmentModelDefaults().map((model) => ({
+      id: `runtime.env.${model.provider}.${model.model}`,
+      org_id: org.orgId,
+      name: model.name,
+      provider: model.provider,
+      model: model.model,
+      base_url: model.baseUrl,
+      secret_env_key: model.secretEnvKey,
+      config: { source: "environment", capabilities: model.capabilities },
+      enabled: true
+    }));
+  } else {
+    const [loadedFiles, loadedModels] = await Promise.all([
+      listHarnessFiles(org.sql, org.orgId),
+      listModelsWithEnvironmentDefaults(org.sql, org.orgId)
+    ]);
+    files = loadedFiles;
+    modelRows = loadedModels;
+    if (!isChat) {
+      connections = await listConnections(org.sql, org.orgId);
+    }
+  }
+
   let roles: Record<string, Role> = {};
   let skills: Record<string, Skill> = {};
   let evals: Record<string, EvalFile> = {};
@@ -354,7 +389,7 @@ export async function resolveExecution(
   }
 
   // Resolve director prompt
-  const directorPrompt = resolveDirectorPrompt(files, roles, skills, evals, workflows, isChat);
+  const directorPrompt = resolveDirectorPrompt(files, isPlainChat);
   const harnessFileAction: NonNullable<RunRequest["harnessFileAction"]> = async (action, params, context) => {
     const allowedTypes = new Set(["harness_role", "harness_skill", "harness_workflow", "harness_eval", "harness_template"]);
     if (action === "create") {
@@ -555,31 +590,20 @@ function resolveModel(
 // ── Director prompt (orchestrator) ────────────────────────────
 function resolveDirectorPrompt(
   files: FileRow[],
-  roles: Record<string, Role>,
-  skills: Record<string, Skill>,
-  evals: Record<string, EvalFile>,
-  workflows: Record<string, WorkflowFile>,
-  isChat: boolean
+  isPlainChat: boolean
 ): string {
   const orchestrator = files.find(
     (f) => f.file_type === "prompt" && f.metadata?.systemRole === "orchestrator" && f.status === "active"
   );
   const base = [
-    "You are the SpielOS assistant. Converse naturally and answer the user's question directly. You can explain the product and its workspace. Do not require a selected role, skill, file, eval, or workflow for ordinary conversation.",
+    "You are the SpielOS assistant. Converse naturally and answer the user's question directly. You can explain the product and its workspace.",
     "Never claim that you searched, executed a tool, ran a workflow, or read a file unless the runtime actually supplied that context or execution.",
     orchestrator?.body ? `Workspace-authored assistant instructions:\n${orchestrator.body}` : ""
-  ].filter(Boolean);
-  if (!isChat) {
-    base.push([
-      "Workspace catalog (awareness only; an item is executable context only when the user selects it):",
-      `Roles: ${Object.values(roles).filter((item) => item.status === "active").map((item) => item.name).join(", ") || "none"}`,
-      `Skills: ${Object.values(skills).filter((item) => item.status === "active" && !item.id.startsWith("runtime.eval.skill.")).map((item) => item.name).join(", ") || "none"}`,
-      `Workflows: ${Object.values(workflows).filter((item) => item.status === "active").map((item) => item.name).join(", ") || "none"}`,
-      `Evals: ${Object.values(evals).filter((item) => item.status === "active").map((item) => item.name).join(", ") || "none"}`,
-      `Available strategy and library files: ${files.filter((item) => ["knowledge", "strategy", "library", "prompt"].includes(item.file_type) && item.status === "active").map((item) => item.title).join(", ") || "none"}`
-    ].join("\n"));
+  ];
+  if (isPlainChat) {
+    base.push("No harness tools, role, skill, eval, workflow, or attached file is selected for this turn. Answer from the system prompt and the conversation alone.");
   }
-  return base.join("\n\n");
+  return base.filter(Boolean).join("\n\n");
 }
 
 // ── Workflow normalization: resolve role/skill slugs, attach files ─

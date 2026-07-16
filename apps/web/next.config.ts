@@ -11,6 +11,13 @@ const nextConfig = (phase: string): NextConfig => ({
     "@spielos/evals",
     "@spielos/graph"
   ],
+  experimental: {
+    // Keep the dev server pinned to a single thread to bound memory usage.
+    // `NODE_OPTIONS=--max-old-space-size=4096` is the primary lever; these
+    // options keep the per-request worker fanout from spiking RSS.
+    workerThreads: false,
+    cpus: 1
+  },
   async redirects() {
     return [
       { source: "/prompts", destination: "/strategy", permanent: true },

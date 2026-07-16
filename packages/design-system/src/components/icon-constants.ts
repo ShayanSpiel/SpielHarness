@@ -56,7 +56,7 @@ export const EVENT_ICONS = {
 } as const;
 
 /** Canonical icon for the Context workspace and its entry points. */
-export const CONTEXT_ICON = "reading-glass" as const;
+export const CONTEXT_ICON = "layers-down-right" as const;
 
 export const CONTEXT_KIND_ICONS: Record<string, string> = {
   role: ENTITY_ICONS.role,

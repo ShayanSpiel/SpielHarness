@@ -5,6 +5,24 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/**
+ * Format a non-negative integer as a compact token / counter string.
+ *
+ * Shared formatter so the output budget, context window, tool counter,
+ * and any other capacity meter agree on rounding, locale, and the
+ * K/M boundary. Use the same formatter in every surface that prints
+ * raw token counts.
+ */
+export function formatCompactNumber(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "0";
+  if (value >= 1_000_000) {
+    const m = value / 1_000_000;
+    return `${m.toLocaleString(undefined, { maximumFractionDigits: 1 })}M`;
+  }
+  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
+  return Math.round(value).toLocaleString();
+}
+
 export type ThemeId =
   | "monochrome-dark"
   | "monochrome-light"

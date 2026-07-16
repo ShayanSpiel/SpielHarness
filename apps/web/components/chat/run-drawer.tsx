@@ -18,6 +18,7 @@ import {
   Pill,
   StatusIcon,
   cn,
+  formatCompactNumber
 } from "@spielos/design-system";
 import { useRunContext, type ContextItem } from "../../lib/run-context";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
@@ -40,6 +41,7 @@ const CONTEXT_ICONS: Record<string, ReactNode> = {
   skill: <Icon name={CONTEXT_KIND_ICONS.skill} size={12} />,
   library: <Icon name={CONTEXT_KIND_ICONS.library} size={12} />,
   workstream: <Icon name={CONTEXT_KIND_ICONS.workstream} size={12} />,
+  workflow: <Icon name={CONTEXT_KIND_ICONS.workflow} size={12} />,
   strategy: <Icon name={CONTEXT_KIND_ICONS.strategy} size={12} />,
   knowledge: <Icon name={CONTEXT_KIND_ICONS.knowledge} size={12} />,
   prompt: <Icon name={CONTEXT_KIND_ICONS.prompt} size={12} />,
@@ -66,9 +68,105 @@ function ContextRow({ item }: { item: ContextItem }) {
 }
 
 function compactTokens(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 1 })}M`;
-  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
-  return value.toLocaleString();
+  return formatCompactNumber(value);
+}
+
+type PinnedStateView = {
+  primaryGoal: { text: string; authority: string } | null;
+  currentPhase: string | null;
+  decisions: Array<{ text: string; authority: string; status: string }>;
+  constraints: Array<{ text: string; authority: string; status: string }>;
+  openWork: Array<{ text: string; authority: string; status: string }>;
+  successCriteria: Array<{ text: string; authority: string; status: string }>;
+  version: number;
+  updatedAt: string;
+};
+
+type MilestoneView = {
+  id: string;
+  title: string;
+  summary: string;
+  createdAt: string;
+};
+
+function readPinnedState(metadata: Record<string, unknown> | undefined | null): PinnedStateView | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const candidate = (metadata as Record<string, unknown>).pinnedState;
+  if (!candidate || typeof candidate !== "object") return null;
+  const state = candidate as Record<string, unknown>;
+  if (typeof state.version !== "number") return null;
+  return {
+    primaryGoal: state.primaryGoal && typeof state.primaryGoal === "object"
+      ? state.primaryGoal as PinnedStateView["primaryGoal"]
+      : null,
+    currentPhase: typeof state.currentPhase === "string" ? state.currentPhase : null,
+    decisions: Array.isArray(state.decisions) ? state.decisions as PinnedStateView["decisions"] : [],
+    constraints: Array.isArray(state.constraints) ? state.constraints as PinnedStateView["constraints"] : [],
+    openWork: Array.isArray(state.openWork) ? state.openWork as PinnedStateView["openWork"] : [],
+    successCriteria: Array.isArray(state.successCriteria) ? state.successCriteria as PinnedStateView["successCriteria"] : [],
+    version: Number(state.version),
+    updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : ""
+  };
+}
+
+function readMilestones(metadata: Record<string, unknown> | undefined | null): MilestoneView[] {
+  if (!metadata || typeof metadata !== "object") return [];
+  const candidate = (metadata as Record<string, unknown>).milestones;
+  if (!Array.isArray(candidate)) return [];
+  return candidate
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+    .map((entry) => ({
+      id: String(entry.id ?? ""),
+      title: String(entry.title ?? "Milestone"),
+      summary: String(entry.summary ?? ""),
+      createdAt: String(entry.createdAt ?? "")
+    }));
+}
+
+function WorkingStateCard() {
+  const store = useWorkspaceStore();
+  const activeChat = store.chats.find((chat) => chat.id === store.activeChatId) ?? null;
+  const metadata = (activeChat?.metadata ?? null) as Record<string, unknown> | null;
+  const pinned = readPinnedState(metadata);
+  const milestones = readMilestones(metadata);
+  if (!pinned && milestones.length === 0) return null;
+  const decisionCount = pinned?.decisions.filter((decision) => decision.status === "active").length ?? 0;
+  const openWorkCount = pinned?.openWork.filter((work) => work.status === "active").length ?? 0;
+  const lastMilestone = milestones.at(-1) ?? null;
+  return (
+    <section className="rounded-md bg-panel p-2.5">
+      <div className="mb-2 flex items-center gap-2">
+        <Icon className="text-muted-foreground" name="Layers" size={12} />
+        <span className="text-2xs font-medium text-foreground">Working state</span>
+        {pinned ? (
+          <Pill className="ml-auto text-3xs uppercase tracking-wider">v{pinned.version}</Pill>
+        ) : null}
+      </div>
+      {pinned?.primaryGoal?.text ? (
+        <p className="text-xs leading-5 text-foreground">Goal: {pinned.primaryGoal.text}</p>
+      ) : null}
+      <p className="mt-1 text-2xs text-muted-foreground">
+        {decisionCount} decisions · {openWorkCount} open · {milestones.length} milestones
+      </p>
+      <details className="mt-2">
+        <summary className="cursor-pointer text-2xs text-muted-foreground hover:text-foreground">Show details</summary>
+        <div className="mt-2 grid gap-1.5 text-2xs text-muted-foreground">
+          {pinned?.currentPhase ? <p>Current phase: {pinned.currentPhase}</p> : null}
+          {lastMilestone ? (
+            <p>
+              Latest milestone: <span className="text-foreground">{lastMilestone.title}</span>
+            </p>
+          ) : null}
+          {pinned?.constraints.filter((item) => item.status === "active").slice(0, 3).map((item, index) => (
+            <p key={`c${index}`} className="leading-relaxed">- Constraint: {item.text}</p>
+          ))}
+          {pinned?.openWork.filter((item) => item.status === "active").slice(0, 3).map((item, index) => (
+            <p key={`o${index}`} className="leading-relaxed">- Open: {item.text}</p>
+          ))}
+        </div>
+      </details>
+    </section>
+  );
 }
 
 function CapacityMeter({ label, value, maximum, icon }: { label: string; value: number; maximum: number; icon: string }) {
@@ -173,6 +271,7 @@ function ContextSection({ run }: { run: ReturnType<typeof useRunContext> }) {
   return (
     <div className="flex flex-col gap-3 p-3">
       <RuntimeCapacity run={run} />
+      <WorkingStateCard />
       {run.durableState ? (
         <section className="rounded-md bg-panel p-2.5">
           <div className="mb-2 flex items-center gap-2">

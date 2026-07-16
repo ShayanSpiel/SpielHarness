@@ -1,18 +1,16 @@
 import {
   appendChatMessages,
-  appendRunEvents,
+  atomicCheckpoint,
   createFile,
   getRun,
   linkRunOutputFile,
-  nextRunEventSequence,
   recordUsage,
-  updateRun
+  type RunEventInput
 } from "@spielos/db";
 import { errorResponse, getOrg, HttpError, requireWrite } from "../../../../../lib/server";
 import { resolveExecution, type ExecuteBody } from "../../../../../lib/execution-service";
 import { generatedFileFolder } from "../../../../../lib/workspace-data";
 import { streamRun, type RunCheckpoint } from "@spielos/graph";
-import type { RunEvent } from "@spielos/core";
 
 function frame(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -121,17 +119,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       };
     }
 
-    // Persist the human answer against the run.
+    // Persist the human answer against the run via an atomic checkpoint.
     const previousHumanInputs = (run.human_inputs as Record<string, unknown>) ?? {};
-    await updateRun(org.sql, org.orgId, runId, {
+    const initialCheckpoint = await atomicCheckpoint(org.sql, org.orgId, runId, {
       status: "running",
       humanInputs: controlAction ? previousHumanInputs : { ...previousHumanInputs, [body.requestId]: body.answers },
       state: checkpoint,
       error: null,
-      completedAt: null
+      completedAt: null,
+      expectedCheckpointVersion: Number(run.checkpoint_version ?? 0)
     });
-
-    const firstEventSequence = await nextRunEventSequence(org.sql, org.orgId, runId);
+    let checkpointVersion = initialCheckpoint.checkpointVersion;
 
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
@@ -141,13 +139,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         let terminalStatus: "completed" | "failed" | "cancelled" | "waiting_human" = "completed";
         let errorMessage: string | null = null;
         let latestCheckpoint: RunCheckpoint = checkpoint;
-        let streamEventSequence = firstEventSequence;
         const priorUsage = {
           input: checkpoint.budget?.inputTokens ?? 0,
           output: checkpoint.budget?.outputTokens ?? 0,
           tools: checkpoint.budget?.toolCalls ?? 0
         };
         const usage = { input: 0, output: 0, tools: 0 };
+        const queuedEventIds = new Set<string>();
+        const queuedEvents: RunEventInput[] = [];
         const onUsage = (next: { input: number; output: number }) => {
           usage.input += next.input;
           usage.output += next.output;
@@ -157,6 +156,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           const maximum = checkpoint.budget?.maxToolCalls;
           if (maximum && next > maximum) throw new Error(`Tool-call budget exceeded (${maximum}).`);
           usage.tools += count;
+        };
+        const flushAtomicCheckpoint = async (stateOverride?: RunCheckpoint) => {
+          if (queuedEvents.length === 0 && stateOverride === undefined) return;
+          const batch = queuedEvents.splice(0, queuedEvents.length);
+          const result = await atomicCheckpoint(org.sql, org.orgId, runId, {
+            events: batch,
+            state: stateOverride ?? latestCheckpoint,
+            expectedCheckpointVersion: checkpointVersion
+          });
+          checkpointVersion = result.checkpointVersion;
         };
 
         try {
@@ -177,17 +186,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             } else if (item.kind === "status") {
               controller.enqueue(encoder.encode(frame({ kind: "status", message: item.message })));
             } else if (item.kind === "event") {
-              const e: RunEvent = { ...item.event, sequence: streamEventSequence++ };
-              await appendRunEvents(org.sql, org.orgId, runId, [{
-                event_type: e.type,
-                node_id: e.nodeId ?? null,
-                node_title: e.nodeTitle ?? null,
-                skill_id: e.skillId ?? null,
-                skill_name: e.skillName ?? null,
-                message: e.message,
-                payload: e.payload ?? {}
-              }]);
-              controller.enqueue(encoder.encode(frame({ kind: "event", event: e })));
+              if (!queuedEventIds.has(item.event.id)) {
+                queuedEventIds.add(item.event.id);
+                queuedEvents.push({
+                  event_type: item.event.type,
+                  node_id: item.event.nodeId ?? null,
+                  node_title: item.event.nodeTitle ?? null,
+                  skill_id: item.event.skillId ?? null,
+                  skill_name: item.event.skillName ?? null,
+                  message: item.event.message,
+                  payload: item.event.payload ?? {}
+                });
+                if (queuedEvents.length >= 12) await flushAtomicCheckpoint();
+              }
+              controller.enqueue(encoder.encode(frame({ kind: "event", event: item.event })));
             } else if (item.kind === "artifact") {
               const file = await createFile(org.sql, org.orgId, {
                 title: item.artifact.title,
@@ -208,11 +220,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               controller.enqueue(encoder.encode(frame({ kind: "human_input", request: item.request })));
             } else if (item.kind === "checkpoint") {
               latestCheckpoint = item.state;
-              await updateRun(org.sql, org.orgId, runId, {
-                status: latestCheckpoint.status,
-                state: latestCheckpoint,
-                error: latestCheckpoint.error
-              });
+              await flushAtomicCheckpoint(latestCheckpoint);
               controller.enqueue(encoder.encode(frame({
                 kind: "run_state",
                 state: {
@@ -252,13 +260,30 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           };
         }
 
-        await updateRun(org.sql, org.orgId, runId, {
-          status: terminalStatus,
-          outputs: { text: outputText },
-          state: latestCheckpoint,
-          error: errorMessage,
-          completedAt
-        });
+        // Final atomic checkpoint: bundles the final state, outputs,
+        // status, and any remaining events in one transaction.
+        try {
+          const finalResult = await atomicCheckpoint(org.sql, org.orgId, runId, {
+            events: queuedEvents.splice(0, queuedEvents.length),
+            state: latestCheckpoint,
+            outputs: { text: outputText },
+            status: terminalStatus,
+            error: errorMessage,
+            completedAt,
+            expectedCheckpointVersion: checkpointVersion
+          });
+          checkpointVersion = finalResult.checkpointVersion;
+        } catch (finalError) {
+          console.error("[runs/reply] final atomic checkpoint failed, falling back:", finalError);
+          const { updateRun } = await import("@spielos/db");
+          await updateRun(org.sql, org.orgId, runId, {
+            status: terminalStatus,
+            outputs: { text: outputText },
+            state: latestCheckpoint,
+            error: errorMessage,
+            completedAt
+          });
+        }
 
         if (resolved.runRequest.provider && resolved.runRequest.model && outputText) {
           try {

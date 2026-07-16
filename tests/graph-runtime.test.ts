@@ -180,7 +180,7 @@ test("workflow fan-out joins once and executes every declared skill", async () =
 test("a terminal eval gate retries its source and stops at max attempts", async () => {
   const search = skill("retry-search", "knowledge_search");
   const gate = skill("retry-gate", "eval", {
-    evalRules: [{ label: "Impossible requirement", type: "contains", value: "never-present", weight: 10 }],
+    evalRules: [{ label: "Impossible requirement", type: "contains", value: "never-present", importance: 10 }],
     overallThreshold: 90
   });
   const workflow: WorkflowFile = {

@@ -18,6 +18,11 @@ type StreamFrame =
   | { kind: "error"; message: string }
   | { kind: "done"; runId: string; status: string };
 
+// Module-level Set so the in-flight key list survives React re-mounts and
+// the entire app's component tree. Message keys are globally unique per
+// page, so a single Set is enough to de-duplicate in-flight runs.
+const inFlightMessages = new Set<string>();
+
 function getMessageText(message: { content: readonly unknown[] }): string {
   return message.content
     .filter(
@@ -38,15 +43,14 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
   runRef.current = run;
   const storeRef = useRef(store);
   storeRef.current = store;
-  const inFlightMessages = useRef(new Set<string>());
   return useMemo<ChatModelAdapter>(
     () => ({
       async *run({ messages, abortSignal }): AsyncGenerator<ChatModelRunResult, void> {
         const lastUser = [...messages].reverse().find((m) => m.role === "user");
         if (!lastUser) return;
         const messageKey = lastUser.id;
-        if (inFlightMessages.current.has(messageKey)) return;
-        inFlightMessages.current.add(messageKey);
+        if (inFlightMessages.has(messageKey)) return;
+        inFlightMessages.add(messageKey);
 
         const text = getMessageText(lastUser);
         const ctx = runRef.current;
@@ -133,7 +137,7 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
         } catch (err) {
           const message = err instanceof Error ? err.message : "Network error";
           ctx.setRunStatus(abortSignal.aborted ? "cancelled" : "failed");
-          inFlightMessages.current.delete(messageKey);
+          inFlightMessages.delete(messageKey);
           yield {
             content: [{ type: "text", text: `Run failed: ${message}` }] as unknown as readonly ThreadAssistantMessagePart[]
           };
@@ -149,7 +153,7 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
             // ignore
           }
           ctx.setRunStatus("failed");
-          inFlightMessages.current.delete(messageKey);
+          inFlightMessages.delete(messageKey);
           yield {
             content: [{ type: "text", text: message }] as unknown as readonly ThreadAssistantMessagePart[]
           };
@@ -162,9 +166,101 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
         let narrative = "";
         let terminalStatus: RunStatus | null = null;
 
-        const yieldCurrent = (): ChatModelRunResult => ({
-          content: [{ type: "text", text: narrative }] as unknown as readonly ThreadAssistantMessagePart[]
-        });
+        // Pending side effects to flush on the next animation frame.
+        // The set-state calls and event appends are coalesced so a burst
+        // of frames produces a single React render.
+        type PendingFrame = { kind: "event"; event: RunEvent } | { kind: "artifact"; artifact: Artifact } | { kind: "status"; message: string } | { kind: "run_state"; state: import("./run-context").DurableRunState } | { kind: "usage"; usage: import("./run-context").LiveRunUsage } | { kind: "human_input"; request: HumanInputRequest } | { kind: "error"; message: string } | { kind: "done"; status: RunStatus } | { kind: "run"; runId: string };
+        let pending: PendingFrame[] = [];
+        let rafScheduled = false;
+        let streamClosed = false;
+        let lastYielded: ChatModelRunResult = { content: [{ type: "text", text: narrative }] as unknown as readonly ThreadAssistantMessagePart[] };
+
+        const currentResult = (): ChatModelRunResult => {
+          lastYielded = { content: [{ type: "text", text: narrative }] as unknown as readonly ThreadAssistantMessagePart[] };
+          return lastYielded;
+        };
+
+        const applyFrame = (item: PendingFrame) => {
+          if (item.kind === "run") {
+            ctx.setActiveRunId(item.runId);
+          } else if (item.kind === "status") {
+            ctx.setActivity(item.message);
+          } else if (item.kind === "run_state") {
+            ctx.setDurableState(item.state);
+            if (item.state.budget) {
+              ctx.setLiveUsage({
+                inputTokens: item.state.budget.inputTokens,
+                outputTokens: item.state.budget.outputTokens,
+                toolCalls: item.state.budget.toolCalls
+              });
+            }
+          } else if (item.kind === "usage") {
+            ctx.setLiveUsage(item.usage);
+          } else if (item.kind === "event") {
+            ctx.appendEvent(item.event);
+            if (item.event.payload?.category === "context_budget") {
+              const inputTokens = item.event.payload.inputTokens;
+              if (typeof inputTokens === "number") {
+                ctx.setLiveUsage({
+                  inputTokens,
+                  outputTokens: runRef.current.liveUsage?.outputTokens ?? 0,
+                  toolCalls: runRef.current.liveUsage?.toolCalls ?? 0
+                });
+              }
+            }
+            if (item.event.type === "run_completed") terminalStatus = "completed";
+            if (item.event.type === "run_failed") terminalStatus = "failed";
+            if (item.event.type === "run_cancelled") terminalStatus = "cancelled";
+          } else if (item.kind === "artifact") {
+            ctx.appendArtifact(item.artifact);
+          } else if (item.kind === "human_input") {
+            ctx.setHumanInputRequest(item.request);
+            ctx.setRunStatus("waiting_human");
+            terminalStatus = "waiting_human";
+          } else if (item.kind === "error") {
+            ctx.setActivity(item.message);
+            ctx.setRunStatus("failed");
+            terminalStatus = "failed";
+          } else if (item.kind === "done") {
+            if (["running", "waiting_human", "completed", "failed", "cancelled"].includes(item.status)) {
+              ctx.setRunStatus(item.status);
+              terminalStatus = item.status;
+            }
+          }
+        };
+
+        const flushPending = () => {
+          rafScheduled = false;
+          if (pending.length === 0) return;
+          const queue = pending;
+          pending = [];
+          for (const item of queue) applyFrame(item);
+        };
+
+        const scheduleFlush = () => {
+          if (rafScheduled) return;
+          rafScheduled = true;
+          // requestAnimationFrame is browser-only; if it is missing (SSR or
+          // non-DOM environments), flush synchronously so the run is not
+          // blocked.
+          const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+            ? window.requestAnimationFrame.bind(window)
+            : (cb: (t: number) => void) => { cb(typeof performance !== "undefined" ? performance.now() : 0); return 0; };
+          raf(() => flushPending());
+        };
+
+        const enqueue = (item: PendingFrame) => {
+          pending.push(item);
+          scheduleFlush();
+        };
+
+        const drainAndFinalize = () => {
+          if (streamClosed) return;
+          streamClosed = true;
+          // Apply any frames that the final rAF hadn't flushed yet so
+          // the terminal status / done event cannot be stranded.
+          flushPending();
+        };
 
         try {
           while (true) {
@@ -191,63 +287,38 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
                 continue;
               }
               if (item.kind === "run") {
-                ctx.setActiveRunId(item.runId);
+                enqueue({ kind: "run", runId: item.runId });
               } else if (item.kind === "status") {
-                ctx.setActivity(item.message);
+                enqueue({ kind: "status", message: item.message });
               } else if (item.kind === "run_state") {
-                ctx.setDurableState(item.state);
-                if (item.state.budget) {
-                  ctx.setLiveUsage({
-                    inputTokens: item.state.budget.inputTokens,
-                    outputTokens: item.state.budget.outputTokens,
-                    toolCalls: item.state.budget.toolCalls
-                  });
-                }
+                enqueue({ kind: "run_state", state: item.state });
               } else if (item.kind === "usage") {
-                ctx.setLiveUsage(item.usage);
+                enqueue({ kind: "usage", usage: item.usage });
               } else if (item.kind === "event") {
-                ctx.appendEvent(item.event);
-                if (item.event.payload?.category === "context_budget") {
-                  const inputTokens = item.event.payload.inputTokens;
-                  if (typeof inputTokens === "number") {
-                    ctx.setLiveUsage({
-                      inputTokens,
-                      outputTokens: runRef.current.liveUsage?.outputTokens ?? 0,
-                      toolCalls: runRef.current.liveUsage?.toolCalls ?? 0
-                    });
-                  }
-                }
-                if (item.event.type === "run_completed") terminalStatus = "completed";
-                if (item.event.type === "run_failed") terminalStatus = "failed";
-                if (item.event.type === "run_cancelled") terminalStatus = "cancelled";
+                enqueue({ kind: "event", event: item.event });
               } else if (item.kind === "artifact") {
-                ctx.appendArtifact(item.artifact);
+                enqueue({ kind: "artifact", artifact: item.artifact });
               } else if (item.kind === "human_input") {
-                ctx.setHumanInputRequest(item.request);
-                ctx.setRunStatus("waiting_human");
-                terminalStatus = "waiting_human";
+                enqueue({ kind: "human_input", request: item.request });
               } else if (item.kind === "text") {
                 narrative += item.text;
               } else if (item.kind === "error") {
-                ctx.setActivity(item.message);
-                ctx.setRunStatus("failed");
-                terminalStatus = "failed";
+                enqueue({ kind: "error", message: item.message });
               } else if (item.kind === "done") {
                 const next = item.status as RunStatus;
-                if (["running", "waiting_human", "completed", "failed", "cancelled"].includes(next)) {
-                  ctx.setRunStatus(next);
-                  terminalStatus = next;
-                }
+                enqueue({ kind: "done", status: next });
               }
-              yield yieldCurrent();
+              yield currentResult();
             }
           }
+          drainAndFinalize();
         } finally {
+          drainAndFinalize();
           if (!terminalStatus) {
             const interruptedStatus: RunStatus = abortSignal.aborted ? "cancelled" : "failed";
             ctx.setRunStatus(interruptedStatus);
           }
-          inFlightMessages.current.delete(messageKey);
+          inFlightMessages.delete(messageKey);
           const activeRunId = runRef.current.activeRunId;
           if (
             abortSignal.aborted &&
@@ -293,11 +364,13 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
               }
             });
             storeRef.current.setActiveChat(createdChatId);
-            void storeRef.current.reload();
+            // The store already has the new chat from `createChat`; no
+            // full reload is needed and would re-fetch messages the
+            // adapter has just inserted locally, causing a visible flash.
           }
         }
 
-        yield yieldCurrent();
+        yield currentResult();
       }
     }),
     []

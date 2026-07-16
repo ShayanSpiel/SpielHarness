@@ -9,7 +9,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace @spielos/web",
+    "dev": "NODE_OPTIONS=\"--max-old-space-size=4096\" npm run dev --workspace @spielos/web",
     "build": "npm run build --workspace @spielos/web",
     "lint": "npm run lint --workspace @spielos/web",
     "check:ui": "npm run check:colors --workspace @spielos/web && bash scripts/check-ui-contracts.sh",
@@ -22,9 +22,11 @@
     "db:verify": "bash scripts/db-verify.sh",
     "db:migrate": "bash scripts/db-migrate.sh",
     "db:seed": "bash scripts/db-seed.sh",
-    "db:reset": "bash scripts/db-reset.sh"
+    "db:reset": "bash scripts/db-reset.sh",
+    "benchmark:chat": "node --experimental-strip-types scripts/benchmark-chat.ts"
   },
   "devDependencies": {
+    "@next/swc-darwin-x64": "^15.5.20",
     "@playwright/test": "^1.61.1",
     "typescript": "^6.0.0"
   },

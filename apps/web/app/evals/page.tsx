@@ -24,7 +24,6 @@ type EvalFileResult = {
 
 type Rubric = EvalRule & {
   description: string;
-  passThreshold: number;
 };
 
 type DraftEval = {
@@ -43,7 +42,7 @@ type DraftEval = {
 };
 
 function toRubric(rule: EvalRule): Rubric {
-  return { ...rule, description: "", passThreshold: 75 };
+  return { ...rule, description: "" };
 }
 
 function fromStore(ef: import("../../lib/workspace-data").EvalFile): DraftEval {
@@ -81,50 +80,56 @@ function blankRubric(): Rubric {
     description: "",
     type: "contains",
     value: "",
-    weight: 10,
-    passThreshold: 75
+    importance: 50
   };
 }
 
 const CHECK_TYPES: Record<Rubric["type"], {
   label: string;
   helper: string;
+  storyPrefix: string;
   valueLabel: string;
   valueKind: "chips" | "number" | "text" | "textarea";
 }> = {
   contains: {
     label: "Contains any of",
-    helper: "Passes when the output includes at least one selected phrase.",
+    helper: "This rule passes when the output includes at least one of the phrases you list below. If none appear, it fails.",
+    storyPrefix: "the output mentions",
     valueLabel: "Accepted phrases",
     valueKind: "chips"
   },
   missing: {
     label: "Must not include",
-    helper: "Passes when none of these phrases appear in the output.",
+    helper: "This rule passes when none of the listed phrases appear in the output. If any one shows up, it fails.",
+    storyPrefix: "the output avoids",
     valueLabel: "Blocked phrases",
     valueKind: "chips"
   },
   min_words: {
     label: "Minimum words",
-    helper: "Passes when the output has at least this many words.",
+    helper: "This rule passes when the output has at least this many words. Shorter outputs fail.",
+    storyPrefix: "the output has at least",
     valueLabel: "Minimum",
     valueKind: "number"
   },
   max_words: {
     label: "Maximum words",
-    helper: "Passes when the output stays under this word count.",
+    helper: "This rule passes when the output stays under this word count. Longer outputs fail.",
+    storyPrefix: "the output stays under",
     valueLabel: "Maximum",
     valueKind: "number"
   },
   regex: {
     label: "Matches pattern",
-    helper: "Passes when the output matches this regular expression.",
+    helper: "This rule passes when the output matches the regular expression you provide. Useful for checking structure or format.",
+    storyPrefix: "the output matches",
     valueLabel: "Pattern",
     valueKind: "text"
   },
   llm_judge: {
     label: "Quality judge",
-    helper: "Stores a judge prompt. Runtime scoring is not model-backed yet.",
+    helper: "Write a prompt that tells an AI judge what to evaluate. The judge scores the output against your instruction.",
+    storyPrefix: "the output satisfies",
     valueLabel: "Judge instruction",
     valueKind: "textarea"
   }
@@ -242,18 +247,6 @@ export default function EvalsPage() {
     setDraft((current) => ({ ...current, rules: current.rules.filter((r) => r.id !== id) }));
   }
 
-  function moveRubric(id: string, direction: "up" | "down") {
-    setDraft((current) => {
-      const idx = current.rules.findIndex((r) => r.id === id);
-      if (idx === -1) return current;
-      const newIdx = direction === "up" ? idx - 1 : idx + 1;
-      if (newIdx < 0 || newIdx >= current.rules.length) return current;
-      const newRubrics = [...current.rules];
-      [newRubrics[idx], newRubrics[newIdx]] = [newRubrics[newIdx], newRubrics[idx]];
-      return { ...current, rules: newRubrics };
-    });
-  }
-
   const appendEvalResult = useCallback((evalId: string, result: EvalFileResult) => {
     setEvalResults((prev) => ({
       ...prev,
@@ -307,7 +300,7 @@ export default function EvalsPage() {
             const rubricScores: Record<string, { score: number; passed: boolean; notes: string }> = {};
             for (const finding of evalResult.findings) {
               const rubric = draft.rules.find((r) => r.label === finding.label);
-              const threshold = rubric?.passThreshold ?? 75;
+              const threshold = rubric?.importance ?? 50;
               rubricScores[finding.label] = {
                 score: finding.score,
                 passed: finding.score >= threshold,
@@ -419,7 +412,7 @@ export default function EvalsPage() {
                 ) : null}
                 {filtered.map((ef) => <ListItem
                   active={ef.id === selectedId}
-                  footnotes={<>{ef.rules.length} criteria · threshold {ef.overallThreshold} · {(evalResults[ef.id] ?? []).length} runs</>}
+                  footnotes={<>{ef.rules.length} criteria · overall {ef.overallThreshold} · {(evalResults[ef.id] ?? []).length} runs</>}
                   icon={ENTITY_ICONS.eval}
                   key={ef.id}
                   metadata={<Pill tone={ef.status === "active" ? "success" : "default"}>{ef.status === "active" ? "On" : "Off"}</Pill>}
@@ -479,14 +472,14 @@ export default function EvalsPage() {
               <div className="min-h-0 flex-1 overflow-y-auto">
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,var(--editor-field-min)),1fr))] items-end gap-3 border-b border-border bg-panel-raised px-4 py-3">
                   <div className="grid gap-1.5">
-                    <InfoLabel label="Eval name" info="Name this QA check so it is easy to select from workflow steps." />
+                    <InfoLabel label="Eval name" info="Give this eval a clear name so you can find it when attaching to workflow steps." />
                     <Input
                       onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
                       value={draft.name}
                     />
                   </div>
                   <div className="grid gap-1.5">
-                    <InfoLabel label="Pass score" info="Overall score needed for this eval to pass." />
+                    <InfoLabel label="Pass score" info="The overall weighted score (0–100) this eval needs to reach to pass. Individual criteria contribute based on their importance." />
                     <Input
                       onChange={(e) => setDraft((d) => ({ ...d, overallThreshold: Number(e.target.value) }))}
                       type="number"
@@ -552,20 +545,16 @@ export default function EvalsPage() {
                   <div>
                     {draft.rules.length === 0 ? (
                       <div className="m-4 rounded-md border border-dashed border-border py-8 text-center text-xs text-muted-foreground">
-                        No criteria yet. Add one to start scoring.
+                        No criteria yet. Add one to define what this eval checks for.
                       </div>
                     ) : (
                       <div>
                         <div className="grid gap-1 p-1">
                           {draft.rules.map((rubric, idx) => (
                             <CriteriaRow
-                              canMoveDown={idx < draft.rules.length - 1}
-                              canMoveUp={idx > 0}
                               index={idx}
                               key={rubric.id}
                               onDelete={() => deleteRubric(rubric.id)}
-                              onMoveDown={() => moveRubric(rubric.id, "down")}
-                              onMoveUp={() => moveRubric(rubric.id, "up")}
                               onUpdate={(patch) => updateRubric(rubric.id, patch)}
                               rubric={rubric}
                             />
@@ -580,7 +569,7 @@ export default function EvalsPage() {
                   <div className="flex h-10 items-center gap-2 border-b border-border px-4">
                     <Icon className="text-muted-foreground" name="repeat" size={14} />
                     <span className="text-xs font-medium text-foreground">Workflow Retry Policy</span>
-                    <InfoTip content="When this eval is used as a workflow QA step, retry can send failed work back through the previous step before the workflow continues. Direct test runs on this page never retry." />
+                    <InfoTip content="When this eval is used as a workflow QA step, retry sends failed work back through the previous step to try again. Direct test runs on this page never retry." />
                     <Pill tone={draft.loopConfig.enabled ? "success" : "default"} className="ml-auto">
                       {draft.loopConfig.enabled ? "Retry enabled" : "No retry"}
                     </Pill>
@@ -601,7 +590,7 @@ export default function EvalsPage() {
                         />
                       </div>
                       <div className="grid gap-1.5">
-                        <InfoLabel label="Attempts" info="Total tries before the workflow stops retrying." />
+                        <InfoLabel label="Attempts" info="How many times the workflow retries before giving up." />
                         <Input
                           className="h-8 text-xs"
                           onChange={(event) =>
@@ -617,7 +606,7 @@ export default function EvalsPage() {
                         />
                       </div>
                       <div className="grid gap-1.5">
-                        <InfoLabel label="Stop retrying" info="Usually stop when this eval passes." />
+                        <InfoLabel label="Stop retrying" info="Choose when to stop retrying: usually when the eval passes." />
                         <NativeSelect
                           ariaLabel="Stop retrying"
                           onChange={(value) =>
@@ -634,7 +623,7 @@ export default function EvalsPage() {
                         />
                       </div>
                       <div className="grid gap-1.5">
-                        <InfoLabel label="Delay" info="Milliseconds to wait between retry attempts." />
+                        <InfoLabel label="Delay" info="Wait time in milliseconds between each retry attempt." />
                         <Input
                           className="h-8 text-xs"
                           onChange={(event) =>
@@ -706,29 +695,21 @@ function InfoLabel({ info, label }: { info: string; label: string }) {
 }
 
 function CriteriaRow({
-  canMoveDown,
-  canMoveUp,
   index,
   onDelete,
-  onMoveDown,
-  onMoveUp,
   onUpdate,
   rubric
 }: {
-  canMoveDown: boolean;
-  canMoveUp: boolean;
   index: number;
   onDelete: () => void;
-  onMoveDown: () => void;
-  onMoveUp: () => void;
   onUpdate: (patch: Partial<Rubric>) => void;
   rubric: Rubric;
 }) {
   const config = CHECK_TYPES[rubric.type];
 
   return (
-    <div className="grid grid-cols-[1.5fr_1fr_2fr_0.5fr_0.5fr_min-content] items-end gap-2 rounded-md bg-background px-2 py-2 transition-colors hover:bg-panel-raised">
-      <div className="grid gap-1.5">
+    <div className="grid min-w-0 grid-cols-[1.5fr_1fr_2fr_0.75fr_min-content] items-end gap-2 rounded-md bg-background px-2 py-2 transition-colors hover:bg-panel-raised">
+      <div className="grid min-w-0 gap-1.5 overflow-hidden">
         <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
           Criterion
         </span>
@@ -745,7 +726,7 @@ function CriteriaRow({
         </div>
       </div>
 
-      <div className="grid gap-1.5">
+      <div className="grid min-w-0 gap-1.5 overflow-hidden">
         <span className="flex items-center gap-1 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
           Check
           <InfoTip content={config.helper} />
@@ -777,72 +758,51 @@ function CriteriaRow({
         />
       </div>
 
-      <div className="grid gap-1.5">
-        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Weight
+      <div className="grid min-w-0 gap-1.5 overflow-hidden">
+        <span className="flex items-center gap-1 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Importance
+          <InfoTip content="How much this rule matters (1–100). Higher values give this rule more influence over the overall score." />
         </span>
-        <Input
-          className="h-8 text-xs"
-          onChange={(event) => onUpdate({ weight: Number(event.target.value) })}
-          min={1}
-          type="number"
-          value={rubric.weight}
+        <ImportanceInput
+          onChange={(value) => onUpdate({ importance: value })}
+          value={rubric.importance}
         />
       </div>
 
-      <div className="grid gap-1.5">
-        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Pass
-        </span>
-        <Input
-          className="h-8 text-xs"
-          onChange={(event) => onUpdate({ passThreshold: Number(event.target.value) })}
-          min={0}
-          max={100}
-          type="number"
-          value={rubric.passThreshold}
-        />
-      </div>
-
-      <div className="grid gap-1.5">
-        <span className="text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Actions
-        </span>
-        <div className="flex items-center gap-0.5">
-          <Tooltip content="Move up" side="bottom">
-            <Button
-              aria-label="Move criterion up"
-              disabled={!canMoveUp}
-              icon="chevron-right"
-              onClick={onMoveUp}
-              className="-rotate-90"
-              size="icon-xs"
-              variant="ghost"
-            />
-          </Tooltip>
-          <Tooltip content="Move down" side="bottom">
-            <Button
-              aria-label="Move criterion down"
-              disabled={!canMoveDown}
-              icon="chevron-right"
-              onClick={onMoveDown}
-              className="rotate-90"
-              size="icon-xs"
-              variant="ghost"
-            />
-          </Tooltip>
-          <Tooltip content="Delete criterion" side="bottom">
-            <Button
-              aria-label="Delete criterion"
-              icon="trash"
-              onClick={onDelete}
-              size="icon-xs"
-              variant="ghost"
-            />
-          </Tooltip>
-        </div>
+      <div className="flex shrink-0 items-center gap-0.5 self-end pb-0.5">
+        <Tooltip content="Delete criterion" side="bottom">
+          <Button
+            aria-label="Delete criterion"
+            icon="trash"
+            onClick={onDelete}
+            size="icon-xs"
+            variant="ghost"
+          />
+        </Tooltip>
       </div>
     </div>
+  );
+}
+
+function ImportanceInput({
+  onChange,
+  value
+}: {
+  onChange: (value: number) => void;
+  value: number;
+}) {
+  return (
+    <Input
+      className="h-8 text-xs"
+      min={1}
+      max={100}
+      onChange={(e) => {
+        const v = Number(e.target.value);
+        if (!Number.isNaN(v)) onChange(Math.min(100, Math.max(1, v)));
+      }}
+      type="number"
+      value={value}
+    />
   );
 }
 
@@ -934,7 +894,7 @@ function EditableChips({
   }
 
   return (
-    <div className="flex min-h-8 min-w-0 items-center gap-1 overflow-x-auto rounded-md border border-border bg-input px-1.5 py-1 transition-colors focus-within:border-[var(--focus-border)] focus-within:ring-2 focus-within:ring-[var(--focus-ring)]">
+    <div className="flex min-h-8 min-w-0 max-w-full items-center gap-1 overflow-x-auto rounded-md border border-border bg-input px-1.5 py-1 transition-colors focus-within:border-[var(--focus-border)] focus-within:ring-2 focus-within:ring-[var(--focus-ring)]">
       {values.map((value) => (
         <span
           className="inline-flex h-5 shrink-0 items-center gap-1 rounded-sm bg-panel-raised px-1.5 text-2xs text-foreground"
@@ -982,13 +942,13 @@ function ResultInspector({
   }
 
   const avgThreshold = rules.length > 0
-    ? Math.round(rules.reduce((sum, r) => sum + r.passThreshold, 0) / rules.length)
-    : 75;
+    ? Math.round(rules.reduce((sum, r) => sum + r.importance, 0) / rules.length)
+    : 50;
 
   return (
     <Inspector>
       <InspectorHeader
-        actions={<Tooltip content="Per-criterion scores and overall pass/fail for the latest eval run." side="bottom"><Button aria-label="About eval results" icon="info" size="icon-xs" variant="ghost" /></Tooltip>}
+        actions={<Tooltip content="Each criterion is scored 0–100. The overall score is weighted by importance. Passes when it meets the threshold." side="bottom"><Button aria-label="About eval results" icon="info" size="icon-xs" variant="ghost" /></Tooltip>}
         icon={ENTITY_ICONS.eval}
         title="Eval results"
       />
@@ -996,7 +956,7 @@ function ResultInspector({
       <InspectorSection>
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-foreground">Score</span>
-          <Tooltip content={`Overall threshold ${avgThreshold}%. ${result.passed ? "Passed" : "Failed"}.`} side="bottom">
+          <Tooltip content={`Weighted average of all criteria. Needs ${avgThreshold}% to pass.`} side="bottom">
             <Button aria-label="Score info" size="icon-xs" variant="ghost" icon="info" />
           </Tooltip>
           <Pill tone={result.passed ? "success" : "destructive"} className="ml-auto">

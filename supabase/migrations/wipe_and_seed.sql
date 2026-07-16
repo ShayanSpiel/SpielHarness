@@ -1,0 +1,1 @@
+../../packages/db/migrations/wipe_and_seed.sql
