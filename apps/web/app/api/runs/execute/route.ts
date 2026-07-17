@@ -23,10 +23,10 @@ import {
 import { errorResponse, getOrg, HttpError, requireWrite } from "../../../../lib/server";
 import { resolveExecution, type ExecuteBody } from "../../../../lib/execution-service";
 import { generatedFileFolder } from "../../../../lib/workspace-data";
-import { streamChatRun, streamRun, type RunCheckpoint, type RunYield } from "@spielos/graph";
+import { streamChatRun, streamRun, streamDirectorRun, type RunCheckpoint, type RunYield } from "@spielos/graph";
 import { registerRun, onRunSignal } from "../../../../lib/run-registry";
 import { publishDomainEvent } from "../../../../lib/realtime";
-import type { RunEvent, RunStatus } from "@spielos/core";
+import type { RunEvent, RunStatus, ExecutionMode } from "@spielos/core";
 
 function frame(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -101,7 +101,9 @@ export async function POST(request: Request) {
         reasoningEffort: body.reasoningEffort ?? null,
         goal: body.goal ?? { objective: body.prompt, constraints: [], successCriteria: ["Return a grounded result."] },
         budget: body.budget ?? {},
-        projectId: project?.id ?? null
+        projectId: project?.id ?? null,
+        executionMode: resolved.executionMode,
+        suggestedHarnessRefs: resolved.suggestedHarnessRefs
       },
       definitionSnapshot: {
         target: resolved.target,
@@ -135,6 +137,7 @@ export async function POST(request: Request) {
       await updateChatMetadata(sql, org.orgId, chatId, {
         activeRunId: run.id,
         lastRunId: run.id,
+        executionMode: resolved.executionMode,
         ...(project ? {
           activeProject: {
             id: project.id,
@@ -306,8 +309,34 @@ export async function POST(request: Request) {
           }, 0);
         }
 
-        const gen: AsyncGenerator<RunYield, void, void> =
-          resolved.type === "chat" && !resolved.runRequest.singleNode
+        // The execution mode is the only top-level switch. The
+        // direct branch is unchanged from before; the director
+        // branch delegates to the deepagents-backed runtime for
+        // chat turns with the file-backed Orchestrator role. The
+        // director runtime owns the planning loop, subagent
+        // delegation, write_todos, summarization, and LangGraph
+        // interrupts. It uses the same SSE protocol and the same
+        // RunYield shape; the route does not maintain a second
+        // parser.
+        const resolvedExecutionMode: ExecutionMode = resolved.executionMode;
+        const isDirectorChat = resolvedExecutionMode === "director"
+          && resolved.type === "chat"
+          && !resolved.runRequest.singleNode;
+        const gen: AsyncGenerator<RunYield, void, void> = isDirectorChat
+          ? streamDirectorRun({
+              ...resolved.runRequest,
+              runId: run.id,
+              directorPrompt: resolved.directorPrompt,
+              history: body.messages,
+              previousCompaction: body.previousCompaction,
+              chatMetadata: chat?.metadata ?? {},
+              goal: body.goal,
+              budget: body.budget,
+              onUsage,
+              signal: executionController.signal,
+              checkControl
+            })
+          : resolved.type === "chat" && !resolved.runRequest.singleNode
             ? streamChatRun({
                 ...resolved.runRequest,
                 runId: run.id,
@@ -543,8 +572,7 @@ export async function POST(request: Request) {
 
         if (
           resolved.runRequest.provider &&
-          resolved.runRequest.model &&
-          outputText
+          resolved.runRequest.model
         ) {
           try {
             await recordUsage(sql, org.orgId, {
@@ -565,7 +593,8 @@ export async function POST(request: Request) {
             await appendChatMessage(sql, org.orgId, chatId, "assistant", outputText, {
               runId: run.id,
               turnId,
-              kind: "assistant_reply"
+              kind: "assistant_reply",
+              ...(isDirectorChat ? { executionMode: "director" } : {})
             });
           } catch (err) {
             console.warn("[runs/execute] chat persist failed:", err);

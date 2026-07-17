@@ -1,5 +1,30 @@
 import { z } from "zod";
 
+// ── Execution mode (top-level switch for chat) ──────────────────
+//
+// `direct` keeps the existing deterministic single-node / workflow
+// execution path unchanged. `director` is the file-backed role with
+// `metadata.systemRole === "orchestrator"`, displayed in the UI as
+// **Director**, compiled with `createDeepAgent()`. The Director
+// runtime (planning loop, write_todos, subagent delegation, interrupts)
+// is owned by Deep Agents. The mode is the only top-level switch —
+// the harness does not maintain a second flag like `deepMode`.
+//
+// Mode is resolved server-side per turn from chat metadata, the
+// request body, and workspace configuration. The client may
+// suggest a mode but never authors the run topology.
+export const executionModeSchema = z.enum(["director", "direct"]);
+export type ExecutionMode = z.infer<typeof executionModeSchema>;
+
+export const DEFAULT_EXECUTION_MODE: ExecutionMode = "direct";
+
+export interface SuggestedHarnessRef {
+  type: "role" | "skill" | "workflow" | "eval";
+  id: string;
+  slug?: string;
+  title?: string;
+}
+
 // ── File types (DB enum) ────────────────────────────────────────
 export const fileTypeSchema = z.enum([
   "knowledge",

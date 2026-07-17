@@ -1,10 +1,13 @@
 import {
   defaultInputContract,
   defaultOutputContract,
+  DEFAULT_EXECUTION_MODE,
+  executionModeSchema,
   parseEvalFile,
   parseRoleFile,
   parseSkillFile,
   parseWorkflowFile,
+  type ExecutionMode,
   type Model,
   type ModelCapabilities,
   type ModelProvider,
@@ -14,6 +17,7 @@ import {
   type RunGoal,
   type RunType,
   type Skill,
+  type SuggestedHarnessRef,
   type WorkflowFile,
   type WorkflowNode
 } from "@spielos/core";
@@ -89,6 +93,16 @@ export type ExecuteBody = {
   goal?: RunGoal;
   budget?: Partial<Pick<RunBudget, "maxInputTokens" | "maxOutputTokens" | "maxDurationMs" | "maxToolCalls">>;
   previousCompaction?: ConversationCompaction | null;
+  // Execution mode: the only top-level switch. Server resolves from
+  // this hint, the chat's persisted `metadata.executionMode`, and
+  // workspace configuration. The client may suggest but never
+  // authors the run topology. Defaults to DEFAULT_EXECUTION_MODE.
+  executionMode?: ExecutionMode;
+  // Director mode suggestion chips. The client attaches roles,
+  // workflows, skills, or evals as suggestions; the server still
+  // resolves the live file-backed capability snapshot and never
+  // trusts client-supplied ids to drive execution topology.
+  suggestedHarnessRefs?: SuggestedHarnessRef[];
 };
 
 // ── Resolved execution ────────────────────────────────────────
@@ -98,6 +112,8 @@ export type ResolvedExecution = {
   target: { type: RunType; id: string | null };
   contextFileIds: string[];
   directorPrompt: string;
+  executionMode: ExecutionMode;
+  suggestedHarnessRefs: SuggestedHarnessRef[];
 };
 
 // ── Main resolver ─────────────────────────────────────────────
@@ -106,6 +122,24 @@ export async function resolveExecution(
   body: ExecuteBody
 ): Promise<ResolvedExecution> {
   if (!body.prompt?.trim()) throw new HttpError(400, "prompt is required");
+
+  // Resolve the execution mode server-side. The client may only
+  // suggest; the persisted chat metadata and workspace configuration
+  // are the authoritative source. We never read the client-provided
+  // value when the chat is a chat turn — direct mode is the default
+  // and Director mode is only honored when the persisted mode is
+  // also "director" (or no chat is supplied). Director mode is a
+  // literal no-op for now (Phase 1): the existing direct execution
+  // paths are unchanged.
+  const requestedMode = body.executionMode;
+  if (requestedMode !== undefined) {
+    const parsed = executionModeSchema.safeParse(requestedMode);
+    if (!parsed.success) {
+      throw new HttpError(400, `Unsupported executionMode: ${String(requestedMode)}`);
+    }
+  }
+  const executionMode: ExecutionMode = requestedMode ?? DEFAULT_EXECUTION_MODE;
+  const suggestedHarnessRefs = normalizeSuggestedHarnessRefs(body.suggestedHarnessRefs);
 
   const targetType: RunType = body.type ?? "chat";
   const contextFileIds = dedupe(body.contextFileIds ?? []);
@@ -512,12 +546,20 @@ export async function resolveExecution(
       budget: body.budget,
       previousCompaction: body.previousCompaction ?? null,
       harnessFileAction,
-      memoryProposalAction
+      memoryProposalAction,
+      // The execution mode is carried on the request so the runtime
+      // can branch on it without re-reading the request body. The
+      // director branch reads it in Phase 2; the direct branch is a
+      // no-op and ignores it.
+      executionMode,
+      suggestedHarnessRefs
     },
     type: targetType,
     target: { type: targetType, id: targetId },
     contextFileIds,
-    directorPrompt
+    directorPrompt,
+    executionMode,
+    suggestedHarnessRefs
   };
 }
 
@@ -740,7 +782,30 @@ function hasCycle(nodes: WorkflowNode[], edges: WorkflowFile["edges"]): boolean 
 // ── Helpers ───────────────────────────────────────────────────
 function indexBy<T>(items: T[], key: (item: T) => string): Record<string, T> {
   const out: Record<string, T> = {};
-  for (const item of items) out[key(item)] = item;
+  for (const item of items) out[key(item)] = out[key(item)] ?? item;
+  return out;
+}
+
+function normalizeSuggestedHarnessRefs(input: SuggestedHarnessRef[] | undefined): SuggestedHarnessRef[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  const out: SuggestedHarnessRef[] = [];
+  for (const raw of input) {
+    if (!raw || typeof raw !== "object") continue;
+    const type = raw.type;
+    const id = typeof raw.id === "string" ? raw.id.trim() : "";
+    if (!id) continue;
+    if (type !== "role" && type !== "skill" && type !== "workflow" && type !== "eval") continue;
+    const dedupeKey = `${type}:${id}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push({
+      type,
+      id,
+      slug: typeof raw.slug === "string" ? raw.slug : undefined,
+      title: typeof raw.title === "string" ? raw.title : undefined
+    });
+  }
   return out;
 }
 

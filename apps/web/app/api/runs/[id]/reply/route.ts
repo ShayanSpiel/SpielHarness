@@ -65,7 +65,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       reasoningEffort: typeof previousInputs.reasoningEffort === "string" ? previousInputs.reasoningEffort as ExecuteBody["reasoningEffort"] : undefined,
       goal: previousInputs.goal as ExecuteBody["goal"],
       budget: previousInputs.budget as ExecuteBody["budget"],
-      runId
+      runId,
+      // The execution mode and suggested refs are persisted on the
+      // run's `inputs` so resume replays the same mode. The plain
+      // chat retry path falls back to direct mode (legacy); durable
+      // resume for harness runs preserves the original mode.
+      executionMode: previousInputs.executionMode === "director" ? "director" : "direct",
+      suggestedHarnessRefs: Array.isArray(previousInputs.suggestedHarnessRefs)
+        ? previousInputs.suggestedHarnessRefs as ExecuteBody["suggestedHarnessRefs"]
+        : []
     };
 
     const resolved = await resolveExecution(org, executeBody);

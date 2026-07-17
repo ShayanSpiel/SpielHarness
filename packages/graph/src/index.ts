@@ -16,6 +16,7 @@ import type {
   Model,
   ModelProvider,
   MilestoneSummary,
+  ExecutionMode,
   Role,
   RunBudget,
   RunEvent,
@@ -24,6 +25,7 @@ import type {
   RunStatus,
   RunVerification,
   Skill,
+  SuggestedHarnessRef,
   WorkflowFile,
   WorkflowNode
 } from "@spielos/core";
@@ -215,6 +217,16 @@ export type RunRequest = {
   // waiting_human, or `null` to continue. This is the durable path —
   // the in-memory abort is handled separately via `signal`.
   checkControl?: () => "cancel" | "pause" | null;
+  // Phase 1: execution mode. The only top-level switch. `"direct"` is
+  // the existing deterministic path; `"director"` selects the
+  // file-backed Orchestrator role and the deepagents runtime. The
+  // runtime branches on this field — director mode requires the
+  // orchestrator role to be active; otherwise it falls back to direct.
+  executionMode?: import("@spielos/core").ExecutionMode;
+  // Phase 1: client-suggested harness items attached to a Director
+  // turn. Never used to drive execution topology; the runtime
+  // resolves the live file-backed capability snapshot.
+  suggestedHarnessRefs?: SuggestedHarnessRef[];
 };
 
 // ── Node output disposition (controls artifact persistence) ───
@@ -2822,3 +2834,32 @@ export async function* streamChatRun(
   yield { kind: "checkpoint", state: checkpoint };
   yield { kind: "done", status: "completed" };
 }
+
+// ── Director run (deepagents-backed Orchestrator) ──────────────
+//
+// Phase 1 milestone: this entrypoint exists and is wired into the
+// API layer. The actual Deep Agents runtime (planning loop,
+// subagents, interrupts) ships in Phase 2/3. Until then, director
+// runs are routed to the same plain-chat runtime as direct runs:
+// the resolved Orchestrator role prompt and selected context drive
+// the legacy `streamChatRun` path. This keeps director mode a
+// literal no-op against the existing deterministic behavior, so
+// the existing direct-mode regression tests remain bit-for-bit
+// identical. The runtime branches on this entrypoint; once the
+// Director core ships, this function is replaced with the v3
+// stream mapper from `packages/graph/src/director/compile.ts`.
+export type DirectorRunRequest = Omit<RunRequest, "workflow" | "singleNode"> & {
+  directorPrompt: string;
+  history?: ChatMessage[];
+};
+
+export async function* streamDirectorRun(
+  req: DirectorRunRequest
+): AsyncGenerator<RunYield, void, void> {
+  // Phase 1 fallback: defer to the legacy plain-chat runtime with
+  // the resolved director prompt. Phase 2 replaces this body with
+  // the deepagents v3 stream mapper and the post-mapper RunYield
+  // emit loop.
+  yield* streamChatRun(req);
+}
+
