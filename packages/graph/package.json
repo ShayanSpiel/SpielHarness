@@ -9,7 +9,8 @@
     "./director/events": "./src/director/events.ts",
     "./director/usage": "./src/director/usage.ts",
     "./director/interrupt": "./src/director/interrupt.ts",
-    "./director/chat-model": "./src/director/chat-model.ts"
+    "./director/chat-model": "./src/director/chat-model.ts",
+    "./director/tools": "./src/director/tools.ts"
   },
   "dependencies": {
     "@langchain/core": "1.2.1",

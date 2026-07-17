@@ -73,9 +73,14 @@ test("compileDirector requires a configured provider and model", () => {
     orgId,
     runId: "run-1",
     directorRole: role,
+    roles: {},
+    skills: {},
+    workflows: {},
+    evals: {},
     provider: null,
     model: null,
-    suggestedHarnessRefs: []
+    suggestedHarnessRefs: [],
+    toolContext: { executeWorkflow: async () => "{}", executeSkill: async () => "{}", executeEval: async () => "{}" }
   }), /configured provider/);
 });
 
@@ -85,9 +90,14 @@ test("compileDirector produces a deep agent with a system prompt and bound model
     orgId,
     runId: "run-1",
     directorRole: role,
+    roles: {},
+    skills: {},
+    workflows: {},
+    evals: {},
     provider: { ...model },
     model,
-    suggestedHarnessRefs: []
+    suggestedHarnessRefs: [],
+    toolContext: { executeWorkflow: async () => "{}", executeSkill: async () => "{}", executeEval: async () => "{}" }
   });
   assert.ok(compiled.agent);
   assert.ok(compiled.systemPrompt.includes("Be the SpielOS Director"));

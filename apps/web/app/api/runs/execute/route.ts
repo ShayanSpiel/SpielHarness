@@ -26,6 +26,7 @@ import { generatedFileFolder } from "../../../../lib/workspace-data";
 import { streamChatRun, streamRun, streamDirectorRun, type RunCheckpoint, type RunYield } from "@spielos/graph";
 import { registerRun, onRunSignal } from "../../../../lib/run-registry";
 import { publishDomainEvent } from "../../../../lib/realtime";
+import { buildDirectorToolContext, workflowsForDirector } from "../../../../lib/director-tools";
 import type { RunEvent, RunStatus, ExecutionMode } from "@spielos/core";
 
 function frame(data: unknown): string {
@@ -334,7 +335,37 @@ export async function POST(request: Request) {
               budget: body.budget,
               onUsage,
               signal: executionController.signal,
-              checkControl
+              checkControl,
+              directorWorkflows: workflowsForDirector(
+                Object.fromEntries(
+                  Object.entries(resolved.runRequest.roles ?? {})
+                    .map((roleId) => {
+                      const workflow = resolved.runRequest.workflow;
+                      if (workflow) return [workflow.id, workflow] as const;
+                      return [roleId, null] as const;
+                    })
+                    .filter((entry): entry is readonly [string, import("@spielos/core").WorkflowFile] => entry[1] !== null)
+                )
+              ),
+              directorToolContext: buildDirectorToolContext({
+                sql,
+                orgId: org.orgId,
+                userId: org.userId,
+                chatId: chatId ?? null,
+                turnId,
+                parentRunId: run.id,
+                projectId: project?.id ?? null,
+                roles: resolved.runRequest.roles,
+                skills: resolved.runRequest.skills,
+                workflows: resolved.runRequest.workflow
+                  ? { [resolved.runRequest.workflow.id]: resolved.runRequest.workflow }
+                  : {},
+                evals: {},
+                provider: resolved.runRequest.provider,
+                model: resolved.runRequest.model,
+                harnessFileAction: resolved.runRequest.harnessFileAction,
+                memoryProposalAction: resolved.runRequest.memoryProposalAction
+              })
             })
           : resolved.type === "chat" && !resolved.runRequest.singleNode
             ? streamChatRun({

@@ -2849,6 +2849,7 @@ import {
 } from "./director/compile.ts";
 import { mapDirectorInterrupts, type DirectorStateSnapshot } from "./director/events.ts";
 import { DirectorUsageTracker } from "./director/usage.ts";
+import { noopToolContext } from "./director/tools.ts";
 import { Command } from "@langchain/langgraph";
 
 export type DirectorRunRequest = Omit<RunRequest, "workflow" | "singleNode"> & {
@@ -2860,6 +2861,14 @@ export type DirectorRunRequest = Omit<RunRequest, "workflow" | "singleNode"> & {
    * translates the answers map into a `Command({ resume: ... })`.
    */
   directorResume?: { requestId: string; answers: Record<string, unknown> };
+  /**
+   * The Director runtime uses an inline workflow map to build
+   * the `execute_workflow` tool catalog. Plain chat turns do
+   * not bind a workflow; the catalog is empty in that case.
+   */
+  directorWorkflows?: Record<string, import("@spielos/core").WorkflowFile>;
+  directorEvals?: Record<string, import("@spielos/core").EvalFile>;
+  directorToolContext?: import("./director/tools.ts").DirectorToolContext;
 };
 
 export async function* streamDirectorRun(
@@ -2884,9 +2893,14 @@ export async function* streamDirectorRun(
     orgId: req.orgId,
     runId: req.runId,
     directorRole,
+    roles: req.roles ?? {},
+    skills: req.skills ?? {},
+    workflows: req.directorWorkflows ?? {},
+    evals: req.directorEvals ?? {},
     provider: req.provider,
     model: req.model,
     suggestedHarnessRefs,
+    toolContext: req.directorToolContext ?? noopToolContext(),
     signal: req.signal
   });
 
