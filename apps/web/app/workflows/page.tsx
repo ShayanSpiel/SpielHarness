@@ -289,22 +289,18 @@ export default function WorkflowsPage() {
     setRunning(true);
     setRunLog([]);
     try {
-      const allFileIds = new Set<string>();
-      for (const node of draft.nodes) {
-        for (const id of node.fileIds) allFileIds.add(id);
-      }
       const response = await fetch("/api/runs/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: `Execute workflow "${draft.name}": ${draft.description}`,
           type: "workflow",
-          workflowId,
-          contextFileIds: Array.from(allFileIds)
+          workflowId
         })
       });
       if (!response.ok || !response.body) {
-        setRunLog((prev) => [...prev, `Run FAILED (HTTP ${response.status})`]);
+        const payload = await response.json().catch(() => ({})) as { error?: string };
+        setRunLog((prev) => [...prev, `Run FAILED: ${payload.error ?? `HTTP ${response.status}`}`]);
         setRunning(false);
         return;
       }

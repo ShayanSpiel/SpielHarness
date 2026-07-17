@@ -1,8 +1,101 @@
 # SpielOS Frontier Automation Audit and Execution Plan
 
-Status: implementation handoff  
+Status: active implementation and live certification
 Audit date: 2026-07-17  
 Audience: Terra and every implementation agent working in this repository
+
+## Implementation status — 2026-07-17
+
+This document remains the active milestone record. Do not restart the audit or
+replace it with a new plan after a session reset.
+
+Completed and validated:
+
+- Auth and application database pool defaults raised from one to four with
+  configurable limits, session lookup coalescing, and a retry path. The app
+  pool fix followed a measured 498-second resumed checkpoint stall during the
+  live landing-page run.
+- Server-side organization membership is now the authorization source; the
+  client role cookie is ignored for permission decisions.
+- Google sign-in uses identity scopes only; connector OAuth uses signed,
+  short-lived state bound to user, organization, and integration. Provider
+  access/refresh tokens are no longer stored in browser cookies.
+- Drive records use the real organization id and Drive loading is limited to
+  Files > Files rather than every workspace boot.
+- Catalog entries with no executable adapter (Calendar, GA4, Exa/Tavily MCP,
+  Brave) are marked unavailable in the file-backed manifest, blocked by the
+  API, and covered by an adapter-conformance test.
+- JSON boundary and UI guardrail regressions were fixed. The suite last passed
+  typecheck, lint, UI contracts, and 103 unit tests; production builds pass,
+  with the existing missing native SWC warning still open.
+- Long-horizon state now flows through plain chat, `llm_call`, and ReAct
+  workflow nodes; the pinned state and append-only milestone list are included
+  in durable checkpoints and restored after a human pause/restart. Existing
+  milestones are no longer misreported as fresh compactions or overwritten.
+- Live browser scenario `LH-20260717-A` passed on the configured
+  `mistral-small-latest` model after removing the model-tier bypass that had
+  silently disabled extraction. The inspector persisted `v1` with the Project
+  Aster goal, one decision, one open task, and the no-external-writes
+  constraint across a full Next.js process restart. The native
+  `long_horizon` event was visible in Events. Files > Files also reloaded the
+  connected Drive list after restart without modifying an external file.
+- Typed multi-file project artifacts now validate a project contract, reject
+  unsafe/duplicate paths, create durable project artifacts, and render in a
+  shared Preview/Source/Files workbench. A delimiter-based raw-file transport
+  recovers HTML/CSS/JS without one giant escaped JSON response. The workbench
+  has a shared full-screen dialog in chat and the inspector, with Escape close.
+  HTML preview is sandboxed and local project CSS/assets are assembled without
+  remote execution. JSON and real PDF bytes have dedicated render paths.
+- File-backed Landing Page Strategist, Builder, and Publisher roles, an
+  HTML-first Premium Landing Page workflow, project template, project artifact
+  skill, and outcome evaluator are seeded and resolvable. Drive folder/file
+  create/update/project-publish and Notion database-create primitives are
+  registered as groundwork, but no external landing write is in the current
+  workflow or claimed as certified.
+- Human-input resume now shows explicit context/model-generation activity,
+  live resumed usage/run-state frames, and a numbered wizard step rail. Retry
+  reuses the persisted answers for a pending human checkpoint. Terminal human
+  answers remain structured engine state and are no longer emitted as raw JSON
+  assistant messages or generic artifacts. Authoritative run status is applied
+  after durable event replay, key resume events persist immediately, and the
+  inline timeline/artifacts restore independently of assistant text.
+- Live Medium certification resumed from the saved brief/strategy checkpoint,
+  recovered the malformed builder envelope into a seven-file project, emitted
+  the project and 89/100 eval artifacts, reached Landing Review, accepted the
+  user's approval, verified Preview/Source/Files and full-screen behavior, and
+  completed with 60 durable events.
+
+In progress — do not mark complete until live/restart tests pass:
+
+- The basic live/restart continuity slice now passes, but Milestone E remains
+  open until a live forced-compaction/milestone run and the complete 200+ turn
+  matrix cover model switching, conflicting instructions, human pauses, and
+  replay from a restarted durable worker. The current request-owned runtime
+  cannot satisfy the worker-restart portion of that gate.
+- HTML-first runtime certification now passes end to end, including durable
+  resume, artifact recovery, QA, review, completion, and restored workbench UI.
+  Business-quality certification remains open: the live artifact invented
+  unsupported implementation-time, source-coverage, freshness, time-to-value,
+  and security claims despite the brief; it also omitted the requested
+  `analytics.json` and `Files/form-handler.js`. The existing lexical evaluator
+  passed at 89/100 and therefore needs stricter claim/file-contract rules before
+  the landing workflow can be called publish-ready.
+
+Known active blockers/debt:
+
+- Runs are still request-owned; there is no durable worker, lease/fencing,
+  cross-process event transport, or persistent external-operation idempotency
+  journal.
+- Drive plain-file/folder/project write primitives and project artifact viewers
+  now exist, but the durable idempotency journal, live sandbox write/cleanup
+  certification, Google-native document creation, GitHub, deployment, GA4, and
+  MCP remain open. Do not claim external write automation as complete.
+- Cold authenticated startup and Drive list loading remain slow. The duplicate
+  Drive request was removed, but DB/session latency needs instrumentation and
+  a concurrency benchmark.
+- Browser automation may lose the released authenticated tab after a build.
+  On reset, reopen/claim the localhost tab, verify the logged-in profile,
+  then run the live plain-chat and Files > Files regression before continuing.
 
 ## 1. Executive verdict
 
@@ -16,16 +109,16 @@ Do not begin by adding more impressive workflow JSON. Build one truthful, durabl
 
 | Requested capability | Current state | Required state |
 | --- | --- | --- |
-| Google Drive | Connected account, list/search/read and limited export work; selected files show metadata | Folder/file create, update, move, copy, permission and export operations with idempotency, receipts, previews, and sandbox tests |
+| Google Drive | Connected list/search/read/export plus typed folder/file create, update and project-publish primitives; writes are not yet journaled or live-certified | Move, copy, permission and Google-native export operations with durable idempotency, receipts, previews, and sandbox tests |
 | Google Docs/Sheets/Slides/Forms | No creation adapter | Typed create/update/export adapters, visually verified templates, Drive links and safe in-app preview |
 | GitHub and GitHub Pages | No integration or runtime adapter | GitHub App auth, repo/branch/tree/commit/PR/Pages operations, protected-write policy and deployment receipts |
 | Chat execution | SSE/events and inline activity exist | Durable background execution, reconnect/replay, accurate error presentation, fast authenticated startup and one event subscription per workspace |
-| Artifact UI | Markdown/code blocks are usable; run artifacts are primarily raw `pre` text | Full-screen artifact workbench with Preview/Source/Data/Files/History, format renderers and versioned provenance |
-| Premium landing pages | No complete project/deploy workflow | Multi-file project artifact, asset/form integrations, build/a11y/performance checks and deployment adapters |
+| Artifact UI | Shared project workbench renders sandboxed multi-file HTML Preview, per-file Source/Files, JSON, and real PDF bytes in chat and inspector | Full-screen Data/History/Provenance, additional office/media renderers, large-artifact virtualization and visual certification |
+| Premium landing pages | File-backed HTML-first roles/workflow/template/eval and typed multi-file project creation exist; live Medium run passed brief/strategy but full artifact approval is pending | Complete live artifact preview/a11y certification, then opt-in form persistence, Drive save, GitHub preview and deployment receipts |
 | Analytics report | Seed advertises `analytics.report`; no executable adapter | GA4 adapter, normalized datasets, chart/report artifacts and Drive export |
 | SEO/content calendar | Seed workflows exist, but outcomes are generic text and connected persistence is incomplete | Structured datasets, premium artifact rendering, Notion/Sheets persistence and outcome evals |
 | Website manipulation | Missing | Safe Git tree changes, previews, checks, approval boundaries, commit/PR/deploy receipts |
-| Long-horizon memory | New context/compaction files and synthetic tests exist, but live graph execution still uses the legacy assembler | Persisted pinned state, milestones, retrieval, compaction events and live multi-session continuity evals |
+| Long-horizon memory | Live chat and workflow model nodes use the long-horizon assembler; pinned state/milestones persist through metadata and durable checkpoints; browser/process-restart continuity passed for the basic slice | Forced live compaction, retrieval references, 200+ turn model-switch/human-pause continuity, and durable-worker restart evals |
 | General workflow flexibility | Basic DAG, roles, skills, files, eval loops and human questions | Versioned workflow spec with conditions, triggers, typed variables, subflows, map/reduce, retries, policies and compensation |
 | MCP integrations | Catalog entries exist; graph throws not configured/not implemented | Real client, discovery, auth/policy layer, timeouts, schemas, audit and conformance tests |
 

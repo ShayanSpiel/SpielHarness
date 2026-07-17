@@ -29,6 +29,7 @@ export type OrgContext = {
 };
 
 const sessionCache = new Map<string, { userId: string; expiresAt: number }>();
+const pendingSessionLookups = new Map<string, Promise<string | null>>();
 const DEFAULT_SESSION_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL = (() => {
   const raw = Number(process.env.SESSION_CACHE_TTL_MS);
@@ -67,7 +68,7 @@ function isRetriableSessionError(err: unknown): boolean {
   return /terminat|closed|reset|connection|timeout|ETIMEDOUT|ECONNRESET|EPIPE|pool/i.test(message);
 }
 
-async function getSessionWithRetry(cookieHeader: string, attempts = 1): Promise<Awaited<ReturnType<typeof auth.api.getSession>>> {
+async function getSessionWithRetry(cookieHeader: string, attempts = 2): Promise<Awaited<ReturnType<typeof auth.api.getSession>>> {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
@@ -88,21 +89,36 @@ async function resolveUserId(cookieHeader: string): Promise<string | null> {
   const cached = sessionCache.get(token);
   if (cached && cached.expiresAt > Date.now()) return cached.userId;
 
-  const session = await getSessionWithRetry(cookieHeader).catch((err) => {
-    console.warn("[auth] getSession failed after retries:", err instanceof Error ? err.message : err);
-    return null;
-  });
+  // A page boot can fan out into several protected API calls at once. They
+  // share the same session token, so coalesce the database lookup instead of
+  // acquiring one auth-pool client per request.
+  const inFlight = pendingSessionLookups.get(token);
+  if (inFlight) return inFlight;
 
-  if (session?.user) {
-    sessionCache.set(token, {
-      userId: session.user.id,
-      expiresAt: Date.now() + SESSION_TTL,
+  const lookup = (async () => {
+    const session = await getSessionWithRetry(cookieHeader).catch((err) => {
+      console.warn("[auth] getSession failed after retries:", err instanceof Error ? err.message : err);
+      return null;
     });
-    return session.user.id;
-  }
 
-  sessionCache.delete(token);
-  return null;
+    if (session?.user) {
+      sessionCache.set(token, {
+        userId: session.user.id,
+        expiresAt: Date.now() + SESSION_TTL,
+      });
+      return session.user.id;
+    }
+
+    sessionCache.delete(token);
+    return null;
+  })();
+
+  pendingSessionLookups.set(token, lookup);
+  try {
+    return await lookup;
+  } finally {
+    pendingSessionLookups.delete(token);
+  }
 }
 
 export async function getOrg(): Promise<OrgContext> {
@@ -121,7 +137,6 @@ export async function getOrg(): Promise<OrgContext> {
 
   const cookieStore = await cookies();
   const orgIdCookie = cookieStore.get("spielos.org")?.value;
-  const roleCookie = cookieStore.get("spielos.org-role")?.value as "owner" | "admin" | undefined;
 
   // Warm path: cached membership list for this user. OrgId from the cookie
   // is honored if the user is still a member; otherwise we fall through to
@@ -145,12 +160,13 @@ export async function getOrg(): Promise<OrgContext> {
   if (orgIdCookie) {
     const match = memberships.find((m) => m.org_id === orgIdCookie);
     if (match) {
-      const role = (roleCookie ?? (match.role as "owner" | "admin")) as "owner" | "admin";
       return {
         sql,
         orgId: orgIdCookie,
         userId,
-        role,
+        // The client may select an organization, but it cannot choose the
+        // authorization role. Membership is the only source of authority.
+        role: match.role as "owner" | "admin",
         isDemo: false
       };
     }

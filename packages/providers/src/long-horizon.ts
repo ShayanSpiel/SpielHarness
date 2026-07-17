@@ -33,6 +33,9 @@ export type LongHorizonResult = {
   history: ChatMessage[];
   state: ChatPinnedState;
   milestone: MilestoneSummary | null;
+  newMilestones: MilestoneSummary[];
+  compacted: boolean;
+  passesRun: number;
   appliedOperations: number;
   rejectedOperations: number;
   overflow: boolean;
@@ -107,7 +110,8 @@ export async function assembleLongHorizonContext(args: LongHorizonInput): Promis
   if (compacted.state !== workingState) {
     args.onPinnedStateUpdated?.(compacted.state);
   }
-  for (const milestone of compacted.milestones.slice(args.previousMilestone ? 1 : 0)) {
+  const newMilestones = compacted.milestones.slice(args.previousMilestone ? 1 : 0);
+  for (const milestone of newMilestones) {
     args.onMilestoneCreated?.(milestone);
   }
   if (compacted.overflow) {
@@ -126,6 +130,9 @@ export async function assembleLongHorizonContext(args: LongHorizonInput): Promis
     history: compacted.finalMessages,
     state: compacted.state,
     milestone: compacted.milestones.at(-1) ?? null,
+    newMilestones,
+    compacted: compacted.passesRun > 0,
+    passesRun: compacted.passesRun,
     appliedOperations,
     rejectedOperations,
     overflow: compacted.overflow,

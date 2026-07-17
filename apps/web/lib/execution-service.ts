@@ -23,7 +23,6 @@ import {
   audit,
   createFile,
   getFile,
-  getOrchestratorPrompt,
   listConnections,
   listHarnessFiles,
   updateFileIfVersion
@@ -33,7 +32,7 @@ import type { RunRequest, AttachedFile } from "@spielos/graph";
 import type { ConversationCompaction } from "@spielos/providers";
 import type { FileRow } from "@spielos/db";
 import { createHash } from "node:crypto";
-import { environmentModelDefaults, listModelsWithEnvironmentDefaults } from "./default-models";
+import { listModelsWithEnvironmentDefaults } from "./default-models";
 
 function stableUuid(value: string): string {
   const chars = createHash("sha256").update(value).digest("hex").slice(0, 32).split("");
@@ -86,6 +85,7 @@ export type ExecuteBody = {
   idempotencyKey?: string;
   modelId?: string;
   reasoningEffort?: ModelCapabilities["reasoningEffort"];
+  projectId?: string;
   goal?: RunGoal;
   budget?: Partial<Pick<RunBudget, "maxInputTokens" | "maxOutputTokens" | "maxDurationMs" | "maxToolCalls">>;
   previousCompaction?: ConversationCompaction | null;
@@ -110,9 +110,9 @@ export async function resolveExecution(
   const targetType: RunType = body.type ?? "chat";
   const contextFileIds = dedupe(body.contextFileIds ?? []);
   const isChat = targetType === "chat";
-  // Plain chat = no target, no workflow, no attached context, and no legacy
-  // direct-node payload. The orchestrator prompt and an env-defined model
-  // are enough; skip the full harness enumeration and connection load.
+  // Plain chat is a first-class assistant path, now mediated by the
+  // file-backed Orchestrator role. The role receives only its declared safe
+  // capabilities; it does not grant arbitrary integration access.
   const isPlainChat = isChat
     && !body.targetId
     && !body.workflowId
@@ -121,36 +121,15 @@ export async function resolveExecution(
 
   const toRecord = (f: FileRow) => fileRowToRecord(f);
 
-  // For plain chat, only the orchestrator prompt and an env-defined model
-  // are required. Skip listHarnessFiles, listConnections, and the
-  // listModels+createModel round-trip.
-  let files: FileRow[];
-  let modelRows: Awaited<ReturnType<typeof listModelsWithEnvironmentDefaults>>;
+  // Resolve the active harness for every chat turn so the default orchestrator
+  // remains file-backed and capability-gated like selected workflows.
   let connections: Awaited<ReturnType<typeof listConnections>> = [];
-  if (isPlainChat) {
-    const orchestrator = await getOrchestratorPrompt(org.sql, org.orgId);
-    files = orchestrator ? [orchestrator] : [];
-    modelRows = environmentModelDefaults().map((model) => ({
-      id: `runtime.env.${model.provider}.${model.model}`,
-      org_id: org.orgId,
-      name: model.name,
-      provider: model.provider,
-      model: model.model,
-      base_url: model.baseUrl,
-      secret_env_key: model.secretEnvKey,
-      config: { source: "environment", capabilities: model.capabilities },
-      enabled: true
-    }));
-  } else {
-    const [loadedFiles, loadedModels] = await Promise.all([
-      listHarnessFiles(org.sql, org.orgId),
-      listModelsWithEnvironmentDefaults(org.sql, org.orgId)
-    ]);
-    files = loadedFiles;
-    modelRows = loadedModels;
-    if (!isChat) {
-      connections = await listConnections(org.sql, org.orgId);
-    }
+  const [files, modelRows] = await Promise.all([
+    listHarnessFiles(org.sql, org.orgId),
+    listModelsWithEnvironmentDefaults(org.sql, org.orgId)
+  ]);
+  if (!isChat) {
+    connections = await listConnections(org.sql, org.orgId);
   }
 
   let roles: Record<string, Role> = {};
@@ -161,7 +140,7 @@ export async function resolveExecution(
   const skillBySlug = new Map<string, string>();
   const fileReferenceIds = new Map<string, string>();
 
-  if (!isChat) {
+  {
     roles = indexBy(
       files.filter((f) => f.file_type === "harness_role").map(toRecord).map(parseRoleFile),
       (r) => r.id
@@ -220,7 +199,7 @@ export async function resolveExecution(
     targetId = wf.id;
   } else if (targetType === "role") {
     if (!body.targetId) throw new HttpError(400, "targetId is required for role runs.");
-    const role = roles[body.targetId];
+    const role = roles[body.targetId] ?? roles[roleBySlug.get(body.targetId) ?? ""];
     if (!role) throw new HttpError(404, "Role not found.");
     if (role.status !== "active") {
       throw new HttpError(400, `Role "${role.name}" is disabled.`);
@@ -307,7 +286,36 @@ export async function resolveExecution(
     };
     targetId = evalFile.id;
   } else if (targetType === "chat") {
-    // No workflow, no single node. The runtime will use streamChatRun.
+    const orchestrator = Object.values(roles).find((role) =>
+      role.metadata?.systemRole === "orchestrator" || role.metadata?.slug === "orchestrator"
+    );
+    if (orchestrator?.status === "active") {
+      // The orchestrator owns the chat by definition. It must have access to
+      // every active harness file (roles, skills, workflows, evals, templates,
+      // strategy, prompts) and to every active skill the workspace exposes —
+      // including those authored later. The role's metadata `skillSlugs` is
+      // treated as a default/seed hint, never as a hard cap. The runtime
+      // resolves the live capability snapshot every turn.
+      const activeSkillIds = Object.values(skills)
+        .filter((skill) => skill.status === "active")
+        .map((skill) => skill.id);
+      const declaredSkillIds = (orchestrator.skillIds ?? []).filter((id) => skills[id]?.status === "active");
+      const orchestratorSkillIds = Array.from(new Set([...declaredSkillIds, ...activeSkillIds]));
+      const orchestratorRole: Role = {
+        ...orchestrator,
+        skillIds: orchestratorSkillIds
+      };
+      singleNode = {
+        kind: "role",
+        nodeId: `node_${crypto.randomUUID()}`,
+        title: orchestratorRole.name,
+        role: orchestratorRole,
+        skill: null,
+        evalFile: null,
+        fileIds: contextFileIds
+      };
+      targetId = orchestratorRole.id;
+    }
   } else {
     throw new HttpError(400, `Unknown run type: ${body.type}`);
   }
@@ -389,7 +397,10 @@ export async function resolveExecution(
   }
 
   // Resolve director prompt
-  const directorPrompt = resolveDirectorPrompt(files, isPlainChat);
+  // Existing workspaces can keep using the legacy direct-chat path until they
+  // sync the new file-backed role. Once present, the Orchestrator owns the
+  // turn and this fallback instruction is intentionally omitted.
+  const directorPrompt = resolveDirectorPrompt(files, isPlainChat && !singleNode);
   const harnessFileAction: NonNullable<RunRequest["harnessFileAction"]> = async (action, params, context) => {
     const allowedTypes = new Set(["harness_role", "harness_skill", "harness_workflow", "harness_eval", "harness_template"]);
     if (action === "create") {

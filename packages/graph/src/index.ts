@@ -7,12 +7,15 @@ import {
 } from "@langchain/langgraph";
 import type {
   Artifact,
+  ArtifactProject,
+  ChatPinnedState,
   Connection,
   EvalFile,
   HumanInputQuestion,
   HumanInputRequest,
   Model,
   ModelProvider,
+  MilestoneSummary,
   Role,
   RunBudget,
   RunEvent,
@@ -24,11 +27,13 @@ import type {
   WorkflowFile,
   WorkflowNode
 } from "@spielos/core";
-import { capabilitiesForModel, DEFAULT_MODEL_CAPABILITIES } from "@spielos/core";
+import { artifactProjectSchema, capabilitiesForModel, chatPinnedStateSchema, emptyPinnedState, DEFAULT_MODEL_CAPABILITIES } from "@spielos/core";
 import {
   streamChat,
-  assembleConversationContext,
+  assembleLongHorizonContext,
   adapterForOperation,
+  migrateLegacyCompaction,
+  readMilestonesFromMetadata,
   type ChatMessage,
   type ChatUsage,
   type ConversationCompaction,
@@ -144,7 +149,13 @@ export type RunCheckpoint = {
   budget?: RunBudget;
   progress?: RunProgress;
   verification?: RunVerification;
+  longHorizon?: LongHorizonCheckpoint;
   pause?: { requested: boolean; reason: string | null; requestedAt: string | null };
+};
+
+export type LongHorizonCheckpoint = {
+  pinnedState: ChatPinnedState;
+  milestones: MilestoneSummary[];
 };
 
 export type HarnessFileAction = (
@@ -187,6 +198,7 @@ export type RunRequest = {
   goal?: RunGoal;
   budget?: Partial<Pick<RunBudget, "maxInputTokens" | "maxOutputTokens" | "maxDurationMs" | "maxToolCalls">>;
   previousCompaction?: ConversationCompaction | null;
+  chatMetadata?: Record<string, unknown>;
   onUsage?: (usage: ChatUsage) => void;
   onToolUsage?: (count: number) => void;
   onEvent?: (event: RunEvent) => void;
@@ -218,6 +230,7 @@ export type NodeOutputDisposition =
 export type NodeOutput = {
   text: string;
   disposition: NodeOutputDisposition;
+  longHorizon?: LongHorizonCheckpoint;
 };
 
 function toolKindToDisposition(kind: ToolKindForDisposition): NodeOutputDisposition {
@@ -261,6 +274,11 @@ const RunStateAnnotation = Annotation.Root({
   memoryProposalAction: Annotation<MemoryProposalAction | undefined>(),
   resume: Annotation<Record<string, unknown> | undefined>(),
   checkControl: Annotation<(() => "cancel" | "pause" | null) | undefined>(),
+  chatMetadata: Annotation<Record<string, unknown> | undefined>(),
+  longHorizon: Annotation<LongHorizonCheckpoint>({
+    reducer: (current, update) => mergeLongHorizonCheckpoints(current, update),
+    default: () => ({ pinnedState: emptyPinnedState(), milestones: [] })
+  }),
 
   // Dynamic state
   completedNodes: Annotation<string[]>({
@@ -356,6 +374,114 @@ function makeEvent(
   };
 }
 
+function longHorizonFromMetadata(metadata: Record<string, unknown> | undefined, fallbackId: string): LongHorizonCheckpoint {
+  const parsedState = chatPinnedStateSchema.safeParse(metadata?.pinnedState);
+  const milestones = readMilestonesFromMetadata(metadata);
+  if (milestones.length === 0) {
+    const migrated = migrateLegacyCompaction({ metadata, chatId: fallbackId });
+    if (migrated.migrated && migrated.milestone) {
+      return { pinnedState: parsedState.success ? parsedState.data : migrated.state, milestones: [migrated.milestone] };
+    }
+  }
+  return {
+    pinnedState: parsedState.success ? parsedState.data : emptyPinnedState(),
+    milestones
+  };
+}
+
+function mergeLongHorizonCheckpoints(
+  current: LongHorizonCheckpoint,
+  update: LongHorizonCheckpoint | undefined
+): LongHorizonCheckpoint {
+  if (!update) return current;
+  const milestones = [...current.milestones];
+  const seen = new Set(milestones.map((milestone) => milestone.id));
+  for (const milestone of update.milestones) {
+    if (seen.has(milestone.id)) continue;
+    seen.add(milestone.id);
+    milestones.push(milestone);
+  }
+  const currentHasState = Boolean(
+    current.pinnedState.primaryGoal ||
+    current.pinnedState.currentPhase ||
+    current.pinnedState.decisions.length ||
+    current.pinnedState.constraints.length ||
+    current.pinnedState.openWork.length ||
+    current.pinnedState.successCriteria.length ||
+    current.pinnedState.importantReferences.length
+  );
+  const updateHasState = Boolean(
+    update.pinnedState.primaryGoal ||
+    update.pinnedState.currentPhase ||
+    update.pinnedState.decisions.length ||
+    update.pinnedState.constraints.length ||
+    update.pinnedState.openWork.length ||
+    update.pinnedState.successCriteria.length ||
+    update.pinnedState.importantReferences.length
+  );
+  const pinnedState = update.pinnedState.version > current.pinnedState.version || (!currentHasState && updateHasState)
+    ? update.pinnedState
+    : current.pinnedState;
+  return { pinnedState, milestones };
+}
+
+async function assembleNodeLongHorizon(args: {
+  state: typeof RunStateAnnotation.State;
+  system: string;
+  input: string;
+  signal?: AbortSignal;
+}): Promise<{
+  messages: ChatMessage[];
+  checkpoint: LongHorizonCheckpoint;
+  inputTokens: number;
+  removedMessages: number;
+  compacted: boolean;
+  milestone: MilestoneSummary | null;
+  newMilestones: MilestoneSummary[];
+  appliedOperations: number;
+  rejectedOperations: number;
+}> {
+  const currentUserMessage: ChatMessage = { role: "user", content: args.input };
+  const current = args.state.longHorizon;
+  const completedHistory: ChatMessage[] = args.state.completedNodes.flatMap((nodeId) => {
+    const value = args.state.outputs[nodeId];
+    if (!value || value === args.input) return [];
+    const title = args.state.workflow?.nodes.find((node) => node.id === nodeId)?.title ?? nodeId;
+    return [
+      { role: "user" as const, content: `Completed workflow step: ${title}` },
+      { role: "assistant" as const, content: value }
+    ];
+  });
+  const longHorizon = await assembleLongHorizonContext({
+    provider: args.state.provider!,
+    model: args.state.model!,
+    fallbackModel: null,
+    state: current.pinnedState,
+    previousMilestone: current.milestones.at(-1) ?? null,
+    history: completedHistory,
+    systemPrompt: args.system,
+    currentUserMessage,
+    inputLimit: Math.max(1024, capabilitiesForModel(args.state.model!).contextWindow - capabilitiesForModel(args.state.model!).maxOutputTokens),
+    signal: args.signal,
+    onUsage: args.state.onUsage
+  });
+  const checkpoint = mergeLongHorizonCheckpoints(current, {
+    pinnedState: longHorizon.state,
+    milestones: longHorizon.newMilestones
+  });
+  return {
+    messages: [{ role: "system", content: longHorizon.system }, ...longHorizon.history, currentUserMessage],
+    checkpoint,
+    inputTokens: longHorizon.finalTokens,
+    removedMessages: Math.max(0, completedHistory.length - longHorizon.history.length),
+    compacted: longHorizon.compacted,
+    milestone: longHorizon.newMilestones.at(-1) ?? null,
+    newMilestones: longHorizon.newMilestones,
+    appliedOperations: longHorizon.appliedOperations,
+    rejectedOperations: longHorizon.rejectedOperations
+  };
+}
+
 function durableRunSections(state: typeof RunStateAnnotation.State): string[] {
   const goal = [
     `Objective: ${state.goal.objective}`,
@@ -383,22 +509,57 @@ async function executeLLMCall(
   skill: Skill,
   input: string,
   emitText: boolean,
+  emitEvent: (event: RunEvent) => RunEvent,
   signal?: AbortSignal
-): Promise<string> {
+): Promise<{ content: string; longHorizon: LongHorizonCheckpoint }> {
   if (!state.provider || !state.model) {
     throw new Error(
       `Role "${role.name}" needs an LLM. Configure a model in Settings before running.`
     );
   }
   const system = buildSystemPrompt(state, node, role, skill);
+  emitEvent(makeEvent(state.orgId, state.runId, "status", `${node.title} is assembling its working context.`, {
+    nodeId: node.id,
+    nodeTitle: node.title,
+    payload: { category: "context_assembly", phase: "started" }
+  }));
+  const assembled = await assembleNodeLongHorizon({ state, system, input, signal });
+  emitEvent(makeEvent(state.orgId, state.runId, "status", `${node.title} assembled long-horizon working state.`, {
+    nodeId: node.id,
+    nodeTitle: node.title,
+    payload: {
+      category: "long_horizon",
+      pinnedState: assembled.checkpoint.pinnedState,
+      milestones: assembled.checkpoint.milestones,
+      newMilestones: assembled.newMilestones,
+      appliedOperations: assembled.appliedOperations,
+      rejectedOperations: assembled.rejectedOperations
+    }
+  }));
+  if (assembled.compacted) {
+    emitEvent(makeEvent(state.orgId, state.runId, "status", `${node.title} compacted its working context.`, {
+      nodeId: node.id,
+      nodeTitle: node.title,
+      payload: {
+        category: "compaction",
+        scope: "node",
+        summary: assembled.milestone?.summary ?? "",
+        compactedMessageCount: assembled.removedMessages,
+        removedMessages: assembled.removedMessages,
+        createdAt: assembled.milestone?.createdAt ?? new Date().toISOString()
+      }
+    }));
+  }
   let content = "";
+  emitEvent(makeEvent(state.orgId, state.runId, "status", `${node.title} is generating with ${state.model.name}.`, {
+    nodeId: node.id,
+    nodeTitle: node.title,
+    payload: { category: "model_generation", phase: "started", model: state.model.model }
+  }));
   const stream = streamChat(
     state.provider,
     state.model,
-    [
-      { role: "system", content: system },
-      { role: "user", content: input }
-    ],
+    assembled.messages,
     {
       signal,
       maxTokens: state.budget.maxOutputTokens ?? capabilitiesForModel(state.model).maxOutputTokens,
@@ -412,7 +573,47 @@ async function executeLLMCall(
       writer?.({ kind: "text_delta", text: delta });
     }
   }
-  return content;
+  return { content, longHorizon: assembled.checkpoint };
+}
+
+async function repairArtifactProjectOutput(
+  state: typeof RunStateAnnotation.State,
+  node: WorkflowNode,
+  output: string,
+  signal?: AbortSignal
+): Promise<string> {
+  if (!state.provider || !state.model) return output;
+  const messages: ChatMessage[] = [
+    {
+      role: "system",
+      content: [
+        "You recover a structured HTML project into a delimiter-based multi-file bundle.",
+        "Do not return JSON, prose, or Markdown code fences. Use this exact transport:",
+        "===PROJECT===",
+        "name: Project name",
+        "entrypoint: index.html",
+        "===FILE index.html | text/html | entry===",
+        "<complete file content without escaping>",
+        "===END FILE===",
+        "Repeat the FILE/END FILE pair for every file.",
+        "Preserve complete index.html, Assets/styles.css, Assets/app.js, analytics.json, Files/form-handler.js, and Files/README.md content when present.",
+        "Do not include PDF bytes, remote assets, external writes, or configured integrations.",
+        "Never abbreviate file content and never replace it with ellipses."
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: `Repair this incomplete or invalid project response for ${node.title}:\n\n${output}`
+    }
+  ];
+  let repaired = "";
+  const stream = streamChat(state.provider, state.model, messages, {
+    signal,
+    maxTokens: Math.min(16_384, state.budget.maxOutputTokens ?? capabilitiesForModel(state.model).maxOutputTokens),
+    onUsage: state.onUsage
+  });
+  for await (const delta of stream) repaired += delta;
+  return repaired;
 }
 
 function buildSystemPrompt(
@@ -551,6 +752,188 @@ function makeArtifact(
   };
 }
 
+function projectJsonCandidate(output: string): string {
+  const trimmed = output.trim();
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1];
+  if (fenced) return fenced.trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  return start >= 0 && end > start ? trimmed.slice(start, end + 1) : trimmed;
+}
+
+const artifactFileRoles = new Set<ArtifactProject["files"][number]["role"]>([
+  "entry",
+  "style",
+  "script",
+  "asset",
+  "document",
+  "data",
+  "other"
+]);
+
+function inferArtifactFileRole(path: string): ArtifactProject["files"][number]["role"] {
+  if (path === "index.html") return "entry";
+  if (/\.css$/i.test(path)) return "style";
+  if (/\.(?:m?js|cjs)$/i.test(path)) return "script";
+  if (/\.json$/i.test(path)) return "data";
+  if (/\.(?:md|txt|pdf)$/i.test(path)) return "document";
+  if (/\.(?:svg|png|jpe?g|gif|webp|ico|woff2?|ttf|otf)$/i.test(path)) return "asset";
+  return "other";
+}
+
+function parseArtifactProjectBundle(output: string): unknown | null {
+  const projectMarker = output.match(/^===PROJECT===\s*$/m);
+  if (!projectMarker?.index && projectMarker?.index !== 0) return null;
+  const filePattern = /^===FILE\s+(.+?)\s*\|\s*([^|\r\n]+?)\s*\|\s*([^=\r\n]+?)===\s*$/gm;
+  const matches = [...output.matchAll(filePattern)];
+  if (matches.length === 0) return null;
+  const header = output.slice(projectMarker.index + projectMarker[0].length, matches[0].index);
+  const name = header.match(/^name:\s*(.+?)\s*$/mi)?.[1]?.trim() || "Generated landing page";
+  const entrypoint = header.match(/^entrypoint:\s*(.+?)\s*$/mi)?.[1]?.trim() || "index.html";
+  const files = matches.map((match, index) => {
+    const contentStart = (match.index ?? 0) + match[0].length;
+    const nextStart = matches[index + 1]?.index ?? output.length;
+    const section = output.slice(contentStart, nextStart);
+    const endMarker = section.search(/^===END FILE===\s*$/m);
+    const content = (endMarker >= 0 ? section.slice(0, endMarker) : section).replace(/^\r?\n/, "").replace(/\r?\n$/, "");
+    const path = match[1].trim();
+    const requestedRole = match[3].trim() as ArtifactProject["files"][number]["role"];
+    return {
+      path,
+      mimeType: match[2].trim(),
+      content,
+      encoding: "utf8" as const,
+      role: artifactFileRoles.has(requestedRole) ? requestedRole : inferArtifactFileRole(path)
+    };
+  });
+  return {
+    kind: "project",
+    version: 1,
+    name,
+    root: "/",
+    entrypoint,
+    files,
+    integrations: [],
+    metadata: { transport: "file_bundle" }
+  };
+}
+
+function safeProjectPath(value: string): string {
+  const normalized = value.replaceAll("\\", "/").replace(/^\.\//, "");
+  if (!normalized || normalized.startsWith("/") || normalized.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw new Error(`Artifact project contains an unsafe path: "${value}".`);
+  }
+  return normalized;
+}
+
+function pdfEscape(value: string): string {
+  return value.replace(/[^\x20-\x7e]/g, " ").replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+}
+
+function readableHtmlText(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function wrapPdfText(value: string, width = 88): string[] {
+  const words = value.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let line = "";
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (candidate.length > width && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : ["Generated landing-page project document."];
+}
+
+/** Create a dependency-free, valid PDF companion from the project's readable HTML. */
+export function renderProjectPdfBase64(title: string, html: string): string {
+  const lines = wrapPdfText(`${title}. ${readableHtmlText(html)}`);
+  const chunks: string[][] = [];
+  for (let index = 0; index < lines.length; index += 48) chunks.push(lines.slice(index, index + 48));
+  const pageCount = Math.max(1, chunks.length);
+  const objects: string[] = [];
+  const pageIds = Array.from({ length: pageCount }, (_, index) => 4 + index * 2);
+  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  objects[2] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageCount} >>`;
+  objects[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+  chunks.forEach((pageLines, index) => {
+    const pageId = 4 + index * 2;
+    const contentId = pageId + 1;
+    const stream = `BT /F1 11 Tf 52 790 Td 14 TL ${pageLines.map((line) => `(${pdfEscape(line)}) Tj T*`).join(" ")} ET`;
+    objects[pageId] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentId} 0 R >>`;
+    objects[contentId] = `<< /Length ${Buffer.byteLength(stream, "latin1")} >>\nstream\n${stream}\nendstream`;
+  });
+  let pdf = "%PDF-1.4\n";
+  const offsets: number[] = [0];
+  for (let id = 1; id < objects.length; id++) {
+    offsets[id] = Buffer.byteLength(pdf, "latin1");
+    pdf += `${id} 0 obj\n${objects[id]}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(pdf, "latin1");
+  pdf += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
+  for (let id = 1; id < objects.length; id++) pdf += `${String(offsets[id]).padStart(10, "0")} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  return Buffer.from(pdf, "latin1").toString("base64");
+}
+
+export function normalizeArtifactProject(output: string): ArtifactProject {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(projectJsonCandidate(output));
+  } catch {
+    raw = parseArtifactProjectBundle(output);
+    if (!raw) {
+      throw new Error("Artifact creation requires a project JSON object or a delimiter-based multi-file bundle.");
+    }
+  }
+  const parsed = artifactProjectSchema.safeParse(raw);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    throw new Error(`Artifact project is invalid at ${first?.path.join(".") || "root"}: ${first?.message ?? "invalid value"}.`);
+  }
+  const seen = new Set<string>();
+  const files = parsed.data.files.map((file) => {
+    const path = safeProjectPath(file.path);
+    if (seen.has(path)) throw new Error(`Artifact project contains duplicate path "${path}".`);
+    seen.add(path);
+    return { ...file, path, sourcePath: file.sourcePath ? safeProjectPath(file.sourcePath) : undefined };
+  });
+  const entrypoint = safeProjectPath(parsed.data.entrypoint);
+  const entry = files.find((file) => file.path === entrypoint);
+  if (!entry || entry.mimeType !== "text/html") throw new Error("Artifact project entrypoint must reference a text/html file.");
+  if (files.length > 60) throw new Error("Artifact projects are limited to 60 files per run.");
+  const textSize = files.reduce((sum, file) => sum + file.content.length, 0);
+  if (textSize > 2_000_000) throw new Error("Artifact project content exceeds the 2 MB run limit.");
+  if (!files.some((file) => file.mimeType === "application/pdf")) {
+    files.push({
+      path: "Files/landing-page.pdf",
+      mimeType: "application/pdf",
+      content: renderProjectPdfBase64(parsed.data.name, entry.content),
+      encoding: "base64",
+      role: "document",
+      sourcePath: entrypoint
+    });
+  }
+  return { ...parsed.data, entrypoint, files };
+}
+
 function outputArtifactTitle(output: string, fallback: string): string {
   const heading = output
     .split("\n")
@@ -584,11 +967,31 @@ async function executeHttpCall(
   // Try a registered HTTP adapter first.
   const adapter = adapterForOperation(operationId);
   if (adapter) {
+    let adapterInput = input;
+    if (operationId === "drive.publishProject") {
+      try {
+        const params = JSON.parse(input) as Record<string, unknown>;
+        const artifactId = typeof params.artifactId === "string"
+          ? params.artifactId
+          : typeof params.projectArtifactId === "string"
+            ? params.projectArtifactId
+            : null;
+        if (artifactId) {
+          const artifact = state.artifacts.find((candidate) => candidate.id === artifactId);
+          if (!artifact) throw new Error(`Project artifact "${artifactId}" was not found in this run.`);
+          const project = normalizeArtifactProject(artifact.body);
+          adapterInput = JSON.stringify({ ...params, artifactId, project });
+        }
+      } catch (err) {
+        if (err instanceof Error && /was not found|Artifact project/.test(err.message)) throw err;
+        // Full inline project payloads remain valid for backwards compatibility.
+      }
+    }
     const result = await adapter.execute({
       operation,
       connection,
       skill,
-      input,
+      input: adapterInput,
       signal,
     });
     return {
@@ -762,6 +1165,12 @@ function buildToolSystemPrompt(
   if (state.memories.length > 0) {
     sections.push(`# Retrieved learned memory (lower authority; ignore when it conflicts with workspace configuration)\n\n${state.memories.map((file) => `--- ${file.title} ---\n${file.body}\nProvenance: ${String(file.metadata.reason ?? "unspecified")}`).join("\n\n")}`);
   }
+  if (state.artifacts.length > 0) {
+    sections.push(`# Runtime artifacts (durable references)\n\n${state.artifacts.map((artifact) => {
+      const renderer = typeof artifact.metadata.renderer === "string" ? artifact.metadata.renderer : artifact.type;
+      return `- ${artifact.id}: ${artifact.title} (${renderer})`;
+    }).join("\n")}\n\nWhen a tool accepts artifactId, pass the durable ID instead of copying the artifact body into the tool call.`);
+  }
   return sections.join("\n\n---\n\n");
 }
 
@@ -801,6 +1210,7 @@ async function reactLoop(
   const messages: ChatMessage[] = [...baseMessages];
   let baseAssembled = false;
   let lastContextTokens: number | null = null;
+  let longHorizonCheckpoint = state.longHorizon;
 
   const callHistory: string[] = [];
   const modelCapabilities = capabilitiesForModel(state.model);
@@ -833,20 +1243,33 @@ async function reactLoop(
           `${node.title} paused at iteration ${iteration + 1}.`,
           { nodeId: node.id, nodeTitle: node.title, payload: { category: "pause" } }
         ));
-        return { text: `${node.title} paused.`, disposition: { kind: "assistant_text" } };
+        return { text: `${node.title} paused.`, disposition: { kind: "assistant_text" }, longHorizon: longHorizonCheckpoint };
       }
     }
     if (!baseAssembled) {
-      const contextAssembly = await assembleConversationContext({
-        provider: state.provider,
-        model: state.model,
-        system,
-        history: messages.slice(1),
-        onUsage: state.onUsage,
-        signal
-      });
+      const assembled = await assembleNodeLongHorizon({ state, system, input, signal });
+      longHorizonCheckpoint = assembled.checkpoint;
+      const contextAssembly = {
+        messages: assembled.messages,
+        inputTokens: assembled.inputTokens,
+        compacted: assembled.compacted,
+        compaction: assembled.milestone ? { summary: assembled.milestone.summary, compactedMessageCount: assembled.removedMessages, createdAt: assembled.milestone.createdAt } : null,
+        removedMessages: assembled.removedMessages
+      };
+      emitEvent(makeEvent(state.orgId, state.runId, "status", `${node.title} assembled long-horizon working state.`, {
+        nodeId: node.id,
+        nodeTitle: node.title,
+        payload: {
+          category: "long_horizon",
+          pinnedState: assembled.checkpoint.pinnedState,
+          milestones: assembled.checkpoint.milestones,
+          newMilestones: assembled.newMilestones,
+          appliedOperations: assembled.appliedOperations,
+          rejectedOperations: assembled.rejectedOperations
+        }
+      }));
+      messages.splice(0, messages.length, ...contextAssembly.messages);
       if (contextAssembly.compacted) {
-        messages.splice(0, messages.length, ...contextAssembly.messages);
         emitEvent(makeEvent(
           state.orgId,
           state.runId,
@@ -916,7 +1339,7 @@ async function reactLoop(
       const disposition: NodeOutputDisposition = usesTools
         ? { kind: "tool_evidence", persist: false }
         : { kind: "assistant_text" };
-      return { text: response, disposition };
+      return { text: response, disposition, longHorizon: longHorizonCheckpoint };
     }
     missingRequiredToolAttempts = 0;
 
@@ -1244,6 +1667,8 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
     }
 
     let output = previousNodeOutput(state, workflowNode) ?? state.prompt;
+    let longHorizon = state.longHorizon;
+    let workingState = state;
     const artifacts: Artifact[] = [];
     const isTerminalNode = !state.workflow || !state.workflow.edges.some((edge) => edge.source === workflowNode.id);
 
@@ -1264,15 +1689,19 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
         }
       ));
       try {
-        output = await executeLLMCall(
-          state,
+        const llmResult = await executeLLMCall(
+          workingState,
           workflowNode,
           role,
           skill,
           output,
           isTerminalNode && llmCallSkills.indexOf(skill) === llmCallSkills.length - 1,
+          emitEvent,
           signal
         );
+        output = llmResult.content;
+        longHorizon = llmResult.longHorizon;
+        workingState = { ...workingState, longHorizon };
       } catch (err) {
         const message = err instanceof Error ? err.message : "LLM call failed.";
         emitEvent(makeEvent(
@@ -1299,9 +1728,9 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
       ));
     }
 
-    // Phase 2: handle engine-level skills linearly (human_input, eval).
+    // Phase 2: handle engine-level skills linearly (human input, typed artifacts, evals).
     const engineSkills = nodeSkills.filter(
-      (s) => s.kind === "human_input" || s.kind === "eval"
+      (s) => s.kind === "human_input" || s.kind === "artifact_create" || s.kind === "eval"
     );
     for (const skill of engineSkills) {
       emitEvent(makeEvent(
@@ -1357,6 +1786,106 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
             retryNodeId: null
           };
         }
+      }
+
+      if (skill.kind === "artifact_create") {
+        let project: ArtifactProject | null = null;
+        try {
+          project = normalizeArtifactProject(output);
+        } catch (initialError) {
+          let repairError: unknown = initialError;
+          if (state.provider && state.model) {
+            emitEvent(makeEvent(
+              state.orgId,
+              state.runId,
+              "status",
+              `${workflowNode.title} returned an invalid project envelope; recovering its files once.`,
+              {
+                nodeId: workflowNode.id,
+                nodeTitle: workflowNode.title,
+                skillId: skill.id,
+                skillName: skill.name,
+                payload: { category: "structured_output_repair", phase: "started", sourceLength: output.length }
+              }
+            ));
+            try {
+              output = await repairArtifactProjectOutput(workingState, workflowNode, output, signal);
+              project = normalizeArtifactProject(output);
+              repairError = null;
+              emitEvent(makeEvent(
+                state.orgId,
+                state.runId,
+                "status",
+                `${workflowNode.title} project files recovered and ready for validation.`,
+                {
+                  nodeId: workflowNode.id,
+                  nodeTitle: workflowNode.title,
+                  skillId: skill.id,
+                  skillName: skill.name,
+                  payload: { category: "structured_output_repair", phase: "completed", repairedLength: output.length }
+                }
+              ));
+            } catch (err) {
+              repairError = err;
+            }
+          }
+          if (repairError) {
+            const detail = repairError instanceof Error ? repairError.message : "Artifact project validation failed.";
+            const message = `Artifact project validation failed after one structured repair attempt: ${detail}`;
+            const errorEvent = makeEvent(
+              state.orgId,
+              state.runId,
+              "node_failed",
+              message,
+              { nodeId: workflowNode.id, nodeTitle: workflowNode.title, skillId: skill.id, skillName: skill.name }
+            );
+            emitEvent(errorEvent);
+            return { events, status: "failed", failed: true, failedNode: workflowNode.id, error: message };
+          }
+        }
+        if (!project) {
+          const message = "Artifact project validation did not produce a project.";
+          emitEvent(makeEvent(
+            state.orgId,
+            state.runId,
+            "node_failed",
+            message,
+            { nodeId: workflowNode.id, nodeTitle: workflowNode.title, skillId: skill.id, skillName: skill.name }
+          ));
+          return { events, status: "failed", failed: true, failedNode: workflowNode.id, error: message };
+        }
+        output = JSON.stringify(project, null, 2);
+        const artifact = makeArtifact(
+          state.orgId,
+          state.runId,
+          "artifact",
+          project.name,
+          output,
+          {
+            renderer: "project",
+            entrypoint: project.entrypoint,
+            fileCount: project.files.length,
+            integrations: project.integrations,
+            nodeId: workflowNode.id,
+            nodeTitle: workflowNode.title,
+            skillId: skill.id,
+            skillName: skill.name
+          }
+        );
+        artifacts.push(artifact);
+        emitEvent(makeEvent(
+          state.orgId,
+          state.runId,
+          "artifact_created",
+          `${project.name} project created with ${project.files.length} files.`,
+          {
+            nodeId: workflowNode.id,
+            nodeTitle: workflowNode.title,
+            skillId: skill.id,
+            skillName: skill.name,
+            payload: { artifactId: artifact.id, artifactType: artifact.type, renderer: "project", fileCount: project.files.length }
+          }
+        ));
       }
 
       if (skill.kind === "eval") {
@@ -1505,9 +2034,13 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
       const hasLLM = state.provider && state.model;
       if (hasLLM) {
         try {
-          const nodeOutput = await reactLoop(state, workflowNode, role, toolSkills, output, emitEvent, signal);
+          const nodeOutput = await reactLoop(workingState, workflowNode, role, toolSkills, output, emitEvent, signal);
           output = nodeOutput.text;
           nodeOutputDisposition = nodeOutput.disposition;
+          if (nodeOutput.longHorizon) {
+            longHorizon = nodeOutput.longHorizon;
+            workingState = { ...workingState, longHorizon };
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : "ReAct loop failed.";
           emitEvent(makeEvent(
@@ -1547,7 +2080,7 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
       }
     }
 
-    const knownKinds = new Set(["human_input", "eval", "llm_call", "http", "mcp_call", "knowledge_search", "harness_file", "memory_write"]);
+    const knownKinds = new Set(["human_input", "artifact_create", "eval", "llm_call", "http", "mcp_call", "knowledge_search", "harness_file", "memory_write"]);
     const unhandled = nodeSkills.find((s) => !knownKinds.has(s.kind));
     if (unhandled) {
       const errorEvent = makeEvent(
@@ -1561,18 +2094,30 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
       return { events, status: "failed", failed: true, failedNode: workflowNode.id, error: errorEvent.message };
     }
 
-    // Persist a terminal artifact only when the disposition allows it.
-    // `tool_evidence` with `persist: false` (search/knowledge) lives in the
-    // events timeline and never produces an artifact. Other dispositions
-    // (assistant_text, artifact, harness_file, eval_report) follow the
-    // existing persistence path.
-    const suppressArtifact = nodeOutputDisposition.kind === "tool_evidence" && nodeOutputDisposition.persist === false;
+    // Persist a terminal artifact only when the disposition actually calls
+    // for a durable artifact. Plain chat text (`assistant_text`) lives in
+    // the assistant message and the run's outputs — it is never wrapped as
+    // a file. `tool_evidence` with `persist: false` (search/knowledge) lives
+    // in the events timeline and never produces an artifact. Structured
+    // dispositions (artifact, harness_file, eval_report) follow the existing
+    // persistence path.
+    const hasHumanInputSkill = nodeSkills.some((skill) => skill.kind === "human_input");
+    const isAssistantText = nodeOutputDisposition.kind === "assistant_text";
+    const isToolEvidenceWithoutPersist = nodeOutputDisposition.kind === "tool_evidence" && nodeOutputDisposition.persist === false;
+    const suppressArtifact = hasHumanInputSkill || isAssistantText || isToolEvidenceWithoutPersist;
     const alreadyEmittedNodeArtifact = artifacts.some((artifact) => artifact.metadata.nodeId === workflowNode.id);
     if (isTerminalNode && !suppressArtifact && output.trim() && !alreadyEmittedNodeArtifact) {
+      const artifactType: Artifact["type"] = nodeOutputDisposition.kind === "eval_report"
+        ? "eval_report"
+        : nodeOutputDisposition.kind === "harness_file"
+          ? "draft"
+          : nodeOutputDisposition.kind === "artifact"
+            ? nodeOutputDisposition.artifactType
+            : "draft";
       const artifact = makeArtifact(
         state.orgId,
         state.runId,
-        "artifact",
+        artifactType,
         outputArtifactTitle(output, workflowNode.title),
         output,
         { nodeId: workflowNode.id, nodeTitle: workflowNode.title, roleId: role.id, roleName: role.name }
@@ -1598,7 +2143,7 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
         payload: { roleId: role.id, roleName: role.name, agentId: branch?.agentId ?? workflowNode.id, parallelGroupId: branch?.parallelGroupId ?? null, parallelCount: branch?.parallelCount ?? 1 }
       }
     );
-    if (isTerminalNode && toolSkills.length === 0 && llmCallSkills.length === 0) {
+    if (isTerminalNode && !hasHumanInputSkill && toolSkills.length === 0 && llmCallSkills.length === 0) {
       writer?.({ kind: "text_delta", text: output });
     }
     emitEvent(nodeCompleted);
@@ -1610,6 +2155,7 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
       pendingHumanInput: null,
       status: "running",
       retryNodeId: null,
+      longHorizon,
       progress: {
         milestone: workflowNode.title,
         completedActions: [workflowNode.title],
@@ -1720,6 +2266,7 @@ function buildSingleNodeGraph(req: RunRequest) {
 // ── Build initial state from request ──────────────────────────
 function buildInitialState(req: RunRequest) {
   const cp = req.checkpoint;
+  const longHorizon = cp?.longHorizon ?? longHorizonFromMetadata(req.chatMetadata, req.runId);
   const capabilities = req.model ? capabilitiesForModel(req.model) : DEFAULT_MODEL_CAPABILITIES;
   const startedAt = cp?.budget?.startedAt ?? new Date().toISOString();
   const maxDurationMs = req.budget?.maxDurationMs ?? cp?.budget?.maxDurationMs ?? null;
@@ -1760,6 +2307,8 @@ function buildInitialState(req: RunRequest) {
     memoryProposalAction: req.memoryProposalAction,
     resume: req.resume,
     checkControl: req.checkControl,
+    chatMetadata: req.chatMetadata,
+    longHorizon,
     completedNodes: cp?.completedNodes ?? [],
     outputs: cp?.outputs ?? {},
     artifacts: cp?.artifacts ?? [],
@@ -1863,6 +2412,7 @@ export async function* streamRun(
           unresolvedIssues: []
         },
         verification: { required: true, status: "pending", evidence: [], checkedAt: null },
+        longHorizon: initial.longHorizon,
         pause: { requested: true, reason: "Paused at " + boundary, requestedAt: new Date().toISOString() }
       };
       return [
@@ -1990,9 +2540,10 @@ export async function* streamRun(
           .filter((node) => !req.workflow!.edges.some((edge) => edge.source === node.id))
           .map((node) => node.id)
       : req.singleNode ? [req.singleNode.nodeId] : [];
+    const serializedResume = req.resume === undefined ? null : JSON.stringify(req.resume);
     const finalOutput = terminalIds
       .map((id) => lastCheckpoint.outputs[id])
-      .filter(Boolean)
+      .filter((value): value is string => Boolean(value) && value !== serializedResume)
       .join("\n\n---\n\n");
     if (finalOutput) yield { kind: "text", text: finalOutput };
   }
@@ -2017,7 +2568,8 @@ function checkpointFromState(state: typeof RunStateAnnotation.State): RunCheckpo
     goal: state.goal,
     budget: state.budget,
     progress: state.progress,
-    verification: state.verification
+    verification: state.verification,
+    longHorizon: state.longHorizon
   };
 }
 
@@ -2029,6 +2581,7 @@ export async function* streamChatRun(
   }
 ): AsyncGenerator<RunYield, void, void> {
   const startedAt = new Date().toISOString();
+  let longHorizonCheckpoint = req.checkpoint?.longHorizon ?? longHorizonFromMetadata(req.chatMetadata, req.runId);
   const deadlineAt = req.budget?.maxDurationMs
     ? new Date(Date.parse(startedAt) + req.budget.maxDurationMs).toISOString()
     : null;
@@ -2128,6 +2681,7 @@ export async function* streamChatRun(
         },
         progress: { milestone: "Run paused", completedActions: [], nextActions: ["Resume the run when ready."], unresolvedIssues: [] },
         verification: { required: true, status: "pending", evidence: [], checkedAt: null },
+        longHorizon: longHorizonCheckpoint,
         pause: { requested: true, reason: "Paused before model call", requestedAt: new Date().toISOString() }
       };
       yield { kind: "checkpoint", state: paused };
@@ -2139,15 +2693,34 @@ export async function* streamChatRun(
   let assembly;
   let content = "";
   try {
-    assembly = await assembleConversationContext({
+    const currentUserMessage = history.at(-1) ?? { role: "user" as const, content: req.prompt };
+    const longHorizon = await assembleLongHorizonContext({
       provider: req.provider,
       model: req.model,
-      system,
-      history,
-      previousCompaction: req.previousCompaction,
-      onUsage: req.onUsage,
-      signal: executionSignal
+      fallbackModel: null,
+      state: longHorizonCheckpoint.pinnedState,
+      previousMilestone: longHorizonCheckpoint.milestones.at(-1) ?? null,
+      history: history.slice(0, -1),
+      systemPrompt: system,
+      currentUserMessage,
+      inputLimit: Math.max(1024, capabilitiesForModel(req.model).contextWindow - capabilitiesForModel(req.model).maxOutputTokens),
+      signal: executionSignal,
+      onUsage: req.onUsage
     });
+    longHorizonCheckpoint = mergeLongHorizonCheckpoints(longHorizonCheckpoint, {
+      pinnedState: longHorizon.state,
+      milestones: longHorizon.newMilestones
+    });
+    assembly = {
+      messages: [{ role: "system" as const, content: longHorizon.system }, ...longHorizon.history, currentUserMessage],
+      inputTokens: longHorizon.finalTokens,
+      inputLimit: Math.max(1024, capabilitiesForModel(req.model).contextWindow - capabilitiesForModel(req.model).maxOutputTokens),
+      tokenCountSource: "estimate" as const,
+      compacted: longHorizon.compacted,
+      compaction: longHorizon.newMilestones.at(-1) ? { summary: longHorizon.newMilestones.at(-1)!.summary, compactedMessageCount: 0, createdAt: longHorizon.newMilestones.at(-1)!.createdAt } : null,
+      removedMessages: Math.max(0, history.length - longHorizon.history.length - 1)
+    };
+    yield { kind: "event", event: makeEvent(req.orgId, req.runId, "status", "Long-horizon working state assembled.", { payload: { category: "long_horizon", pinnedState: longHorizonCheckpoint.pinnedState, milestones: longHorizonCheckpoint.milestones, newMilestones: longHorizon.newMilestones, appliedOperations: longHorizon.appliedOperations, rejectedOperations: longHorizon.rejectedOperations } }) };
     yield {
       kind: "event",
       event: makeEvent(req.orgId, req.runId, "status", `Context assembled at ${assembly.inputTokens.toLocaleString()} of ${assembly.inputLimit.toLocaleString()} input tokens.`, {
@@ -2198,7 +2771,8 @@ export async function* streamChatRun(
           deadlineAt
         },
         progress: { milestone: "Response generation", completedActions: [], nextActions: ["Retry the interrupted response."], unresolvedIssues: [message] },
-        verification: { required: true, status: "failed", evidence: [], checkedAt: new Date().toISOString() }
+        verification: { required: true, status: "failed", evidence: [], checkedAt: new Date().toISOString() },
+        longHorizon: longHorizonCheckpoint
       }
     };
     yield { kind: "done", status: "failed" };
@@ -2230,7 +2804,8 @@ export async function* streamChatRun(
       deadlineAt
     },
     progress: { milestone: "Response completed", completedActions: ["Generated response"], nextActions: [], unresolvedIssues: [] },
-    verification: { required: true, status: content.trim() ? "passed" : "failed", evidence: content.trim() ? ["Provider returned a non-empty response."] : [], checkedAt: new Date().toISOString() }
+    verification: { required: true, status: content.trim() ? "passed" : "failed", evidence: content.trim() ? ["Provider returned a non-empty response."] : [], checkedAt: new Date().toISOString() },
+    longHorizon: longHorizonCheckpoint
   };
   yield {
     kind: "event",

@@ -148,7 +148,9 @@ export function CommandPalette({
         group: "Last Runs",
         icon: <Icon name={statusIcon.name} className={statusIcon.className} size={14} />,
         hint: `${entry.run_type} · ${timeAgo(entry.created_at)}`,
-        keywords: [entry.prompt.toLowerCase(), entry.status, entry.run_type, entry.inputs?.target?.type ?? ""],
+        keywords: [entry.prompt, entry.status, entry.run_type, entry.inputs?.target?.type]
+          .filter((keyword): keyword is string => typeof keyword === "string")
+          .map((keyword) => keyword.toLowerCase()),
         onSelect: () => void openRun(entry)
       });
     });
@@ -163,7 +165,7 @@ export function CommandPalette({
     return entries.filter((entry) => {
       if (entry.label.toLowerCase().includes(q)) return true;
       if (entry.hint?.toLowerCase().includes(q)) return true;
-      return entry.keywords?.some((kw) => kw.includes(q)) ?? false;
+      return entry.keywords?.some((kw) => typeof kw === "string" && kw.includes(q)) ?? false;
     });
   }, [entries, query]);
 

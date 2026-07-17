@@ -96,6 +96,9 @@ test("assembleLongHorizonContext carries the previous milestone forward", async 
     inputLimit: 32_000
   });
   assert.equal(result.milestone?.id, "m0");
+  assert.deepEqual(result.newMilestones, []);
+  assert.equal(result.compacted, false);
+  assert.equal(result.passesRun, 0);
 });
 
 test("estimateHistoryTokens sums the rough token cost of every message", () => {

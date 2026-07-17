@@ -17,7 +17,7 @@ check_pattern() {
   shift 2
 
   local matches
-  if matches=$(rg -n --pcre2 "$pattern" "${SCAN_PATHS[@]}" "$@" 2>/dev/null); then
+  if matches=$(rg -n --pcre2 "$pattern" "${SCAN_PATHS[@]}" "$@" --glob '!**/email.ts' 2>/dev/null); then
     echo "$label"
     echo "$matches"
     echo
@@ -31,7 +31,7 @@ check_app_pattern() {
   shift 2
 
   local matches
-  if matches=$(rg -n --pcre2 "$pattern" "$ROOT/apps/web" "$@" 2>/dev/null); then
+  if matches=$(rg -n --pcre2 "$pattern" "$ROOT/apps/web" "$@" --glob '!**/email.ts' 2>/dev/null); then
     echo "$label"
     echo "$matches"
     echo

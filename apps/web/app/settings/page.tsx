@@ -95,7 +95,7 @@ export default function SettingsPage() {
     enabled: boolean;
   }>>([]);
   const [integrationsLoading, setIntegrationsLoading] = useState(true);
-  const [presets, setPresets] = useState<Array<{ id: string; name: string; description: string; kind: string; icon: string; logo?: string; secretEnvKey?: string; baseUrl?: string; oauthReady?: boolean; operations: Array<{ id: string }> }>>([]);
+  const [presets, setPresets] = useState<Array<{ id: string; name: string; description: string; kind: string; icon: string; logo?: string; secretEnvKey?: string; baseUrl?: string; oauthReady?: boolean; availability?: "available" | "unavailable"; unavailableReason?: string; operations: Array<{ id: string }> }>>([]);
   const [connectionsSetupRequired, setConnectionsSetupRequired] = useState(false);
   const [variables, setVariables] = useState<Array<{ id: string; name: string; kind: "variable" | "secret_ref"; value: string | null; envKey: string | null; configured: boolean; description: string; enabled: boolean }>>([]);
   const [variablesLoading, setVariablesLoading] = useState(true);
@@ -207,6 +207,10 @@ export default function SettingsPage() {
 
   async function openPreset(preset: typeof presets[number]) {
     if (preset.kind === "builtin") return;
+    if (preset.availability === "unavailable") {
+      toast.error(preset.unavailableReason ?? `${preset.name} is not available in this runtime.`);
+      return;
+    }
     if (connectionsSetupRequired) {
       toast.error("Apply migration 0005_connections.sql before configuring external connections.");
       return;
@@ -618,7 +622,8 @@ export default function SettingsPage() {
                     ) : (
                     presets.map((preset) => {
                       const added = integrations.some((integration) => integration.name === preset.name || integration.name.startsWith(`${preset.name} —`));
-                      const action = preset.kind === "builtin" ? "Available" : added ? "Connected" : preset.kind === "oauth" ? "Connect" : "Configure";
+                      const unavailable = preset.availability === "unavailable";
+                      const action = unavailable ? "Unavailable" : preset.kind === "builtin" ? "Available" : added ? "Connected" : preset.kind === "oauth" ? "Connect" : "Configure";
                       return (<div className="flex min-h-36 flex-col rounded-lg bg-panel-raised p-3 transition-colors hover:bg-hover" key={preset.id}>
                         <div className="flex items-start gap-3">
                           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-panel shadow-panel">
@@ -627,8 +632,8 @@ export default function SettingsPage() {
                           <span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-foreground">{preset.name}</span><span className="mt-1 block text-2xs leading-relaxed text-muted-foreground">{preset.description}</span></span>
                         </div>
                         <div className="mt-auto flex items-center gap-2 pt-3">
-                          <Pill tone={preset.kind === "oauth" ? "primary" : preset.kind === "builtin" ? "success" : "default"}>{preset.kind === "oauth" ? "OAuth" : preset.kind === "builtin" ? "SpielOS" : preset.kind.toUpperCase()}</Pill>
-                          <Button className="ml-auto" disabled={preset.kind === "builtin" || added} onClick={() => openPreset(preset)} size="sm" variant={preset.kind === "oauth" ? "primary" : "outline"}>{action}</Button>
+                          <Pill tone={unavailable ? "warning" : preset.kind === "oauth" ? "primary" : preset.kind === "builtin" ? "success" : "default"}>{unavailable ? "Unavailable" : preset.kind === "oauth" ? "OAuth" : preset.kind === "builtin" ? "SpielOS" : preset.kind.toUpperCase()}</Pill>
+                          <Button className="ml-auto" disabled={unavailable || preset.kind === "builtin" || added} onClick={() => openPreset(preset)} size="sm" variant={preset.kind === "oauth" ? "primary" : "outline"}>{action}</Button>
                         </div>
                       </div>);
                     }))}

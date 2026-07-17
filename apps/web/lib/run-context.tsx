@@ -139,7 +139,8 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
       event.type === "node_started" ||
       event.type === "skill_started" ||
       event.type === "tool_call_started" ||
-      event.type === "node_retrying"
+      event.type === "node_retrying" ||
+      event.type === "status"
     ) {
       setActivity(event.message);
     }

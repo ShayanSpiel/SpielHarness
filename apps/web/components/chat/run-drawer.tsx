@@ -25,6 +25,7 @@ import { useWorkspaceStore } from "../../lib/use-workspace-store";
 import { capabilitiesForModel } from "@spielos/core";
 import { reasoningLabel, type ReasoningEffort } from "../reasoning-effort-control";
 import { ToolCallCard } from "./tool-call";
+import { ArtifactFullscreenButton, ArtifactWorkbench } from "./artifact-workbench";
 import {
   isFailureEvent,
   isStartEvent,
@@ -201,7 +202,7 @@ function RuntimeCapacity({ run }: { run: ReturnType<typeof useRunContext> }) {
   const contextMaximum = budget?.maxInputTokens ?? capabilities?.contextWindow ?? 0;
   const outputMaximum = budget?.maxOutputTokens ?? capabilities?.maxOutputTokens ?? 0;
   const outputValue = usage?.outputTokens ?? budget?.outputTokens ?? 0;
-  const historicalCumulativeOutput = !budget?.maxOutputTokens && outputMaximum > 0 && outputValue > outputMaximum;
+  const historicalCumulativeOutput = outputMaximum > 0 && outputValue > outputMaximum;
   const compaction = activeChat?.metadata?.compaction && typeof activeChat.metadata.compaction === "object"
     ? activeChat.metadata.compaction as Record<string, unknown>
     : null;
@@ -406,11 +407,11 @@ function OutputSection({ run }: { run: ReturnType<typeof useRunContext> }) {
           <header className="flex items-center gap-2 border-b border-border bg-panel-raised px-2.5 py-1.5">
             <Icon name="file-text" className="text-muted-foreground" size={12} />
             <span className="truncate text-xs font-medium text-foreground">{artifact.title}</span>
-            <Pill className="ml-auto text-3xs uppercase tracking-wider">{artifact.type}</Pill>
+            <div className="ml-auto">
+              <ArtifactFullscreenButton artifact={artifact} />
+            </div>
           </header>
-          <pre className="max-h-72 overflow-auto whitespace-pre-wrap p-2.5 text-2xs leading-relaxed text-foreground/90">
-            {artifact.body}
-          </pre>
+          <ArtifactWorkbench artifact={artifact} />
         </article>
       ))}
     </div>
@@ -460,13 +461,19 @@ export function RunDrawer() {
         for (const frame of frames) {
           const line = frame.split("\n").find((entry) => entry.startsWith("data: "));
           if (!line) continue;
-          const item = JSON.parse(line.slice(6)) as { kind: string; event?: import("@spielos/core").RunEvent; artifact?: import("@spielos/core").Artifact; request?: import("@spielos/core").HumanInputRequest; state?: import("../../lib/run-context").DurableRunState; text?: string; status?: string; message?: string };
+          const item = JSON.parse(line.slice(6)) as { kind: string; event?: import("@spielos/core").RunEvent; artifact?: import("@spielos/core").Artifact; request?: import("@spielos/core").HumanInputRequest; state?: import("../../lib/run-context").DurableRunState; usage?: import("../../lib/run-context").LiveRunUsage; text?: string; status?: string; message?: string };
           if (item.kind === "event" && item.event) run.appendEvent(item.event);
           if (item.kind === "artifact" && item.artifact) run.appendArtifact(item.artifact);
           if (item.kind === "human_input" && item.request) run.setHumanInputRequest(item.request);
           if (item.kind === "text" && item.text) run.appendContinuationText(item.text);
           if (item.kind === "status" && item.message) run.setActivity(item.message);
-          if (item.kind === "run_state" && item.state) run.setDurableState(item.state);
+          if (item.kind === "run_state" && item.state) {
+            run.setDurableState(item.state);
+            if (item.state.budget) {
+              run.setLiveUsage({ inputTokens: item.state.budget.inputTokens, outputTokens: item.state.budget.outputTokens, toolCalls: item.state.budget.toolCalls });
+            }
+          }
+          if (item.kind === "usage" && item.usage) run.setLiveUsage(item.usage);
           if (item.kind === "done" && item.status && ["running", "waiting_human", "completed", "failed", "cancelled"].includes(item.status)) run.setRunStatus(item.status as import("@spielos/core").RunStatus);
         }
       }

@@ -4,6 +4,21 @@ import { randomUUID } from "node:crypto";
 type PostgresParameter = postgres.SerializableParameter<never>;
 type SqlLike = Pick<postgres.Sql<{}>, "json">;
 
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
+ * Normalize an application value at the database JSON boundary. JavaScript
+ * strings can contain lone UTF-16 surrogates, while PostgreSQL JSON text is
+ * UTF-8 and rejects them. Round-tripping through JSON also preserves the
+ * serialization semantics used by the postgres driver.
+ */
+export function json<T>(value: T): T {
+  const serialized = JSON.stringify(value, (_key, candidate: unknown) =>
+    typeof candidate === "string" ? candidate.replace(LONE_SURROGATE, "\uFFFD") : candidate
+  );
+  return serialized === undefined ? value : JSON.parse(serialized) as T;
+}
+
 // Wrapper around `sql.json` that accepts the loose `Record<string, unknown>`
 // shapes the repositories use. `sql.json` itself takes `JSONValue` which
 // requires a tighter index signature; we cast through `unknown` to bridge
@@ -14,7 +29,7 @@ function toJsonb(sql: SqlLike, value: unknown): ReturnType<postgres.Sql<{}>["jso
   // The cast is necessary because `JSONValue` requires a more precise
   // index signature than the `Record<string, unknown>` shapes the
   // repositories pass in. The runtime serialization is identical.
-  return sql.json(value as never);
+  return sql.json(json(value) as never);
 }
 
 export type Sql = ReturnType<typeof postgres>;
@@ -142,7 +157,9 @@ export function createSql(connectionString: string): Sql {
   const mode = resolveConnectionMode(effective);
   const prepare = shouldUsePreparedStatements(mode);
   const opts: Record<string, unknown> = {
-    max: Math.max(1, Number(process.env.DB_POOL_MAX) || 1),
+    // Workspace reads and durable run checkpoints happen concurrently.
+    // One connection makes checkpoints queue behind unrelated UI reads.
+    max: Math.max(1, Number(process.env.DB_POOL_MAX) || 4),
     min: 0,
     idle_timeout: 30,
     connect_timeout: 5,
@@ -535,6 +552,10 @@ export type RunRow = {
   org_id: string;
   chat_id: string | null;
   workflow_id: string | null;
+  parent_run_id: string | null;
+  project_id: string | null;
+  turn_id: string | null;
+  execution_kind: string | null;
   type: string;
   prompt: string;
   status: string;
@@ -563,7 +584,7 @@ export async function findRunByIdempotency(
   key: string
 ): Promise<RunRow | null> {
   const rows = await sql<RunRow[]>`
-    select id, org_id, chat_id, workflow_id, type,
+    select id, org_id, chat_id, workflow_id, parent_run_id, project_id, turn_id, execution_kind, type,
            prompt, status, inputs, outputs, human_inputs, state,
            definition_snapshot, idempotency_key, error, requested_by,
            graph_version, next_event_sequence, checkpoint_version,
@@ -583,6 +604,10 @@ export async function createRun(
     id?: string;
     chatId?: string | null;
     workflowId?: string | null;
+    parentRunId?: string | null;
+    projectId?: string | null;
+    turnId?: string | null;
+    executionKind?: string | null;
     type: string;
     prompt: string;
     inputs: Record<string, unknown>;
@@ -593,15 +618,16 @@ export async function createRun(
   }
 ): Promise<RunRow> {
   const rows = await sql<RunRow[]>`
-    insert into runs (id, org_id, chat_id, workflow_id, type, prompt, status, inputs,
+    insert into runs (id, org_id, chat_id, workflow_id, parent_run_id, project_id, turn_id, execution_kind, type, prompt, status, inputs,
                       definition_snapshot, idempotency_key, requested_by, graph_version)
     values (
       ${data.id ?? sql`DEFAULT`}, ${orgId}, ${data.chatId ?? null}, ${data.workflowId ?? null},
+      ${data.parentRunId ?? null}, ${data.projectId ?? null}, ${data.turnId ?? null}, ${data.executionKind ?? null},
       ${data.type}, ${data.prompt}, 'running',
       ${toJsonb(sql, data.inputs)}, ${toJsonb(sql, data.definitionSnapshot)},
       ${data.idempotencyKey ?? null}, ${data.requestedBy ?? null}, ${data.graphVersion ?? null}
     )
-    returning id, org_id, chat_id, workflow_id, type,
+    returning id, org_id, chat_id, workflow_id, parent_run_id, project_id, turn_id, execution_kind, type,
               prompt, status, inputs, outputs, human_inputs, state,
               definition_snapshot, idempotency_key, error, requested_by,
               graph_version, next_event_sequence, checkpoint_version,
@@ -640,7 +666,7 @@ export async function updateRun(
 
 export async function getRun(sql: Sql, orgId: string, runId: string): Promise<RunRow | null> {
   const rows = await sql<RunRow[]>`
-    select id, org_id, chat_id, workflow_id, type,
+    select id, org_id, chat_id, workflow_id, parent_run_id, project_id, turn_id, execution_kind, type,
            prompt, status, inputs, outputs, human_inputs, state,
            definition_snapshot, idempotency_key, error, requested_by,
            graph_version, next_event_sequence, checkpoint_version,
@@ -655,7 +681,7 @@ export async function getRun(sql: Sql, orgId: string, runId: string): Promise<Ru
 
 export async function listRuns(sql: Sql, orgId: string, limit = 50): Promise<RunRow[]> {
   return sql<RunRow[]>`
-    select id, org_id, chat_id, workflow_id, type,
+    select id, org_id, chat_id, workflow_id, parent_run_id, project_id, turn_id, execution_kind, type,
            prompt, status, inputs, outputs, human_inputs, state,
            definition_snapshot, idempotency_key, error, requested_by,
            graph_version, next_event_sequence, checkpoint_version,
@@ -1075,6 +1101,226 @@ export async function appendChatMessages(
   }
   await sql`update chats set updated_at = now() where org_id = ${orgId} and id = ${chatId}`;
   return out;
+}
+
+// ── Persistent project sessions ────────────────────────────────
+//
+// The harness remains file-backed. These tables deliberately own only the
+// mutable project/session layer that must survive reload, retries, and worker
+// boundaries. All helpers scope every lookup to the organization.
+
+export type ProjectSessionRow = {
+  id: string;
+  org_id: string;
+  chat_id: string;
+  title: string;
+  status: "active" | "awaiting_input" | "review" | "completed" | "archived";
+  workflow_id: string | null;
+  active_revision_id: string | null;
+  active_artifact_id: string | null;
+  working_state: Record<string, unknown>;
+  summary: string;
+  summary_version: number;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+};
+
+export type ProjectRevisionRow = {
+  id: string;
+  org_id: string;
+  project_id: string;
+  parent_revision_id: string | null;
+  run_id: string | null;
+  turn_id: string | null;
+  sequence: number;
+  instruction: string;
+  change_set: Record<string, unknown>;
+  artifact_ids: string[];
+  source_hashes: Record<string, string>;
+  evaluation: Record<string, unknown>;
+  receipts: Array<Record<string, unknown>>;
+  author: "user" | "orchestrator" | "role" | "workflow" | "system";
+  created_at: string;
+};
+
+const projectSessionColumns = `
+  id, org_id, chat_id, title, status, workflow_id, active_revision_id,
+  active_artifact_id, working_state, summary, summary_version, version,
+  created_at, updated_at, archived_at
+`;
+
+export async function getProjectSession(
+  sql: Sql,
+  orgId: string,
+  projectId: string
+): Promise<ProjectSessionRow | null> {
+  const rows = await sql<ProjectSessionRow[]>`
+    select ${sql.unsafe(projectSessionColumns)}
+    from project_sessions
+    where org_id = ${orgId} and id = ${projectId}
+    limit 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function getActiveProjectSessionForChat(
+  sql: Sql,
+  orgId: string,
+  chatId: string
+): Promise<ProjectSessionRow | null> {
+  const rows = await sql<ProjectSessionRow[]>`
+    select ${sql.unsafe(projectSessionColumns)}
+    from project_sessions
+    where org_id = ${orgId}
+      and chat_id = ${chatId}
+      and archived_at is null
+    order by updated_at desc
+    limit 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function createProjectSession(
+  sql: Sql,
+  orgId: string,
+  input: {
+    id?: string;
+    chatId: string;
+    title: string;
+    workflowId?: string | null;
+    workingState?: Record<string, unknown>;
+  }
+): Promise<ProjectSessionRow> {
+  const rows = await sql<ProjectSessionRow[]>`
+    insert into project_sessions (id, org_id, chat_id, title, workflow_id, working_state)
+    values (
+      ${input.id ?? sql`DEFAULT`}, ${orgId}, ${input.chatId}, ${input.title},
+      ${input.workflowId ?? null}, ${toJsonb(sql, input.workingState ?? {})}
+    )
+    returning ${sql.unsafe(projectSessionColumns)}
+  `;
+  return rows[0];
+}
+
+export async function updateProjectSession(
+  sql: Sql,
+  orgId: string,
+  projectId: string,
+  input: {
+    expectedVersion: number;
+    title?: string;
+    status?: ProjectSessionRow["status"];
+    workflowId?: string | null;
+    activeArtifactId?: string | null;
+    workingState?: Record<string, unknown>;
+    summary?: string;
+    summaryVersion?: number;
+    archivedAt?: string | null;
+  }
+): Promise<ProjectSessionRow | null> {
+  const rows = await sql<ProjectSessionRow[]>`
+    update project_sessions
+    set title = coalesce(${input.title ?? null}, title),
+        status = coalesce(${input.status ?? null}, status),
+        workflow_id = ${input.workflowId === undefined ? sql`workflow_id` : input.workflowId},
+        active_artifact_id = ${input.activeArtifactId === undefined ? sql`active_artifact_id` : input.activeArtifactId},
+        working_state = ${input.workingState === undefined ? sql`working_state` : toJsonb(sql, input.workingState)},
+        summary = coalesce(${input.summary ?? null}, summary),
+        summary_version = coalesce(${input.summaryVersion ?? null}, summary_version),
+        archived_at = ${input.archivedAt === undefined ? sql`archived_at` : input.archivedAt},
+        version = version + 1
+    where org_id = ${orgId}
+      and id = ${projectId}
+      and version = ${input.expectedVersion}
+    returning ${sql.unsafe(projectSessionColumns)}
+  `;
+  return rows[0] ?? null;
+}
+
+export async function listProjectRevisions(
+  sql: Sql,
+  orgId: string,
+  projectId: string
+): Promise<ProjectRevisionRow[]> {
+  return sql<ProjectRevisionRow[]>`
+    select id, org_id, project_id, parent_revision_id, run_id, turn_id, sequence,
+           instruction, change_set, artifact_ids, source_hashes, evaluation,
+           receipts, author, created_at
+    from project_revisions
+    where org_id = ${orgId} and project_id = ${projectId}
+    order by sequence asc
+  `;
+}
+
+export async function appendProjectRevision(
+  sql: Sql,
+  orgId: string,
+  input: {
+    projectId: string;
+    expectedProjectVersion: number;
+    parentRevisionId?: string | null;
+    runId?: string | null;
+    turnId?: string | null;
+    instruction?: string;
+    changeSet?: Record<string, unknown>;
+    artifactIds?: string[];
+    sourceHashes?: Record<string, string>;
+    evaluation?: Record<string, unknown>;
+    receipts?: Array<Record<string, unknown>>;
+    author: ProjectRevisionRow["author"];
+    projectStatus?: ProjectSessionRow["status"];
+    workingState?: Record<string, unknown>;
+  }
+): Promise<{ project: ProjectSessionRow; revision: ProjectRevisionRow } | null> {
+  return sql.begin(async (tx) => {
+    const projects = await tx<ProjectSessionRow[]>`
+      select ${tx.unsafe(projectSessionColumns)}
+      from project_sessions
+      where org_id = ${orgId} and id = ${input.projectId}
+      for update
+    `;
+    const project = projects[0];
+    if (!project || project.version !== input.expectedProjectVersion) return null;
+
+    const sequences = await tx<{ sequence: number }[]>`
+      select coalesce(max(sequence), 0)::bigint + 1 as sequence
+      from project_revisions
+      where project_id = ${input.projectId}
+    `;
+    const sequence = Number(sequences[0]?.sequence ?? 1);
+    const revisions = await tx<ProjectRevisionRow[]>`
+      insert into project_revisions (
+        org_id, project_id, parent_revision_id, run_id, turn_id, sequence,
+        instruction, change_set, artifact_ids, source_hashes, evaluation,
+        receipts, author
+      ) values (
+        ${orgId}, ${input.projectId}, ${input.parentRevisionId ?? project.active_revision_id},
+        ${input.runId ?? null}, ${input.turnId ?? null}, ${sequence},
+        ${input.instruction ?? ""}, ${toJsonb(tx, input.changeSet ?? {})},
+        ${toJsonb(tx, input.artifactIds ?? [])}, ${toJsonb(tx, input.sourceHashes ?? {})},
+        ${toJsonb(tx, input.evaluation ?? {})}, ${toJsonb(tx, input.receipts ?? [])},
+        ${input.author}
+      )
+      returning id, org_id, project_id, parent_revision_id, run_id, turn_id, sequence,
+                instruction, change_set, artifact_ids, source_hashes, evaluation,
+                receipts, author, created_at
+    `;
+    const revision = revisions[0];
+    const artifactId = input.artifactIds?.[0] ?? project.active_artifact_id;
+    const updated = await tx<ProjectSessionRow[]>`
+      update project_sessions
+      set active_revision_id = ${revision.id},
+          active_artifact_id = ${artifactId},
+          status = coalesce(${input.projectStatus ?? null}, status),
+          working_state = ${input.workingState === undefined ? tx`working_state` : toJsonb(tx, input.workingState)},
+          version = version + 1
+      where org_id = ${orgId} and id = ${input.projectId}
+      returning ${tx.unsafe(projectSessionColumns)}
+    `;
+    return updated[0] ? { project: updated[0], revision } : null;
+  });
 }
 
 export type ModelRow = {

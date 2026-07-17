@@ -78,6 +78,15 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
           type = explicit.kind as "role" | "skill" | "eval" | "workflow";
           targetId = explicit.id;
         }
+        const activeProject = chatProject(ws.chats.find((entry) => entry.id === chatId)?.metadata?.activeProject);
+        // Once a project has a revision artifact, ordinary follow-up requests
+        // are revisions by default. Starting a new project or attaching a
+        // workflow remains an explicit user action in the composer.
+        if (!explicit && activeProject?.artifactId && activeProject.revisionRoleSlug) {
+          type = "role";
+          targetId = activeProject.revisionRoleSlug;
+          if (!contextFileIds.includes(activeProject.artifactId)) contextFileIds.push(activeProject.artifactId);
+        }
         ctx.startRun(type);
 
         const chat = ws.chats.find((entry) => entry.id === chatId) ?? null;
@@ -113,6 +122,7 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
           modelId: selectedModel?.id,
           reasoningEffort,
           previousCompaction,
+          projectId: activeProject?.id,
           goal: {
             objective: text,
             constraints: [],
@@ -375,4 +385,21 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
     }),
     []
   );
+}
+
+type ActiveProject = {
+  id: string;
+  artifactId: string | null;
+  revisionRoleSlug: string | null;
+};
+
+function chatProject(value: unknown): ActiveProject | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== "string") return null;
+  return {
+    id: record.id,
+    artifactId: typeof record.artifactId === "string" ? record.artifactId : null,
+    revisionRoleSlug: typeof record.revisionRoleSlug === "string" ? record.revisionRoleSlug : null
+  };
 }

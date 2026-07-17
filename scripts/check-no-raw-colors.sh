@@ -53,9 +53,11 @@ patterns=(
 for pattern in "${patterns[@]}"; do
   # shellcheck disable=SC2086
   if matches=$(grep -RInE --include="*.ts" --include="*.tsx" --include="*.css" "${EXCLUDES[@]}" "$pattern" "${SCAN_PATHS[@]}" 2>/dev/null); then
-    echo "$matches" | while IFS= read -r line; do
+    while IFS= read -r line; do
       # Skip allowed exceptions: design-system tokens folder & base styles
-      if echo "$line" | grep -qE "(design-system/src/tokens|design-system/src/styles/base.css|check-no-raw-colors.sh)"; then
+      if echo "$line" | grep -qE "(design-system/src/tokens|design-system/src/styles/base.css|check-no-raw-colors.sh|apps/web/lib/email.ts)"; then
+        # Transactional email clients require inline CSS and cannot consume
+        # the application token variables. Keep this exception server-only.
         continue
       fi
       # Skip false positives: hex-like patterns inside strings like "gruvbox-dark" word
@@ -64,7 +66,7 @@ for pattern in "${patterns[@]}"; do
       fi
       echo "  $line"
       violations=$((violations + 1))
-    done
+    done <<< "$matches"
   fi
 done
 

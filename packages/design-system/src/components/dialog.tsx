@@ -14,6 +14,7 @@ const dialogLayouts = {
   default: "w-[calc(100vw-2rem)] max-w-md",
   command: "!top-[12vh] flex max-h-[min(72vh,calc(100vh-16vh))] w-[min(680px,92vw)] flex-col overflow-hidden p-0",
   context: "!top-[12vh] flex h-[min(70vh,calc(100vh-16vh))] max-h-[calc(100vh-16vh)] w-[min(960px,92vw)] flex-col overflow-hidden p-0",
+  fullscreen: "!left-3 !top-3 flex !h-[calc(100vh-1.5rem)] !w-[calc(100vw-1.5rem)] !max-w-none !translate-x-0 !translate-y-0 flex-col overflow-hidden p-0",
 } as const;
 
 export const DialogOverlay = forwardRef<

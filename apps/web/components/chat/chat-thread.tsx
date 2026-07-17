@@ -27,6 +27,7 @@ import { createPortal } from "react-dom";
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import ReactMarkdown from "react-markdown";
 import { ToolCallCard } from "./tool-call";
+import { ArtifactFullscreenButton, ArtifactWorkbench } from "./artifact-workbench";
 import {
   Button,
   ChoiceButton,
@@ -74,6 +75,63 @@ function ComposerAddContext({ count }: { count: number }) {
       Context
       <Pill className="ml-0.5 h-4 text-3xs" tone={count > 0 ? "info" : "default"}>{count}</Pill>
     </Button>
+  );
+}
+
+type ActiveProjectMetadata = {
+  id: string;
+  title: string;
+  workflowId: string | null;
+  artifactId: string | null;
+  status: string;
+};
+
+function readActiveProject(value: unknown): ActiveProjectMetadata | null {
+  if (!value || typeof value !== "object") return null;
+  const project = value as Record<string, unknown>;
+  if (typeof project.id !== "string" || typeof project.title !== "string") return null;
+  return {
+    id: project.id,
+    title: project.title,
+    workflowId: typeof project.workflowId === "string" ? project.workflowId : null,
+    artifactId: typeof project.artifactId === "string" ? project.artifactId : null,
+    status: typeof project.status === "string" ? project.status : "active"
+  };
+}
+
+function ActiveProjectChip() {
+  const store = useWorkspaceStore();
+  const run = useRunContext();
+  const activeChat = store.chats.find((chat) => chat.id === store.activeChatId) ?? null;
+  const project = readActiveProject(activeChat?.metadata?.activeProject);
+  if (!project) return null;
+  return (
+    <div className="mb-2 flex flex-wrap items-center gap-1.5" aria-label="Active project">
+      <Pill tone="info"><Icon name="layers" size={10} /> {project.title}</Pill>
+      <span className="text-3xs text-muted-foreground">{project.artifactId ? "Revision mode" : project.status}</span>
+      {project.workflowId ? (
+        <Button
+          onClick={() => run.addContext({ id: project.workflowId!, kind: "workflow", title: `Run ${project.title} again` })}
+          size="sm"
+          type="button"
+          variant="ghost"
+        >
+          Run again
+        </Button>
+      ) : null}
+      <Button
+        onClick={() => {
+          void store.createChat("New project");
+          run.reset();
+          run.clearContext();
+        }}
+        size="sm"
+        type="button"
+        variant="ghost"
+      >
+        New project
+      </Button>
+    </div>
   );
 }
 
@@ -186,6 +244,11 @@ function useHumanInputFlow(
     if (!request || !run.activeRunId) return;
     setSubmitting(true);
     setError(null);
+    run.clearContinuationText();
+    run.setHumanInputRequest(null);
+    run.setRunStatus("running");
+    run.setActivity("Saving input and resuming the workflow…");
+    let responseStarted = false;
     try {
       const response = await fetch(`/api/runs/${run.activeRunId}/reply`, {
         method: "POST",
@@ -203,9 +266,8 @@ function useHumanInputFlow(
         throw new Error(message);
       }
 
-      run.setHumanInputRequest(null);
-      run.setRunStatus("running");
-      run.setActivity(null);
+      responseStarted = true;
+      run.setActivity("Resuming from the durable checkpoint…");
       clearDraft();
 
       const reader = response.body.getReader();
@@ -227,6 +289,8 @@ function useHumanInputFlow(
             event?: RunEvent;
             artifact?: import("@spielos/core").Artifact;
             request?: HumanInputRequest;
+            state?: import("../../lib/run-context").DurableRunState;
+            usage?: import("../../lib/run-context").LiveRunUsage;
             text?: string;
             message?: string;
             status?: string;
@@ -234,11 +298,32 @@ function useHumanInputFlow(
           if (item.kind === "run" && item.runId) run.setActiveRunId(item.runId);
           if (item.kind === "event" && item.event) {
             run.appendEvent(item.event);
+            if (item.event.payload?.category === "context_budget") {
+              const inputTokens = item.event.payload.inputTokens;
+              if (typeof inputTokens === "number") {
+                run.setLiveUsage({
+                  inputTokens,
+                  outputTokens: run.liveUsage?.outputTokens ?? 0,
+                  toolCalls: run.liveUsage?.toolCalls ?? 0
+                });
+              }
+            }
             if (item.event.type === "run_completed") terminalStatus = "completed";
             if (item.event.type === "run_failed") terminalStatus = "failed";
             if (item.event.type === "run_cancelled") terminalStatus = "cancelled";
           }
           if (item.kind === "artifact" && item.artifact) run.appendArtifact(item.artifact);
+          if (item.kind === "run_state" && item.state) {
+            run.setDurableState(item.state);
+            if (item.state.budget) {
+              run.setLiveUsage({
+                inputTokens: item.state.budget.inputTokens,
+                outputTokens: item.state.budget.outputTokens,
+                toolCalls: item.state.budget.toolCalls
+              });
+            }
+          }
+          if (item.kind === "usage" && item.usage) run.setLiveUsage(item.usage);
           if (item.kind === "human_input" && item.request) {
             run.setHumanInputRequest(item.request);
             run.setRunStatus("waiting_human");
@@ -261,7 +346,12 @@ function useHumanInputFlow(
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Unable to resume the run.";
       setError(message);
-      run.setRunStatus("failed");
+      if (responseStarted) {
+        run.setRunStatus("failed");
+      } else {
+        run.setHumanInputRequest(request);
+        run.setRunStatus("waiting_human");
+      }
       toast.error("The run could not continue", { description: message });
     } finally {
       setSubmitting(false);
@@ -345,6 +435,36 @@ function HumanInputPrompt({ flow }: { flow: HumanInputFlow }) {
         ) : null}
       </div>
       <div className="px-3 py-3">
+        {request.questions.length > 1 ? (
+          <ol aria-label="Question progress" className="mb-3 flex items-center">
+            {request.questions.map((item, index) => {
+              const completed = index < flow.step;
+              const current = index === flow.step;
+              return (
+                <li className="flex min-w-0 flex-1 items-center last:flex-none" key={item.id}>
+                  <span
+                    aria-current={current ? "step" : undefined}
+                    aria-label={`Step ${index + 1}: ${item.question}`}
+                    className={cn(
+                      "flex size-6 shrink-0 items-center justify-center rounded-full border text-3xs font-semibold tabular-nums transition-colors",
+                      completed && "border-primary bg-primary text-primary-foreground",
+                      current && "border-primary bg-panel-strong text-primary",
+                      !completed && !current && "border-border bg-panel-raised text-muted-foreground"
+                    )}
+                  >
+                    {completed ? <Icon name="check" size={11} /> : index + 1}
+                  </span>
+                  {index < request.questions.length - 1 ? (
+                    <span
+                      aria-hidden="true"
+                      className={cn("mx-1.5 h-px min-w-3 flex-1 bg-border", completed && "bg-primary")}
+                    />
+                  ) : null}
+                </li>
+              );
+            })}
+          </ol>
+        ) : null}
         <div className="text-sm font-medium leading-5 text-foreground">{question.question}</div>
         {question.options?.length ? (
           <div
@@ -546,6 +666,7 @@ function Composer() {
   return (
     <ComposerPrimitive.Root className="aui-composer relative flex w-full flex-col gap-1.5" onSubmit={handleSubmit}>
       <HumanInputPrompt flow={human} />
+      <ActiveProjectChip />
       <ContextChips items={run.contextItems} onRemove={run.removeContext} />
       <div
         ref={composerShellRef}
@@ -834,11 +955,34 @@ function RoleAvatar({ roleId, roleName }: { roleId: string; roleName: string }) 
   );
 }
 
-function RunActivityTimeline() {
+type RunActivitySnapshot = {
+  runType: import("@spielos/core").RunType | null;
+  status: import("../../lib/run-context").RunLifecycleStatus;
+  running: boolean;
+  activity: string | null;
+  events: RunEvent[];
+};
+
+function RunActivityTimeline({ snapshot }: { snapshot?: RunActivitySnapshot } = {}) {
   const run = useRunContext();
-  if (run.runType === "chat") {
-    if (!run.running) return null;
-    const nativeActivity = [...orderRunEvents(run.events)].reverse().find(isStartEvent);
+  const current: RunActivitySnapshot = snapshot ?? {
+    runType: run.runType,
+    status: run.status,
+    running: run.running,
+    activity: run.activity,
+    events: run.events
+  };
+  const hasExecutableEvents = current.events.some((event) =>
+    event.type === "node_started" ||
+    event.type === "node_completed" ||
+    event.type === "skill_started" ||
+    event.type === "skill_completed" ||
+    event.type === "tool_call_started" ||
+    event.type === "tool_call_result"
+  );
+  if (current.runType === "chat" && !hasExecutableEvents) {
+    if (!current.running) return null;
+    const nativeActivity = [...orderRunEvents(current.events)].reverse().find(isStartEvent);
     return (
       <div className="mb-2 flex h-6 items-center gap-2 text-xs text-muted-foreground" aria-live="polite">
         <StatusIcon busy icon="circle-dot" tone="info" size={12} />
@@ -846,7 +990,7 @@ function RunActivityTimeline() {
       </div>
     );
   }
-  if (run.running && run.events.length === 0) {
+  if (current.running && current.events.length === 0) {
     return (
       <div className="mb-2 flex h-6 items-center" aria-live="polite">
         <StatusIcon busy icon="circle-dot" tone="info" size={12} />
@@ -854,18 +998,28 @@ function RunActivityTimeline() {
       </div>
     );
   }
-  if (run.events.length === 0 && run.status === "idle") return null;
+  if (current.events.length === 0 && current.status === "idle") return null;
 
-  const items = compactRunEvents(run.events);
-  const activeItemId = run.running
-    ? [...items].reverse().find(isStartEvent)?.id
+  const items = compactRunEvents(current.events);
+  const activityEvent = current.running && current.activity
+    ? [...items].reverse().find((event) => event.message === current.activity)
     : null;
+  const activeItemId = current.running
+    ? activityEvent?.id ?? (!current.activity ? [...items].reverse().find(isStartEvent)?.id ?? null : null)
+    : null;
+  const transientActivity = current.running && current.activity && !activityEvent ? current.activity : null;
 
   if (items.length === 0) return null;
 
   return (
     <div className="mb-3 text-xs" aria-live="polite">
       <div className="ml-[5px] border-l border-border/70 pl-4">
+          {transientActivity ? (
+            <div className="flex min-h-6 min-w-0 items-center gap-2 py-0.5 text-2xs">
+              <StatusIcon busy icon="circle-dot" tone="info" size={11} />
+              <span className="min-w-0 truncate text-foreground">{transientActivity}</span>
+            </div>
+          ) : null}
           {items.map((event) => {
           const active = event.id === activeItemId;
 
@@ -911,26 +1065,30 @@ function InlineRunArtifacts({ artifacts }: { artifacts: Artifact[] }) {
         const expanded = expandedId === artifact.id;
         return (
           <article className="overflow-hidden rounded-md border border-border bg-panel" key={artifact.id}>
-            <button
-              aria-expanded={expanded}
-              className="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-hover"
-              onClick={() => setExpandedId(expanded ? null : artifact.id)}
-              type="button"
-            >
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-panel-raised text-info">
-                <Icon name="file-text" size={13} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-xs font-medium text-foreground">{artifact.title}</span>
-                <span className="mt-0.5 block text-3xs text-muted-foreground">Saved to Outputs · {artifact.body.length.toLocaleString()} characters</span>
-              </span>
-              <Pill className="uppercase tracking-wider">{artifact.type}</Pill>
-              <Icon className={cn("text-muted-foreground transition-transform", expanded && "rotate-180")} name="chevron-down" size={12} />
-            </button>
+            <div className="flex items-center transition-colors hover:bg-hover">
+              <button
+                aria-expanded={expanded}
+                className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left"
+                onClick={() => setExpandedId(expanded ? null : artifact.id)}
+                type="button"
+              >
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-panel-raised text-info">
+                  <Icon name="file-text" size={13} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-medium text-foreground">{artifact.title}</span>
+                  <span className="mt-0.5 block text-3xs text-muted-foreground">Saved to Outputs · {artifact.body.length.toLocaleString()} characters</span>
+                </span>
+                <Icon className={cn("text-muted-foreground transition-transform", expanded && "rotate-180")} name="chevron-down" size={12} />
+              </button>
+              <div className="mr-2 shrink-0">
+                <ArtifactFullscreenButton artifact={artifact} />
+              </div>
+            </div>
             {expanded ? (
-              <pre className="max-h-72 overflow-auto whitespace-pre-wrap border-t border-border bg-panel-raised p-3 text-xs leading-5 text-foreground">
-                {artifact.body}
-              </pre>
+              <div className="border-t border-border">
+                <ArtifactWorkbench artifact={artifact} compact />
+              </div>
             ) : null}
           </article>
         );
@@ -939,10 +1097,116 @@ function InlineRunArtifacts({ artifacts }: { artifacts: Artifact[] }) {
   );
 }
 
+type PersistedRunSnapshot = {
+  type: import("@spielos/core").RunType;
+  status: RunStatus;
+  events: RunEvent[];
+  artifacts: Artifact[];
+};
+
+function toPersistedRunSnapshot(payload: {
+  run: { type: string; status: RunStatus };
+  events: Array<{
+    id: string;
+    org_id: string;
+    run_id: string;
+    event_type: string;
+    sequence: number;
+    node_id: string | null;
+    node_title: string | null;
+    skill_id: string | null;
+    skill_name: string | null;
+    message: string;
+    payload: Record<string, unknown>;
+    created_at: string;
+  }>;
+  artifacts: Artifact[];
+}): PersistedRunSnapshot {
+  return {
+    type: payload.run.type as import("@spielos/core").RunType,
+    status: payload.run.status,
+    events: payload.events.map((event) => ({
+      id: event.id,
+      orgId: event.org_id,
+      runId: event.run_id,
+      type: event.event_type as RunEvent["type"],
+      sequence: Number(event.sequence),
+      nodeId: event.node_id ?? undefined,
+      nodeTitle: event.node_title ?? undefined,
+      skillId: event.skill_id ?? undefined,
+      skillName: event.skill_name ?? undefined,
+      message: event.message,
+      payload: event.payload ?? {},
+      createdAt: event.created_at
+    })),
+    artifacts: payload.artifacts
+  };
+}
+
+function RunTurnCard({ runId }: { runId: string }) {
+  const run = useRunContext();
+  const [persisted, setPersisted] = useState<PersistedRunSnapshot | null>(null);
+
+  useEffect(() => {
+    if (run.activeRunId === runId) return;
+    const controller = new AbortController();
+    fetch(`/api/runs/${runId}`, { cache: "no-store", signal: controller.signal })
+      .then((response) => response.ok ? response.json() : null)
+      .then((payload: Parameters<typeof toPersistedRunSnapshot>[0] | null) => {
+        if (payload) setPersisted(toPersistedRunSnapshot(payload));
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+      });
+    return () => controller.abort();
+  }, [run.activeRunId, runId]);
+
+  const live = run.activeRunId === runId;
+  const snapshot: RunActivitySnapshot | null = live
+    ? { runType: run.runType, status: run.status, running: run.running, activity: run.activity, events: run.events }
+    : persisted
+      ? { runType: persisted.type, status: persisted.status, running: persisted.status === "running", activity: null, events: persisted.events }
+      : null;
+  const artifacts = live ? run.artifacts : persisted?.artifacts ?? [];
+  if (!snapshot) {
+    return (
+      <div className="flex h-6 items-center gap-2 text-2xs text-muted-foreground" aria-live="polite">
+        <StatusIcon busy icon="circle-dot" tone="info" size={11} />
+        <span className="sr-only">Loading execution history</span>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2 min-w-0">
+      <RunActivityTimeline snapshot={snapshot} />
+      <InlineRunArtifacts artifacts={artifacts} />
+    </div>
+  );
+}
+
 function AssistantMessage() {
   const run = useRunContext();
+  const store = useWorkspaceStore();
+  const messageId = useAuiState((s) => s.message.id);
   const isLatest = useAuiState((s) => s.thread.messages.at(-1)?.id === s.message.id);
+  const activeChatId = store.activeChatId;
+  const persistedMessage = (activeChatId ? store.messages[activeChatId] : [])?.find((message) => message.id === messageId);
+  const metadata = persistedMessage?.metadata ?? {};
+  const anchorRunId = metadata.kind === "execution_anchor" && typeof metadata.runId === "string"
+    ? metadata.runId
+    : null;
   const actor = isLatest && run.running ? run.activeActor : null;
+  if (anchorRunId) {
+    return (
+      <MessagePrimitive.Root className="grid w-full grid-cols-[auto_1fr] gap-x-3">
+        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-panel-raised text-foreground">
+          <Icon name={ENTITY_ICONS.assistant} size={14} />
+        </div>
+        <RunTurnCard runId={anchorRunId} />
+      </MessagePrimitive.Root>
+    );
+  }
+  const showLiveRun = isLatest && Boolean(run.activeRunId) && (run.running || run.status === "waiting_human");
   return (
     <MessagePrimitive.Root className="group fade-in slide-in-from-bottom-1 relative grid w-full grid-cols-[auto_1fr] gap-x-3 animate-in duration-[var(--duration)]">
       {actor ? <RoleAvatar roleId={actor.roleId} roleName={actor.roleName} /> : (
@@ -954,10 +1218,9 @@ function AssistantMessage() {
         <div className="flex items-center gap-2 text-2xs font-medium text-muted-foreground">
           <span>{actor?.roleName ?? "Assistant"}</span>
         </div>
+        {showLiveRun ? <RunTurnCard runId={run.activeRunId!} /> : null}
         <div className="mt-1">
-          {isLatest ? <RunActivityTimeline /> : null}
           <MessagePrimitive.Parts components={{ Text: MarkdownPart }} />
-          {isLatest ? <InlineRunArtifacts artifacts={run.artifacts} /> : null}
         </div>
         <div className="mt-2 flex items-center gap-1 text-muted-foreground opacity-40 transition-opacity group-hover:opacity-100">
           <ActionBar />
@@ -1023,12 +1286,25 @@ function ChatRuntimeProvider({ children }: { children: ReactNode }) {
   const store = useWorkspaceStore();
   const initialMessages = useMemo<ThreadMessageLike[]>(() => {
     if (!store.activeChatId) return [];
-    return (store.messages[store.activeChatId] ?? []).map((message) => ({
+    return (store.messages[store.activeChatId] ?? [])
+      .filter((message) => {
+        if (message.role !== "assistant" || typeof message.metadata?.resumedFrom !== "string") return true;
+        try {
+          const parsed = JSON.parse(message.body) as unknown;
+          return !(parsed && typeof parsed === "object" && !Array.isArray(parsed));
+        } catch {
+          return true;
+        }
+      })
+      .map((message) => ({
       id: message.id,
       role: message.role === "tool" ? "assistant" : message.role,
-      content: message.body,
+      // Older execution anchors were stored with an empty body. assistant-ui
+      // quite reasonably omits empty history messages, so normalize both old
+      // and new anchors into the renderer-owned sentinel during hydration.
+      content: message.metadata?.kind === "execution_anchor" ? "[execution_anchor]" : message.body,
       createdAt: new Date(message.createdAt)
-    }));
+      }));
   }, [store.activeChatId, store.messages]);
   const runtime = useLocalRuntime(adapter, { initialMessages });
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
@@ -1087,7 +1363,6 @@ function ChatThreadInner() {
           if (latestStore.activeChatId !== activeChatId) return;
           if (latestRun.activeRunId && latestRun.activeRunId !== runId) return;
           latestRun.setRunType(payload.run.type as import("@spielos/core").RunType);
-          latestRun.setRunStatus(payload.run.status);
           latestRun.setDurableState(payload.run.state as import("../../lib/run-context").DurableRunState);
           const restoredBudget = (payload.run.state as import("../../lib/run-context").DurableRunState).budget;
           latestRun.setLiveUsage(restoredBudget ? {
@@ -1096,7 +1371,11 @@ function ChatThreadInner() {
             toolCalls: restoredBudget.toolCalls
           } : null);
           const pending = payload.run.state?.pendingHumanInput;
-          latestRun.setHumanInputRequest(pending && typeof pending === "object" ? pending as HumanInputRequest : null);
+          latestRun.setHumanInputRequest(
+            payload.run.status === "waiting_human" && pending && typeof pending === "object"
+              ? pending as HumanInputRequest
+              : null
+          );
           for (const event of payload.events) {
             latestRun.appendEvent({
               id: event.id, orgId: event.org_id, runId: event.run_id, type: event.event_type as RunEvent["type"], sequence: Number(event.sequence),
@@ -1105,6 +1384,10 @@ function ChatThreadInner() {
             });
           }
           for (const artifact of payload.artifacts) latestRun.appendArtifact(artifact);
+          // The durable row status is authoritative. Replaying historical
+          // events above rebuilds the timeline, but must not let an older
+          // human-input or terminal event replace the current lifecycle.
+          latestRun.setRunStatus(payload.run.status);
         })
         .catch((err: unknown) => {
           // AbortError is the normal cleanup path; ignore it. Other errors
@@ -1114,7 +1397,7 @@ function ChatThreadInner() {
         });
     };
 
-    if (restorableRunId && !isDedicatedRunPage) {
+    if (restorableRunId) {
       // Debounce the restore on the home page so rapid chat switches do
       // not fire a flood of /api/runs/:id calls. The dedicated run page
       // restores immediately because the URL is the run's identity.

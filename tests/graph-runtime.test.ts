@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defaultInputContract, defaultOutputContract, type Role, type Skill, type WorkflowFile } from "@spielos/core";
-import { deriveHumanQuestions, streamRun, type RunYield } from "@spielos/graph";
+import { defaultInputContract, defaultOutputContract, emptyPinnedState, type MilestoneSummary, type Model, type Role, type Skill, type WorkflowFile } from "@spielos/core";
+import { deriveHumanQuestions, streamChatRun, streamRun, type RunCheckpoint, type RunYield } from "@spielos/graph";
 
 const orgId = "00000000-0000-0000-0000-000000000001";
 const role: Role = {
@@ -22,6 +22,33 @@ async function collect(generator: AsyncGenerator<RunYield, void, void>) {
   const items: RunYield[] = [];
   for await (const item of generator) items.push(item);
   return items;
+}
+
+function fakeModel(): Model {
+  return {
+    id: "model-test",
+    orgId,
+    name: "Test model",
+    provider: "openai-compatible",
+    model: "test-model",
+    baseUrl: "https://provider.invalid/v1",
+    secretEnvKey: "SPIELOS_TEST_LLM_KEY",
+    config: { capabilities: { contextWindow: 4096, maxOutputTokens: 1024 } },
+    enabled: true
+  };
+}
+
+function fakeStreamingFetch(calls: Array<Record<string, unknown>>) {
+  return async (_input: string | URL | Request, init?: RequestInit) => {
+    calls.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+    const body = [
+      'data: {"choices":[{"delta":{"content":"Grounded response"}}]}',
+      "",
+      "data: [DONE]",
+      ""
+    ].join("\n");
+    return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  };
 }
 
 test("prompt-authored human choices become a typed radio question with a custom-answer path", () => {
@@ -95,6 +122,226 @@ test("human input creates a resumable durable checkpoint without a false complet
   assert.ok(!resumed.some((item) => item.kind === "human_input"));
   assert.ok(resumed.some((item) => item.kind === "event" && item.event.type === "run_completed"));
   assert.ok(resumed.some((item) => item.kind === "text" && item.text.includes("Market evidence")));
+});
+
+test("terminal human input stays structured and is not emitted as assistant JSON", async () => {
+  const human = skill("terminal-human", "human_input", {
+    humanQuestions: [{ id: "choice", kind: "single", question: "Approve?", options: [{ id: "a", label: "Approve" }], allowCustom: false }]
+  });
+  const workflow: WorkflowFile = {
+    id: "workflow-terminal-human", orgId, name: "Terminal approval", description: "", status: "active", metadata: {},
+    nodes: [
+      { id: "approval", title: "Approval", roleId: role.id, skillIds: [human.id], fileIds: [], inputContract: "any", outputContract: "any", position: { x: 0, y: 0 } }
+    ],
+    edges: []
+  };
+  const base = {
+    orgId, runId: "run-terminal-human", prompt: "Review the output", workflow,
+    roles: { [role.id]: role }, skills: { [human.id]: human },
+    provider: null, model: null, connections: {}, files: []
+  };
+  const paused = await collect(streamRun(base));
+  const state = [...paused].reverse().find((item): item is Extract<RunYield, { kind: "checkpoint" }> => item.kind === "checkpoint")!.state;
+  const resumed = await collect(streamRun({ ...base, resume: { choice: "a" }, checkpoint: state }));
+  assert.ok(resumed.some((item) => item.kind === "event" && item.event.type === "run_completed"));
+  assert.equal(resumed.some((item) => item.kind === "text" && item.text.includes('"choice"')), false);
+  assert.equal(resumed.some((item) => item.kind === "artifact"), false);
+});
+
+test("retry can route through two completed nodes and start the next node", async () => {
+  const search = skill("retry-search", "knowledge_search");
+  const workflow: WorkflowFile = {
+    id: "workflow-retry-chain", orgId, name: "Retry chain", description: "", status: "active", metadata: {},
+    nodes: [
+      { id: "brief", title: "Brief", roleId: role.id, skillIds: [search.id], fileIds: [], inputContract: "any", outputContract: "any", position: { x: 0, y: 0 } },
+      { id: "strategy", title: "Strategy", roleId: role.id, skillIds: [search.id], fileIds: [], inputContract: "any", outputContract: "any", position: { x: 200, y: 0 } },
+      { id: "build", title: "Build", roleId: role.id, skillIds: [search.id], fileIds: [], inputContract: "any", outputContract: "any", position: { x: 400, y: 0 } }
+    ],
+    edges: [
+      { id: "brief-strategy", source: "brief", target: "strategy" },
+      { id: "strategy-build", source: "strategy", target: "build" }
+    ]
+  };
+  const checkpoint: RunCheckpoint = {
+    completedNodes: ["brief", "strategy"],
+    outputs: { brief: "Approved brief", strategy: "Approved strategy" },
+    artifacts: [], events: [], evalAttempts: {}, pendingHumanInput: null,
+    status: "running", failed: false, failedNode: null, error: null, retryNodeId: null,
+    goal: { objective: "Build the landing", constraints: [], successCriteria: ["Build completes"] },
+    budget: {
+      maxInputTokens: null, maxOutputTokens: null, maxDurationMs: null, maxToolCalls: null,
+      inputTokens: 0, outputTokens: 0, toolCalls: 0,
+      startedAt: "2026-07-17T00:00:00.000Z", deadlineAt: null
+    },
+    progress: { milestone: "Strategy", completedActions: ["Brief", "Strategy"], nextActions: ["Build"], unresolvedIssues: [] },
+    verification: { required: true, status: "pending", evidence: [], checkedAt: null },
+    longHorizon: { pinnedState: emptyPinnedState("2026-07-17T00:00:00.000Z"), milestones: [] }
+  };
+  const items = await collect(streamRun({
+    orgId, runId: "run-retry-chain", prompt: "Build the landing", workflow,
+    roles: { [role.id]: role }, skills: { [search.id]: search },
+    files: [{ id: "file-retry", title: "Landing evidence", body: "Build evidence", fileType: "knowledge", metadata: {} }],
+    connections: {}, provider: null, model: null, resume: {}, checkpoint
+  }));
+  assert.ok(items.some((item) => item.kind === "event" && item.event.type === "node_started" && item.event.nodeId === "build"));
+  assert.ok(items.some((item) => item.kind === "event" && item.event.type === "run_completed"));
+});
+
+test("workflow restart carries pinned state and milestone history from the durable checkpoint into the next model node", async () => {
+  const human = skill("continuity-human", "human_input", {
+    humanQuestions: [{ id: "approval", kind: "single", question: "Continue?", options: [{ id: "yes", label: "Yes" }], allowCustom: false }]
+  });
+  const writer = skill("continuity-writer", "llm_call", { implementation: "Return a concise grounded response." });
+  const workflow: WorkflowFile = {
+    id: "workflow-continuity", orgId, name: "Continuity", description: "", status: "active", metadata: {},
+    nodes: [
+      { id: "approval", title: "Approval", roleId: role.id, skillIds: [human.id], fileIds: [], inputContract: "any", outputContract: "any", position: { x: 0, y: 0 } },
+      { id: "write", title: "Write", roleId: role.id, skillIds: [writer.id], fileIds: [], inputContract: "any", outputContract: "any", position: { x: 200, y: 0 } }
+    ],
+    edges: [{ id: "approval-write", source: "approval", target: "write" }]
+  };
+  const pinnedState = {
+    ...emptyPinnedState("2026-07-17T00:00:00.000Z"),
+    primaryGoal: {
+      id: "goal-continuity",
+      text: "Preserve the launch objective across restart",
+      authority: "user" as const,
+      status: "active" as const,
+      sourceMessageId: "message-1",
+      supersedes: null,
+      createdAt: "2026-07-17T00:00:00.000Z",
+      updatedAt: "2026-07-17T00:00:00.000Z"
+    }
+  };
+  const milestone: MilestoneSummary = {
+    id: "milestone-1",
+    title: "Planning locked",
+    summary: "The launch objective was accepted.",
+    decisionsMade: [],
+    workCompleted: [],
+    unresolvedItems: ["Write the response"],
+    sourceMessageIds: ["message-1"],
+    createdAt: "2026-07-17T00:00:00.000Z"
+  };
+  const model = fakeModel();
+  const base = {
+    orgId,
+    runId: "run-continuity",
+    prompt: "market evidence",
+    workflow,
+    roles: { [role.id]: role },
+    skills: { [human.id]: human, [writer.id]: writer },
+    files: [],
+    connections: {},
+    provider: { ...model },
+    model
+  };
+  const paused = await collect(streamRun({
+    ...base,
+    chatMetadata: { pinnedState, milestones: [milestone] }
+  }));
+  const pausedCheckpoint = [...paused].reverse().find((item): item is Extract<RunYield, { kind: "checkpoint" }> => item.kind === "checkpoint")!.state;
+  assert.equal(pausedCheckpoint.longHorizon?.pinnedState.primaryGoal?.id, "goal-continuity");
+  assert.deepEqual(pausedCheckpoint.longHorizon?.milestones.map((item) => item.id), ["milestone-1"]);
+
+  const calls: Array<Record<string, unknown>> = [];
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.SPIELOS_TEST_LLM_KEY;
+  globalThis.fetch = fakeStreamingFetch(calls) as typeof fetch;
+  process.env.SPIELOS_TEST_LLM_KEY = "test-key";
+  try {
+    const resumed = await collect(streamRun({
+      ...base,
+      resume: { approval: "yes" },
+      checkpoint: pausedCheckpoint
+    }));
+    assert.ok(resumed.some((item) => item.kind === "event" && item.event.payload?.category === "long_horizon"));
+    const finalCheckpoint = [...resumed].reverse().find((item): item is Extract<RunYield, { kind: "checkpoint" }> => item.kind === "checkpoint")!.state;
+    assert.equal(finalCheckpoint.longHorizon?.pinnedState.primaryGoal?.id, "goal-continuity");
+    assert.deepEqual(finalCheckpoint.longHorizon?.milestones.map((item) => item.id), ["milestone-1"]);
+    const providerMessages = calls.flatMap((call) => Array.isArray(call.messages) ? call.messages as Array<{ content?: string }> : []);
+    assert.ok(providerMessages.some((message) => message.content?.includes("Preserve the launch objective across restart")));
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.SPIELOS_TEST_LLM_KEY;
+    else process.env.SPIELOS_TEST_LLM_KEY = previousKey;
+  }
+});
+
+test("a prior milestone is not re-emitted as a fresh plain-chat compaction", async () => {
+  const model = fakeModel();
+  const milestone: MilestoneSummary = {
+    id: "milestone-existing",
+    title: "Existing milestone",
+    summary: "Already persisted.",
+    decisionsMade: [],
+    workCompleted: [],
+    unresolvedItems: [],
+    sourceMessageIds: [],
+    createdAt: "2026-07-17T00:00:00.000Z"
+  };
+  const calls: Array<Record<string, unknown>> = [];
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.SPIELOS_TEST_LLM_KEY;
+  globalThis.fetch = fakeStreamingFetch(calls) as typeof fetch;
+  process.env.SPIELOS_TEST_LLM_KEY = "test-key";
+  try {
+    const items = await collect(streamChatRun({
+      orgId,
+      runId: "run-chat-continuity",
+      prompt: "Quick follow-up",
+      directorPrompt: "Be concise.",
+      roles: {},
+      skills: {},
+      files: [],
+      connections: {},
+      provider: { ...model },
+      model,
+      chatMetadata: { pinnedState: emptyPinnedState("2026-07-17T00:00:00.000Z"), milestones: [milestone] },
+      history: [{ role: "user", content: "Quick follow-up" }]
+    }));
+    assert.ok(!items.some((item) => item.kind === "event" && item.event.payload?.category === "compaction"));
+    const continuityEvent = items.find((item): item is Extract<RunYield, { kind: "event" }> => item.kind === "event" && item.event.payload?.category === "long_horizon");
+    assert.deepEqual((continuityEvent?.event.payload?.milestones as MilestoneSummary[]).map((item) => item.id), ["milestone-existing"]);
+    const checkpoint = [...items].reverse().find((item): item is Extract<RunYield, { kind: "checkpoint" }> => item.kind === "checkpoint")!.state;
+    assert.deepEqual(checkpoint.longHorizon?.milestones.map((item) => item.id), ["milestone-existing"]);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.SPIELOS_TEST_LLM_KEY;
+    else process.env.SPIELOS_TEST_LLM_KEY = previousKey;
+  }
+});
+
+test("plain chat migrates a legacy compaction summary without reporting a new compaction", async () => {
+  const model = fakeModel();
+  const calls: Array<Record<string, unknown>> = [];
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.SPIELOS_TEST_LLM_KEY;
+  globalThis.fetch = fakeStreamingFetch(calls) as typeof fetch;
+  process.env.SPIELOS_TEST_LLM_KEY = "test-key";
+  try {
+    const items = await collect(streamChatRun({
+      orgId,
+      runId: "run-legacy-chat",
+      prompt: "Quick follow-up",
+      directorPrompt: "Be concise.",
+      roles: {},
+      skills: {},
+      files: [],
+      connections: {},
+      provider: { ...model },
+      model,
+      chatMetadata: { compaction: { summary: "Legacy context", compactedMessageCount: 4, createdAt: "2026-07-17T00:00:00.000Z" } },
+      history: [{ role: "user", content: "Quick follow-up" }]
+    }));
+    assert.ok(!items.some((item) => item.kind === "event" && item.event.payload?.category === "compaction"));
+    const checkpoint = [...items].reverse().find((item): item is Extract<RunYield, { kind: "checkpoint" }> => item.kind === "checkpoint")!.state;
+    assert.deepEqual(checkpoint.longHorizon?.milestones.map((item) => item.id), ["legacy-run-legacy-chat"]);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.SPIELOS_TEST_LLM_KEY;
+    else process.env.SPIELOS_TEST_LLM_KEY = previousKey;
+  }
 });
 
 test("unregistered executable skill kinds fail instead of simulating success", async () => {

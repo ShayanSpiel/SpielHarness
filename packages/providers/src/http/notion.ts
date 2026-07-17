@@ -72,6 +72,14 @@ export const notionAdapter: HttpAdapter = {
         const raw = await notionRequest("/pages", "POST", token, body, req.signal);
         return { output: raw };
       }
+      case "notion.createDatabase": {
+        const body = JSON.parse(req.input) as Record<string, unknown>;
+        if (!body.parent || !body.title || !body.properties) {
+          throw new Error("Notion database creation requires parent, title, and properties.");
+        }
+        const raw = await notionRequest("/databases", "POST", token, body, req.signal);
+        return { output: raw };
+      }
       case "notion.update": {
         const body = JSON.parse(req.input) as Record<string, unknown>;
         const pageId = body.page_id as string;

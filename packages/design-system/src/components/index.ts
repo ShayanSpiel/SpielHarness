@@ -103,6 +103,6 @@ export { ToggleRow } from "./toggle-row";
 export { Tabs, TabsContent, TabsList, TabsTrigger } from "./tabs";
 export { ThemeToggle } from "./theme-toggle";
 export { Tooltip, TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from "./tooltip";
-export { ProviderLogo } from "./provider-logos";
+export { GoogleLogo, ProviderLogo } from "./provider-logos";
 
 export { toast } from "sonner";

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { emptyPinnedState, type ChatPinnedState, type Model, type ModelProvider } from "@spielos/core";
-import { detectStateChange, ensurePinnedState, summarizeActivePinnedState } from "@spielos/providers";
+import { detectStateChange, ensurePinnedState, extractStateOperations, summarizeActivePinnedState } from "@spielos/providers";
 import type { ChatMessage } from "@spielos/providers";
 
 function makeMessage(role: "user" | "assistant" | "system", content: string): ChatMessage {
@@ -128,11 +128,7 @@ test("summarizeActivePinnedState truncates when the rendered text exceeds the bu
   assert.match(summary, /…/);
 });
 
-test("extract module exposes a cheap-model fast path", () => {
-  // The cheap-model gate lives inside extractStateOperations; we test
-  // the heuristic directly by composing a model with the "tier=cheap"
-  // capability flag. The detector and the summarizer are the public
-  // surface used by the chat runtime; both must remain stable.
+test("small model tiers still extract durable state when a state change is detected", async () => {
   const model: Model = {
     id: "m",
     orgId: "o",
@@ -140,10 +136,31 @@ test("extract module exposes a cheap-model fast path", () => {
     provider: "openai-compatible",
     model: "mistral-small-latest",
     baseUrl: null,
-    secretEnvKey: null,
+    secretEnvKey: "SPIELOS_STATE_EXTRACT_TEST_KEY",
     config: { capabilities: { tier: "cheap" } },
     enabled: true
   };
   const provider: ModelProvider = { ...model };
-  assert.equal(provider.config?.capabilities && (provider.config.capabilities as Record<string, unknown>).tier, "cheap");
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.SPIELOS_STATE_EXTRACT_TEST_KEY;
+  process.env.SPIELOS_STATE_EXTRACT_TEST_KEY = "test-key";
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    choices: [{ message: { content: JSON.stringify({ operations: [{ op: "set_goal", text: "Ship Project Aster", sourceMessageId: "message-1" }] }) } }],
+    usage: { prompt_tokens: 10, completion_tokens: 5 }
+  }), { status: 200, headers: { "Content-Type": "application/json" } })) as typeof fetch;
+  try {
+    const outcome = await extractStateOperations({
+      provider,
+      model,
+      state: emptyPinnedState("2026-07-17T00:00:00.000Z"),
+      recent: [makeMessage("user", "The goal is to ship Project Aster.")]
+    });
+    assert.equal(outcome.reason, "extracted");
+    assert.equal(outcome.applied, true);
+    assert.equal(outcome.operations[0]?.op, "set_goal");
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.SPIELOS_STATE_EXTRACT_TEST_KEY;
+    else process.env.SPIELOS_STATE_EXTRACT_TEST_KEY = previousKey;
+  }
 });

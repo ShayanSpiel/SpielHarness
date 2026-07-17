@@ -1,9 +1,14 @@
 import {
   atomicCheckpoint,
   appendChatMessage,
+  appendChatMessages,
+  appendProjectRevision,
+  createProjectSession,
   createChat,
   createFile,
   createRun,
+  getChat,
+  getProjectSession,
   getRun,
   instrumentSql,
   linkRunInputFiles,
@@ -52,6 +57,11 @@ export async function POST(request: Request) {
     }
 
     const chatId: string | null = body.chatId ?? null;
+    // A turn id is created before execution and persists on the user request,
+    // execution anchor, run, artifacts, and final reply. It is deliberately
+    // distinct from a chat message id: a single turn can own several messages
+    // and child runs while still rendering as one compact activity surface.
+    const turnId = chatId ? crypto.randomUUID() : null;
     const instrumentedOrg = { ...org, sql };
     const [resolved] = await Promise.all([
       resolveExecution(instrumentedOrg, body),
@@ -60,10 +70,28 @@ export async function POST(request: Request) {
         : Promise.resolve(null)
     ]);
     const harnessResolutionMs = performance.now() - reqStart - authMs;
+    let project = body.projectId
+      ? await getProjectSession(sql, org.orgId, body.projectId)
+      : null;
+    if (body.projectId && !project) throw new HttpError(404, "Active project not found.");
+    if (!project && chatId && resolved.type === "workflow" && resolved.runRequest.workflow) {
+      const revisionRoleSlug = typeof resolved.runRequest.workflow.metadata?.revisionRoleSlug === "string"
+        ? resolved.runRequest.workflow.metadata.revisionRoleSlug
+        : null;
+      project = await createProjectSession(sql, org.orgId, {
+        chatId,
+        title: resolved.runRequest.workflow.name,
+        workflowId: resolved.target.id,
+        workingState: { revisionRoleSlug }
+      });
+    }
 
     const run = await createRun(sql, org.orgId, {
       chatId,
       workflowId: resolved.target.type === "workflow" ? resolved.target.id : null,
+      turnId,
+      executionKind: resolved.type === "workflow" ? "workflow" : "orchestrator",
+      projectId: project?.id ?? null,
       type: resolved.type,
       prompt: body.prompt,
       inputs: {
@@ -72,7 +100,8 @@ export async function POST(request: Request) {
         modelId: body.modelId ?? null,
         reasoningEffort: body.reasoningEffort ?? null,
         goal: body.goal ?? { objective: body.prompt, constraints: [], successCriteria: ["Return a grounded result."] },
-        budget: body.budget ?? {}
+        budget: body.budget ?? {},
+        projectId: project?.id ?? null
       },
       definitionSnapshot: {
         target: resolved.target,
@@ -88,13 +117,39 @@ export async function POST(request: Request) {
       idempotencyKey
     });
     const runCreationMs = performance.now() - reqStart - authMs - harnessResolutionMs;
+    const chat = chatId ? await getChat(sql, org.orgId, chatId) : null;
 
     if (resolved.contextFileIds.length > 0) {
       await linkRunInputFiles(sql, org.orgId, run.id, resolved.contextFileIds);
     }
-    if (chatId) {
-      await appendChatMessage(sql, org.orgId, chatId, "user", body.prompt, { runId: run.id });
-      await updateChatMetadata(sql, org.orgId, chatId, { activeRunId: run.id, lastRunId: run.id });
+    if (chatId && turnId) {
+      await appendChatMessages(sql, org.orgId, chatId, [
+        { role: "user", body: body.prompt, metadata: { runId: run.id, turnId, kind: "user_request" } },
+        // This renderer-owned assistant message is a durable UI anchor, not
+        // model text. It deliberately has non-empty content because the chat
+        // runtime drops empty messages while hydrating a saved conversation.
+        // The chat renderer recognizes its envelope and mounts the compact
+        // native run card under this exact turn after a reload.
+        { role: "assistant", body: "[execution_anchor]", metadata: { runId: run.id, turnId, kind: "execution_anchor" } }
+      ]);
+      await updateChatMetadata(sql, org.orgId, chatId, {
+        activeRunId: run.id,
+        lastRunId: run.id,
+        ...(project ? {
+          activeProject: {
+            id: project.id,
+            title: project.title,
+            workflowId: project.workflow_id,
+            revisionRoleSlug: typeof project.working_state?.revisionRoleSlug === "string"
+              ? project.working_state.revisionRoleSlug
+              : null,
+            artifactId: project.active_artifact_id,
+            revisionId: project.active_revision_id,
+            status: project.status,
+            version: project.version
+          }
+        } : {})
+      });
     }
 
     const encoder = new TextEncoder();
@@ -105,8 +160,10 @@ export async function POST(request: Request) {
         let outputText = "";
         let terminalStatus: RunStatus = "completed";
         let errorMessage: string | null = null;
+        const outputFiles: Array<{ id: string; isProject: boolean }> = [];
         let checkpoint: RunCheckpoint | null = null;
         let compaction: Record<string, unknown> | null = null;
+        let longHorizon: Record<string, unknown> | null = null;
         let compactionMs = 0;
         let inputTokensEstimate = 0;
         let systemPromptTokensEstimate = 0;
@@ -250,20 +307,21 @@ export async function POST(request: Request) {
         }
 
         const gen: AsyncGenerator<RunYield, void, void> =
-          resolved.type === "chat"
+          resolved.type === "chat" && !resolved.runRequest.singleNode
             ? streamChatRun({
                 ...resolved.runRequest,
                 runId: run.id,
                 directorPrompt: resolved.directorPrompt,
                 history: body.messages,
                 previousCompaction: body.previousCompaction,
+                chatMetadata: chat?.metadata ?? {},
                 goal: body.goal,
                 budget: body.budget,
                 onUsage,
                 signal: executionController.signal,
                 checkControl
               })
-            : streamRun({ ...resolved.runRequest, runId: run.id, goal: body.goal, budget: body.budget, onUsage, onToolUsage, onEvent, signal: executionController.signal, checkControl });
+            : streamRun({ ...resolved.runRequest, runId: run.id, chatMetadata: chat?.metadata ?? {}, goal: body.goal, budget: body.budget, onUsage, onToolUsage, onEvent, signal: executionController.signal, checkControl });
 
         try {
           for await (const item of gen) {
@@ -290,6 +348,9 @@ export async function POST(request: Request) {
                 const compactionEventStart = performance.now();
                 compactionMs = Math.max(compactionMs, compactionEventStart - providerStart);
               }
+              if (item.event.type === "status" && item.event.payload?.category === "long_horizon") {
+                longHorizon = item.event.payload as Record<string, unknown>;
+              }
               queueEvent(item.event);
               if (!liveEventIds.has(item.event.id)) {
                 controller.enqueue(encoder.encode(frame({ kind: "event", event: item.event })));
@@ -306,6 +367,10 @@ export async function POST(request: Request) {
                   metadata: { ...item.artifact.metadata, runId: run.id, runtimeArtifactId: item.artifact.id, seedFolder: generatedFileFolder() }
                 });
                 await linkRunOutputFile(sql, org.orgId, run.id, file.id);
+                outputFiles.push({
+                  id: file.id,
+                  isProject: item.artifact.metadata?.renderer === "project" || item.artifact.type === "artifact"
+                });
               } catch (err) {
                 console.error("[runs/execute] artifact persist failed:", err);
               }
@@ -426,11 +491,54 @@ export async function POST(request: Request) {
         if (chatId && compaction && resolved.type === "chat") {
           await updateChatMetadata(sql, org.orgId, chatId, { compaction });
         }
+        const durableLongHorizon = checkpoint?.longHorizon ?? (longHorizon ? {
+          pinnedState: longHorizon.pinnedState,
+          milestones: longHorizon.milestones
+        } : null);
+        if (chatId && durableLongHorizon) {
+          await updateChatMetadata(sql, org.orgId, chatId, {
+            pinnedState: durableLongHorizon.pinnedState,
+            milestones: durableLongHorizon.milestones
+          });
+        }
         if (chatId) {
           await updateChatMetadata(sql, org.orgId, chatId, {
             activeRunId: terminalStatus === "completed" ? null : run.id,
             lastRunId: run.id
           });
+        }
+        if (chatId && project && outputFiles.length > 0) {
+          try {
+            const projectArtifact = outputFiles.find((file) => file.isProject) ?? outputFiles[0];
+            const revision = await appendProjectRevision(sql, org.orgId, {
+              projectId: project.id,
+              expectedProjectVersion: project.version,
+              runId: run.id,
+              turnId,
+              instruction: body.prompt,
+              artifactIds: outputFiles.map((file) => file.id),
+              author: resolved.type === "workflow" ? "workflow" : "orchestrator",
+              projectStatus: terminalStatus === "waiting_human" ? "review" : terminalStatus === "completed" ? "active" : undefined
+            });
+            if (revision) {
+              await updateChatMetadata(sql, org.orgId, chatId, {
+                activeProject: {
+                  id: revision.project.id,
+                  title: revision.project.title,
+                  workflowId: revision.project.workflow_id,
+                  revisionRoleSlug: typeof revision.project.working_state?.revisionRoleSlug === "string"
+                    ? revision.project.working_state.revisionRoleSlug
+                    : null,
+                  artifactId: projectArtifact?.id ?? revision.project.active_artifact_id,
+                  revisionId: revision.revision.id,
+                  status: revision.project.status,
+                  version: revision.project.version
+                }
+              });
+            }
+          } catch (err) {
+            console.warn("[runs/execute] project revision persistence failed:", err);
+          }
         }
 
         if (
@@ -454,7 +562,11 @@ export async function POST(request: Request) {
 
         if (chatId && outputText) {
           try {
-            await appendChatMessage(sql, org.orgId, chatId, "assistant", outputText, { runId: run.id });
+            await appendChatMessage(sql, org.orgId, chatId, "assistant", outputText, {
+              runId: run.id,
+              turnId,
+              kind: "assistant_reply"
+            });
           } catch (err) {
             console.warn("[runs/execute] chat persist failed:", err);
           }

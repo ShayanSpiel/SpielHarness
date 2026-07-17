@@ -27,6 +27,7 @@ export type FileStatus = z.infer<typeof fileStatusSchema>;
 // ── Skill kinds ────────────────────────────────────────────────
 export const skillKindSchema = z.enum([
   "llm_call",
+  "artifact_create",
   "human_input",
   "eval",
   "http",
@@ -295,6 +296,44 @@ export const artifactTypeSchema = z.enum([
 ]);
 export type ArtifactType = z.infer<typeof artifactTypeSchema>;
 
+export const artifactFileSchema = z.object({
+  path: z.string().min(1),
+  mimeType: z.string().min(1),
+  content: z.string().default(""),
+  encoding: z.enum(["utf8", "base64"]).default("utf8"),
+  role: z.enum(["entry", "style", "script", "asset", "document", "data", "other"]).default("other"),
+  sourcePath: z.string().optional()
+});
+export type ArtifactFile = z.infer<typeof artifactFileSchema>;
+
+export const artifactProjectSchema = z.object({
+  kind: z.literal("project"),
+  version: z.literal(1).default(1),
+  name: z.string().min(1),
+  root: z.string().default("/"),
+  entrypoint: z.string().min(1),
+  files: z.array(artifactFileSchema).min(1),
+  integrations: z.array(z.object({
+    id: z.string().min(1),
+    purpose: z.string().min(1),
+    status: z.enum(["configured", "requires_connection", "placeholder"]).default("placeholder"),
+    receipt: z.record(z.unknown()).optional()
+  })).default([]),
+  metadata: z.record(z.unknown()).default({})
+});
+export type ArtifactProject = z.infer<typeof artifactProjectSchema>;
+
+export function parseArtifactProject(body: string): ArtifactProject | null {
+  const trimmed = body.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)?.[1] ?? trimmed;
+  try {
+    const parsed = artifactProjectSchema.safeParse(JSON.parse(fenced));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 export const artifactSchema = z.object({
   id: z.string(),
   orgId: z.string(),
@@ -408,6 +447,118 @@ export const chatMessageSchema = z.object({
   createdAt: z.string()
 });
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
+
+// ── Project sessions and orchestration ─────────────────────────
+//
+// A project is durable mutable application state associated with a chat. The
+// harness itself remains file-backed; this schema only owns project identity,
+// revision lineage, and the bounded execution plan that references harness
+// resources by id.
+
+export const projectSessionStatusSchema = z.enum([
+  "active",
+  "awaiting_input",
+  "review",
+  "completed",
+  "archived"
+]);
+export type ProjectSessionStatus = z.infer<typeof projectSessionStatusSchema>;
+
+export const projectSessionSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  chatId: z.string(),
+  title: z.string().min(1),
+  status: projectSessionStatusSchema.default("active"),
+  workflowId: z.string().nullable().default(null),
+  activeRevisionId: z.string().nullable().default(null),
+  activeArtifactId: z.string().nullable().default(null),
+  workingState: z.record(z.unknown()).default({}),
+  summary: z.string().default(""),
+  summaryVersion: z.number().int().nonnegative().default(0),
+  version: z.number().int().nonnegative().default(0),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  archivedAt: z.string().nullable().default(null)
+});
+export type ProjectSession = z.infer<typeof projectSessionSchema>;
+
+export const projectRevisionSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  projectId: z.string(),
+  parentRevisionId: z.string().nullable().default(null),
+  runId: z.string().nullable().default(null),
+  turnId: z.string().nullable().default(null),
+  sequence: z.number().int().positive(),
+  instruction: z.string().default(""),
+  changeSet: z.record(z.unknown()).default({}),
+  artifactIds: z.array(z.string()).default([]),
+  sourceHashes: z.record(z.string()).default({}),
+  evaluation: z.record(z.unknown()).default({}),
+  receipts: z.array(z.record(z.unknown())).default([]),
+  author: z.enum(["user", "orchestrator", "role", "workflow", "system"]),
+  createdAt: z.string()
+});
+export type ProjectRevision = z.infer<typeof projectRevisionSchema>;
+
+export const executionKindSchema = z.enum([
+  "orchestrator",
+  "workflow",
+  "tool",
+  "delegation",
+  "revision"
+]);
+export type ExecutionKind = z.infer<typeof executionKindSchema>;
+
+export const chatTurnKindSchema = z.enum([
+  "user_request",
+  "assistant_reply",
+  "execution_anchor",
+  "human_gate",
+  "system_notice"
+]);
+export type ChatTurnKind = z.infer<typeof chatTurnKindSchema>;
+
+export const chatTurnEnvelopeSchema = z.object({
+  turnId: z.string(),
+  kind: chatTurnKindSchema,
+  projectId: z.string().optional(),
+  runId: z.string().optional(),
+  parentRunId: z.string().optional(),
+  revisionId: z.string().optional()
+});
+export type ChatTurnEnvelope = z.infer<typeof chatTurnEnvelopeSchema>;
+
+export const orchestrationIntentSchema = z.enum([
+  "answer",
+  "tool",
+  "delegate",
+  "workflow",
+  "revise_project",
+  "author_harness"
+]);
+export type OrchestrationIntent = z.infer<typeof orchestrationIntentSchema>;
+
+export const orchestrationStepSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum(["answer", "tool", "role", "workflow", "eval", "human_gate"]),
+  targetId: z.string().optional(),
+  input: z.record(z.unknown()).default({}),
+  dependsOn: z.array(z.string()).default([]),
+  writeScope: z.enum(["none", "internal", "external"]),
+  confirmation: z.enum(["none", "required"])
+});
+export type OrchestrationStep = z.infer<typeof orchestrationStepSchema>;
+
+export const orchestrationPlanSchema = z.object({
+  intent: orchestrationIntentSchema,
+  project: z.enum(["none", "create", "continue", "new"]),
+  rationale: z.string(),
+  steps: z.array(orchestrationStepSchema).min(1),
+  expectedArtifacts: z.array(z.object({ kind: z.string(), name: z.string() })).default([])
+});
+export type OrchestrationPlan = z.infer<typeof orchestrationPlanSchema>;
 
 // ── Long-horizon chat state (Phase 2) ──────────────────────────
 //

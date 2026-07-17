@@ -7,6 +7,11 @@ const getCached = <T>(key: string, init: () => T): T => {
   return g[key]!;
 };
 
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
 function isSupabasePoolerHost(host: string): boolean {
   return /pooler\.supabase\.com$/i.test(host) || /supavisor/i.test(host);
 }
@@ -82,7 +87,12 @@ const pool = getCached("__auth_pool", () => {
   const config = resolvePoolConfig(baseUrl);
   const p = new Pool({
     connectionString: config.connectionString,
-    max: Math.max(1, Number(process.env.AUTH_POOL_MAX) || 1),
+    // Authentication is requested by several app surfaces during an initial
+    // workspace load. One connection serializes those reads and causes the
+    // pool-acquisition timeouts seen under normal page fan-out. Keep this
+    // independently tunable because the safe ceiling depends on the deployed
+    // database/pooler plan.
+    max: positiveIntegerEnv("AUTH_POOL_MAX", 4),
     min: 0,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
@@ -131,15 +141,12 @@ export const auth = betterAuth({
     google: {
       clientId: process.env.GOOGLE_CLIENT_ID!,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      // App sign-in establishes identity only. Product integrations request
+      // their own minimum scopes through the dedicated connector OAuth flow.
       scope: [
         "openid",
         "email",
-        "profile",
-        "https://www.googleapis.com/auth/gmail.send",
-        "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/calendar",
-        "https://www.googleapis.com/auth/drive.file",
-        "https://www.googleapis.com/auth/analytics.readonly",
+        "profile"
       ],
     },
   },

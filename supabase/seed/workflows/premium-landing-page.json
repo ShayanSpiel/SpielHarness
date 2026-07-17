@@ -1,0 +1,73 @@
+{
+  "title": "Premium Landing Page",
+  "description": "Long-horizon business workflow that discovers the brief, develops conversion strategy, builds a premium multi-file HTML project artifact, validates it, and presents the live result for review.",
+  "revisionRoleSlug": "landing-page-editor",
+  "nodes": [
+    {
+      "id": "brief",
+      "title": "Landing Brief",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Collect the business objective, audience, offer, proof, visual direction, constraints, Notion parent page, and Drive destination.",
+      "humanQuestions": [
+        { "id": "business", "kind": "text", "question": "What business, offer, audience, and primary conversion should this landing page serve?", "placeholder": "Include the offer, ICP, proof, objections, and desired action.", "allowCustom": true },
+        { "id": "visual", "kind": "text", "question": "What visual direction, brand constraints, references, or accessibility requirements should guide the premium design?", "placeholder": "Describe tone, color, typography, imagery, and constraints.", "allowCustom": true },
+        { "id": "content", "kind": "text", "question": "What specific proof, claims, pricing, FAQs, or form fields must appear?", "placeholder": "Include only factual claims we may publish; label anything still unknown.", "allowCustom": true }
+      ],
+      "input": "user_request",
+      "output": "landing_brief",
+      "x": 80,
+      "y": 220
+    },
+    {
+      "id": "strategy",
+      "title": "Conversion Strategy",
+      "roleSlug": "landing-page-strategist",
+      "skillSlugs": ["llm.generate"],
+      "prompt": "Create a rigorous premium landing strategy. Preserve all business facts and integration destination IDs. Be detailed enough for implementation and later long-horizon verification.",
+      "input": "landing_brief",
+      "output": "conversion_strategy",
+      "x": 340,
+      "y": 220
+    },
+    {
+      "id": "build",
+      "title": "Build Project",
+      "roleSlug": "landing-page-builder",
+      "skillSlugs": ["llm.generate", "artifact.project.create"],
+      "fileSlugs": ["landing-page-project"],
+      "prompt": "Build the complete HTML-first multi-file project. Write premium copy and implementation code, not generic placeholders. Keep the form local-only with excellent client-side UX; do not call Notion, Drive, a database, or any network service. Return only the delimiter-based project file bundle specified by the builder role, with raw complete content for every file and no Markdown fences or prose. Omit PDF content; the runtime handles typed document generation separately.",
+      "input": "conversion_strategy",
+      "output": "landing_project",
+      "x": 600,
+      "y": 220
+    },
+    {
+      "id": "qa",
+      "title": "Validate Project",
+      "skillSlugs": ["landing-project-evaluator"],
+      "prompt": "Validate the structured landing project.",
+      "evalInput": { "type": "node_output", "nodeId": "build" },
+      "loopConfig": { "enabled": true, "maxAttempts": 2, "breakCondition": "on_pass", "retryDelayMs": 0 },
+      "input": "landing_project",
+      "output": "qa_report",
+      "x": 860,
+      "y": 220
+    },
+    {
+      "id": "approval",
+      "title": "Landing Review",
+      "skillSlugs": ["ask-the-user"],
+      "prompt": "Show the QA status and ask for a decision on the rendered HTML. Suggest: (A) Approve the landing page, (B) Request targeted edits, (C) Hold this version.",
+      "input": "qa_report",
+      "output": "review_decision",
+      "x": 1120,
+      "y": 220
+    }
+  ],
+  "edges": [
+    { "id": "brief-strategy", "source": "brief", "target": "strategy" },
+    { "id": "strategy-build", "source": "strategy", "target": "build" },
+    { "id": "build-qa", "source": "build", "target": "qa" },
+    { "id": "qa-approval", "source": "qa", "target": "approval" }
+  ]
+}

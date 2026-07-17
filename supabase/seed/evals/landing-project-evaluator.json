@@ -1,0 +1,16 @@
+{
+  "name": "Landing Project Evaluator",
+  "description": "Checks the durable landing bundle for required files, production-shaped HTML, progressive enhancement, form UX, accessibility, and unsupported claim markers.",
+  "rules": [
+    { "id": "entry", "label": "HTML entrypoint", "type": "contains", "value": "index.html", "importance": 20 },
+    { "id": "styles", "label": "Responsive stylesheet", "type": "contains", "value": "Assets/styles.css", "importance": 15 },
+    { "id": "script", "label": "Progressive enhancement", "type": "contains", "value": "Assets/app.js", "importance": 10 },
+    { "id": "form-handler", "label": "Server-ready form contract", "type": "contains", "value": "Files/form-handler.js", "importance": 15 },
+    { "id": "analytics-contract", "label": "Analytics event contract", "type": "contains", "value": "analytics.json", "importance": 15 },
+    { "id": "form", "label": "Conversion form", "type": "contains", "value": "<form", "importance": 15 },
+    { "id": "accessibility", "label": "Accessible labels", "type": "contains", "value": "aria-", "importance": 15 },
+    { "id": "unsupported-claims", "label": "No unsupported performance or certification claims", "type": "missing", "value": "SOC 2,go live in,supports 90%,5-minute latency,3–5 business days,within 24 hours,enterprise-grade encryption", "importance": 25 }
+  ],
+  "overallThreshold": 90,
+  "loopConfig": { "enabled": true, "maxAttempts": 2, "breakCondition": "on_pass", "retryDelayMs": 0 }
+}

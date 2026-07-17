@@ -11,7 +11,7 @@ interface DriveFile {
   iconLink?: string;
 }
 
-function mapToWorkspaceFile(file: DriveFile): {
+function mapToWorkspaceFile(file: DriveFile, orgId: string): {
   id: string;
   orgId: string;
   folderId: null;
@@ -27,7 +27,7 @@ function mapToWorkspaceFile(file: DriveFile): {
 } {
   return {
     id: `gdrive-${file.id}`,
-    orgId: "00000000-0000-0000-0000-000000000001",
+    orgId,
     folderId: null,
     fileType: "knowledge",
     status: "active",
@@ -86,7 +86,7 @@ export async function GET(request: Request) {
       nextPageToken?: string;
     };
 
-    const files = (data.files || []).map(mapToWorkspaceFile);
+    const files = (data.files || []).map((file) => mapToWorkspaceFile(file, access.orgId));
 
     return NextResponse.json({
       files,

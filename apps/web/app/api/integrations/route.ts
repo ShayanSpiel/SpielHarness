@@ -47,6 +47,9 @@ export async function POST(request: Request) {
       const presets = await loadIntegrationCatalog();
       const preset = presets.find((p) => p.id === body.presetId);
       if (!preset) return Response.json({ error: "Unknown preset" }, { status: 400 });
+      if (preset.availability === "unavailable") {
+        return Response.json({ error: preset.unavailableReason ?? `${preset.name} is not available in this runtime.` }, { status: 409 });
+      }
       const status = preset.secretEnvKey && !process.env[preset.secretEnvKey]
         ? "needs_secret"
         : "configured";

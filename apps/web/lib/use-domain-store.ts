@@ -331,7 +331,7 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
       return;
     }
     try {
-      const [filesResult, modelsResult, driveResult] = await Promise.allSettled([
+      const [filesResult, modelsResult] = await Promise.allSettled([
         fetchJsonWithRetry<{ files: FileRecord[] }>("/api/harness/files", { cache: "no-store" }),
         fetchJsonWithRetry<{ models: Array<{
           id: string;
@@ -344,12 +344,13 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
           config: Record<string, unknown>;
           enabled: boolean;
         }> }>("/api/models", { cache: "no-store" }),
-        fetchJsonWithRetry<{ files: FileRecord[] }>("/api/google-drive/workspace-files", { cache: "no-store" })
       ]);
       if (filesResult.status === "fulfilled") {
         const dbFiles = filesResult.value.files ?? [];
-        const driveFiles = driveResult.status === "fulfilled" ? driveResult.value.files ?? [] : [];
-        setFiles([...dbFiles, ...driveFiles]);
+        // Google Drive is external, read-only context and belongs solely to
+        // Files > Files. Its dedicated picker owns loading and refresh so a
+        // normal workspace boot never performs a duplicate Drive API call.
+        setFiles(dbFiles);
         const folders = new Set<string>();
         const libraryFileTypes = new Set([
           "artifact",

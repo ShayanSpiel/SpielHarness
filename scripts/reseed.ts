@@ -49,6 +49,7 @@ type ManifestEntry = {
   workspaceConfig?: boolean;
   harnessAction?: "create" | "update";
   inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
 };
 type Manifest = Record<string, ManifestEntry>;
 
@@ -128,6 +129,7 @@ function classify(relPath: string, manifest: Manifest): { fileType: string; meta
   if (entry?.workspaceConfig) metadata.workspaceConfig = true;
   if (entry?.harnessAction) metadata.harnessAction = entry.harnessAction;
   if (entry?.inputSchema) metadata.inputSchema = entry.inputSchema;
+  if (entry?.outputSchema) metadata.outputSchema = entry.outputSchema;
   if (entry?.skillSlugs) metadata.skillSlugs = entry.skillSlugs;
   return { fileType, metadata };
 }

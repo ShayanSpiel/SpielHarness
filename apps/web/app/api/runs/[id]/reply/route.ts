@@ -1,10 +1,13 @@
 import {
   appendChatMessages,
+  appendProjectRevision,
   atomicCheckpoint,
   createFile,
+  getProjectSession,
   getRun,
   linkRunOutputFile,
   recordUsage,
+  updateChatMetadata,
   type RunEventInput
 } from "@spielos/db";
 import { errorResponse, getOrg, HttpError, requireWrite } from "../../../../../lib/server";
@@ -33,6 +36,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     const run = await getRun(org.sql, org.orgId, runId);
     if (!run) throw new HttpError(404, "Run not found");
+    const project = run.project_id
+      ? await getProjectSession(org.sql, org.orgId, run.project_id)
+      : null;
     const controlAction = body.requestId === "resume" || body.requestId === "retry";
     const controlAllowed = body.requestId === "resume"
       ? run.status === "waiting_human"
@@ -121,6 +127,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     // Persist the human answer against the run via an atomic checkpoint.
     const previousHumanInputs = (run.human_inputs as Record<string, unknown>) ?? {};
+    const pendingRequestId = checkpoint.pendingHumanInput?.id;
+    const persistedPendingAnswers = pendingRequestId ? previousHumanInputs[pendingRequestId] : null;
+    const resumeAnswers = controlAction
+      ? body.requestId === "retry" && persistedPendingAnswers && typeof persistedPendingAnswers === "object"
+        ? persistedPendingAnswers as Record<string, unknown>
+        : {}
+      : body.answers;
     const initialCheckpoint = await atomicCheckpoint(org.sql, org.orgId, runId, {
       status: "running",
       humanInputs: controlAction ? previousHumanInputs : { ...previousHumanInputs, [body.requestId]: body.answers },
@@ -136,6 +149,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       async start(controller) {
         controller.enqueue(encoder.encode(frame({ kind: "run", runId, type: target.type })));
         let outputText = "";
+        const outputFiles: Array<{ id: string; isProject: boolean }> = [];
         let terminalStatus: "completed" | "failed" | "cancelled" | "waiting_human" = "completed";
         let errorMessage: string | null = null;
         let latestCheckpoint: RunCheckpoint = checkpoint;
@@ -147,15 +161,44 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         const usage = { input: 0, output: 0, tools: 0 };
         const queuedEventIds = new Set<string>();
         const queuedEvents: RunEventInput[] = [];
+        const shouldPersistImmediately = (event: import("@spielos/core").RunEvent) =>
+          event.type === "run_started" ||
+          event.type === "run_completed" ||
+          event.type === "run_failed" ||
+          event.type === "run_cancelled" ||
+          event.type === "node_started" ||
+          event.type === "node_completed" ||
+          event.type === "node_failed" ||
+          event.type === "human_input_requested" ||
+          event.type === "human_input_received" ||
+          event.type === "artifact_created" ||
+          event.type === "eval_score_updated" ||
+          (event.type === "status" && ["context_assembly", "model_generation", "structured_output_repair"].includes(String(event.payload?.category ?? "")));
         const onUsage = (next: { input: number; output: number }) => {
           usage.input += next.input;
           usage.output += next.output;
+          controller.enqueue(encoder.encode(frame({
+            kind: "usage",
+            usage: {
+              inputTokens: priorUsage.input + usage.input,
+              outputTokens: priorUsage.output + usage.output,
+              toolCalls: priorUsage.tools + usage.tools
+            }
+          })));
         };
         const onToolUsage = (count: number) => {
           const next = priorUsage.tools + usage.tools + count;
           const maximum = checkpoint.budget?.maxToolCalls;
           if (maximum && next > maximum) throw new Error(`Tool-call budget exceeded (${maximum}).`);
           usage.tools += count;
+          controller.enqueue(encoder.encode(frame({
+            kind: "usage",
+            usage: {
+              inputTokens: priorUsage.input + usage.input,
+              outputTokens: priorUsage.output + usage.output,
+              toolCalls: priorUsage.tools + usage.tools
+            }
+          })));
         };
         const flushAtomicCheckpoint = async (stateOverride?: RunCheckpoint) => {
           if (queuedEvents.length === 0 && stateOverride === undefined) return;
@@ -172,7 +215,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           for await (const item of streamRun({
             ...resolved.runRequest,
             runId,
-            resume: controlAction ? {} : body.answers,
+            resume: resumeAnswers,
             checkpoint,
             goal: executeBody.goal,
             budget: executeBody.budget,
@@ -197,7 +240,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                   message: item.event.message,
                   payload: item.event.payload ?? {}
                 });
-                if (queuedEvents.length >= 12) await flushAtomicCheckpoint();
+                if (queuedEvents.length >= 12 || shouldPersistImmediately(item.event)) await flushAtomicCheckpoint();
               }
               controller.enqueue(encoder.encode(frame({ kind: "event", event: item.event })));
             } else if (item.kind === "artifact") {
@@ -214,6 +257,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 }
               });
               await linkRunOutputFile(org.sql, org.orgId, runId, file.id);
+              outputFiles.push({
+                id: file.id,
+                isProject: item.artifact.metadata?.renderer === "project" || item.artifact.type === "artifact"
+              });
               controller.enqueue(encoder.encode(frame({ kind: "artifact", artifact: item.artifact })));
             } else if (item.kind === "human_input") {
               terminalStatus = "waiting_human";
@@ -303,10 +350,56 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         if (run.chat_id && outputText) {
           try {
             await appendChatMessages(org.sql, org.orgId, run.chat_id, [
-              { role: "assistant", body: outputText, metadata: { runId, resumedFrom: body.requestId } }
+              {
+                role: "assistant",
+                body: outputText,
+                metadata: {
+                  runId,
+                  turnId: run.turn_id ?? undefined,
+                  kind: "assistant_reply",
+                  resumedFrom: body.requestId
+                }
+              }
             ]);
           } catch (err) {
             console.warn("[runs/reply] chat persist failed:", err);
+          }
+        }
+
+        // A workflow commonly creates its first project artifact after the
+        // human brief is answered. Treat that resumed execution as a normal
+        // revision so later chat edits retain the project lineage.
+        if (run.chat_id && project && outputFiles.length > 0) {
+          try {
+            const projectArtifact = outputFiles.find((file) => file.isProject) ?? outputFiles[0];
+            const revision = await appendProjectRevision(org.sql, org.orgId, {
+              projectId: project.id,
+              expectedProjectVersion: project.version,
+              runId,
+              turnId: run.turn_id,
+              instruction: run.prompt,
+              artifactIds: outputFiles.map((file) => file.id),
+              author: run.type === "workflow" ? "workflow" : "orchestrator",
+              projectStatus: terminalStatus === "waiting_human" ? "review" : terminalStatus === "completed" ? "active" : undefined
+            });
+            if (revision) {
+              await updateChatMetadata(org.sql, org.orgId, run.chat_id, {
+                activeProject: {
+                  id: revision.project.id,
+                  title: revision.project.title,
+                  workflowId: revision.project.workflow_id,
+                  revisionRoleSlug: typeof revision.project.working_state?.revisionRoleSlug === "string"
+                    ? revision.project.working_state.revisionRoleSlug
+                    : null,
+                  artifactId: projectArtifact?.id ?? revision.project.active_artifact_id,
+                  revisionId: revision.revision.id,
+                  status: revision.project.status,
+                  version: revision.project.version
+                }
+              });
+            }
+          } catch (err) {
+            console.error("[runs/reply] project revision persist failed:", err);
           }
         }
 

@@ -108,22 +108,11 @@ function findMessageId(content: string, recent: ChatMessage[]): string | null {
   return null;
 }
 
-function isCheapModel(model: Model): boolean {
-  const capabilities = (model.config?.capabilities as Record<string, unknown> | undefined) ?? {};
-  const tier = typeof capabilities.tier === "string" ? capabilities.tier : null;
-  if (tier === "cheap" || tier === "small") return true;
-  const modelLower = (model.model ?? "").toLowerCase();
-  if (modelLower.includes("mini") || modelLower.includes("nano") || modelLower.includes("haiku") || modelLower.includes("small") || modelLower.includes("8b")) {
-    return true;
-  }
-  return false;
-}
-
 export type ExtractionOutcome = {
   operations: StateOperation[];
   rejected: Array<{ op: StateOperation; reason: string }>;
   applied: boolean;
-  reason: "extracted" | "no_state_change" | "cheap_model" | "parse_error" | "api_error";
+  reason: "extracted" | "no_state_change" | "parse_error" | "api_error";
 };
 
 export type ExtractArgs = {
@@ -136,8 +125,10 @@ export type ExtractArgs = {
 };
 
 /**
- * Run the cheap detector first, then the structured extraction only if
- * the detector fired AND the model is not a tiny cheap tier. The
+ * Run the cheap lexical detector first, then structured extraction only
+ * when the detector fires. Model tier alone must never disable durable
+ * state: the reducer is the authority boundary, and routing extraction
+ * to another model requires an explicitly evaluated roster. The
  * extraction model receives the current state and the recent messages
  * and returns bounded operations. The reducer applies them with
  * authority checks; we surface the rejected set so callers can count
@@ -146,9 +137,6 @@ export type ExtractArgs = {
 export async function extractStateOperations(args: ExtractArgs): Promise<ExtractionOutcome> {
   if (!detectStateChange(args.recent)) {
     return { operations: [], rejected: [], applied: false, reason: "no_state_change" };
-  }
-  if (isCheapModel(args.model)) {
-    return { operations: [], rejected: [], applied: false, reason: "cheap_model" };
   }
   const messages: ChatRequest["messages"] = [
     { role: "system", content: EXTRACTION_SYSTEM_PROMPT },

@@ -18,6 +18,7 @@ export type GoogleDriveAccess = {
   accessToken: string;
   account: string | null;
   connectionId: string;
+  orgId: string;
 };
 
 export async function resolveGoogleDriveAccess(): Promise<GoogleDriveAccess | null> {
@@ -47,7 +48,7 @@ export async function resolveGoogleDriveAccess(): Promise<GoogleDriveAccess | nu
     (!Number.isFinite(expiresAt) || expiresAt > Date.now() + EXPIRY_MARGIN_MS);
 
   if (accessIsCurrent) {
-    return { accessToken: credential.accessToken!, account, connectionId: connection.id };
+    return { accessToken: credential.accessToken!, account, connectionId: connection.id, orgId: org.orgId };
   }
 
   if (!credential.refreshToken || !CLIENT_ID || !CLIENT_SECRET) return null;
@@ -88,5 +89,5 @@ export async function resolveGoogleDriveAccess(): Promise<GoogleDriveAccess | nu
     }
   });
 
-  return { accessToken: token.access_token, account, connectionId: connection.id };
+  return { accessToken: token.access_token, account, connectionId: connection.id, orgId: org.orgId };
 }
