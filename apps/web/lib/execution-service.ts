@@ -286,36 +286,13 @@ export async function resolveExecution(
     };
     targetId = evalFile.id;
   } else if (targetType === "chat") {
-    const orchestrator = Object.values(roles).find((role) =>
-      role.metadata?.systemRole === "orchestrator" || role.metadata?.slug === "orchestrator"
-    );
-    if (orchestrator?.status === "active") {
-      // The orchestrator owns the chat by definition. It must have access to
-      // every active harness file (roles, skills, workflows, evals, templates,
-      // strategy, prompts) and to every active skill the workspace exposes —
-      // including those authored later. The role's metadata `skillSlugs` is
-      // treated as a default/seed hint, never as a hard cap. The runtime
-      // resolves the live capability snapshot every turn.
-      const activeSkillIds = Object.values(skills)
-        .filter((skill) => skill.status === "active")
-        .map((skill) => skill.id);
-      const declaredSkillIds = (orchestrator.skillIds ?? []).filter((id) => skills[id]?.status === "active");
-      const orchestratorSkillIds = Array.from(new Set([...declaredSkillIds, ...activeSkillIds]));
-      const orchestratorRole: Role = {
-        ...orchestrator,
-        skillIds: orchestratorSkillIds
-      };
-      singleNode = {
-        kind: "role",
-        nodeId: `node_${crypto.randomUUID()}`,
-        title: orchestratorRole.name,
-        role: orchestratorRole,
-        skill: null,
-        evalFile: null,
-        fileIds: contextFileIds
-      };
-      targetId = orchestratorRole.id;
-    }
+    // Note: the Director / Deep Agents integration is planned but not yet
+    // shipped. Until `ExecutionMode = "director" | "direct"` is wired and
+    // the official `deepagents` runtime is in place, plain chat falls
+    // through to the legacy `streamChatRun` path. The seed-flagged
+    // `systemRole: "orchestrator"` role is currently treated as the
+    // ordinary Director prompt source; the runtime does not wrap it in a
+    // `singleNode` skill set here.
   } else {
     throw new HttpError(400, `Unknown run type: ${body.type}`);
   }

@@ -7,11 +7,17 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@langchain/core": "^0.3.80",
-    "@langchain/langgraph": "^0.2.74",
+    "@langchain/core": "1.2.1",
+    "@langchain/langgraph": "1.4.8",
+    "@langchain/langgraph-checkpoint": "1.1.3",
+    "@langchain/langgraph-checkpoint-postgres": "1.0.4",
+    "@langchain/langgraph-sdk": "1.9.23",
     "@spielos/core": "file:../core",
     "@spielos/db": "file:../db",
     "@spielos/evals": "file:../evals",
-    "@spielos/providers": "file:../providers"
+    "@spielos/providers": "file:../providers",
+    "deepagents": "1.11.0",
+    "langchain": "1.5.3",
+    "langsmith": "0.7.1"
   }
 }
