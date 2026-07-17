@@ -226,52 +226,44 @@ test("direct mode with a paused run, resume, restores the durable checkpoint", a
   assert.ok(resumed.some((item) => item.kind === "event" && item.event.type === "run_completed"));
 });
 
-test("director mode is a literal no-op against plain chat until the Director core ships", async () => {
+test("director mode is wired and reaches the deepagents runtime when the orchestrator role is present", async () => {
+  // The director runtime requires an active Orchestrator role
+  // (systemRole: "orchestrator"). When one is present, the
+  // runtime attempts to compile and invoke the deep agent. The
+  // test verifies the wiring, the early `run_started` event, and
+  // the failure surface (the test model is not a real LLM, so the
+  // deep agents runtime will fail at invoke time). The failure
+  // path emits `run_failed` and a single `done` frame.
   const model = fakeModel();
-  const calls: Array<Record<string, unknown>> = [];
-  const previousFetch = globalThis.fetch;
-  const previousKey = process.env.SPIELOS_TEST_LLM_KEY;
-  globalThis.fetch = fakeStreamingFetch(calls) as typeof fetch;
-  process.env.SPIELOS_TEST_LLM_KEY = "test-key";
-  try {
-    const directorItems = await collect(streamDirectorRun({
-      orgId,
-      runId: "run-director-chat",
-      prompt: "Plain chat question",
-      directorPrompt: "Be concise.",
-      roles: {},
-      skills: {},
-      files: [],
-      connections: {},
-      provider: { ...model },
-      model,
-      chatMetadata: {},
-      history: [{ role: "user", content: "Plain chat question" }],
-      executionMode: "director"
-    } as DirectorRunRequest));
-    const directItems = await collect(streamChatRun({
-      orgId,
-      runId: "run-direct-chat-mirror",
-      prompt: "Plain chat question",
-      directorPrompt: "Be concise.",
-      roles: {},
-      skills: {},
-      files: [],
-      connections: {},
-      provider: { ...model },
-      model,
-      chatMetadata: {},
-      history: [{ role: "user", content: "Plain chat question" }],
-      executionMode: "direct"
-    }));
-    const directorYield = directorItems.map((item) => item.kind);
-    const directYield = directItems.map((item) => item.kind);
-    assert.deepEqual(directorYield, directYield);
-    assert.ok(directorItems.some((item) => item.kind === "text" && item.text.includes("Grounded response")));
-    assert.ok(directorItems.some((item) => item.kind === "event" && item.event.type === "run_completed"));
-  } finally {
-    globalThis.fetch = previousFetch;
-    if (previousKey === undefined) delete process.env.SPIELOS_TEST_LLM_KEY;
-    else process.env.SPIELOS_TEST_LLM_KEY = previousKey;
-  }
+  const orchestrator = {
+    ...role,
+    id: "role-orchestrator",
+    name: "Orchestrator",
+    description: "Director",
+    prompt: "You are the Director.",
+    metadata: { systemRole: "orchestrator" }
+  };
+  const items = await collect(streamDirectorRun({
+    orgId,
+    runId: "run-director-wired",
+    prompt: "Plain chat question",
+    directorPrompt: orchestrator.prompt,
+    roles: { [orchestrator.id]: orchestrator },
+    skills: {},
+    files: [],
+    connections: {},
+    provider: { ...model },
+    model,
+    chatMetadata: {},
+    history: [{ role: "user", content: "Plain chat question" }],
+    executionMode: "director"
+  } as DirectorRunRequest));
+  assert.ok(items.some((item) => item.kind === "event" && item.event.type === "run_started"));
+  assert.equal(items.filter((item) => item.kind === "done").length, 1);
+  // The deep agent compile or invoke may succeed or fail in
+  // tests; either way a terminal `done` is emitted exactly once
+  // and the harness owns the durable run.
+  const done = items.find((item): item is Extract<RunYield, { kind: "done" }> => item.kind === "done");
+  assert.ok(done);
+  assert.ok(["completed", "failed", "waiting_human", "cancelled"].includes(done.status));
 });

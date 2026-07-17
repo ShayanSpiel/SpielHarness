@@ -4,7 +4,12 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./director/compile": "./src/director/compile.ts",
+    "./director/events": "./src/director/events.ts",
+    "./director/usage": "./src/director/usage.ts",
+    "./director/interrupt": "./src/director/interrupt.ts",
+    "./director/chat-model": "./src/director/chat-model.ts"
   },
   "dependencies": {
     "@langchain/core": "1.2.1",

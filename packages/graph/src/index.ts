@@ -2837,29 +2837,272 @@ export async function* streamChatRun(
 
 // ── Director run (deepagents-backed Orchestrator) ──────────────
 //
-// Phase 1 milestone: this entrypoint exists and is wired into the
-// API layer. The actual Deep Agents runtime (planning loop,
-// subagents, interrupts) ships in Phase 2/3. Until then, director
-// runs are routed to the same plain-chat runtime as direct runs:
-// the resolved Orchestrator role prompt and selected context drive
-// the legacy `streamChatRun` path. This keeps director mode a
-// literal no-op against the existing deterministic behavior, so
-// the existing direct-mode regression tests remain bit-for-bit
-// identical. The runtime branches on this entrypoint; once the
-// Director core ships, this function is replaced with the v3
-// stream mapper from `packages/graph/src/director/compile.ts`.
+// The Director runtime owns the planning loop, subagent
+// delegation, write_todos, summarization, and LangGraph
+// interrupts via the official `deepagents` package. The SpielOS
+// runtime remains the product authority for permissions, durable
+// runs, child-run lineage, artifacts, external writes, billing,
+// and the SSE protocol.
+import {
+  compileDirector,
+  historyToMessages
+} from "./director/compile.ts";
+import { mapDirectorInterrupts, type DirectorStateSnapshot } from "./director/events.ts";
+import { DirectorUsageTracker } from "./director/usage.ts";
+import { Command } from "@langchain/langgraph";
+
 export type DirectorRunRequest = Omit<RunRequest, "workflow" | "singleNode"> & {
   directorPrompt: string;
   history?: ChatMessage[];
+  /**
+   * Resume payload from `runs/[id]/reply`. When set, the run is
+   * a continuation after a LangGraph interrupt. The runtime
+   * translates the answers map into a `Command({ resume: ... })`.
+   */
+  directorResume?: { requestId: string; answers: Record<string, unknown> };
 };
 
 export async function* streamDirectorRun(
   req: DirectorRunRequest
 ): AsyncGenerator<RunYield, void, void> {
-  // Phase 1 fallback: defer to the legacy plain-chat runtime with
-  // the resolved director prompt. Phase 2 replaces this body with
-  // the deepagents v3 stream mapper and the post-mapper RunYield
-  // emit loop.
-  yield* streamChatRun(req);
+  const startedAt = new Date().toISOString();
+  if (!req.provider || !req.model) {
+    yield { kind: "text", text: "No executable target or LLM is configured. Add a model in Settings to use the Director." };
+    yield {
+      kind: "event",
+      event: makeEvent(req.orgId, req.runId, "run_completed", "No model was available for the Director.", {
+        payload: { runType: "director", phase: "completed_without_model" }
+      })
+    };
+    yield { kind: "done", status: "completed" };
+    return;
+  }
+
+  const directorRole = findDirectorRole(req);
+  const suggestedHarnessRefs = req.suggestedHarnessRefs ?? [];
+  const { agent } = compileDirector({
+    orgId: req.orgId,
+    runId: req.runId,
+    directorRole,
+    provider: req.provider,
+    model: req.model,
+    suggestedHarnessRefs,
+    signal: req.signal
+  });
+
+  const history: ChatMessage[] = [...(req.history ?? [])];
+  if (history.at(-1)?.role !== "user" || history.at(-1)?.content !== req.prompt) {
+    history.push({ role: "user", content: req.prompt });
+  }
+  const messages = historyToMessages(history);
+
+  const usage = new DirectorUsageTracker((snapshot) => req.onUsage?.(snapshot));
+  const emitted = new Set<string>();
+
+  yield {
+    kind: "event",
+    event: makeEvent(req.orgId, req.runId, "run_started", "Director started.", {
+      payload: { runType: "director", phase: "started" }
+    })
+  };
+
+  const target = {
+    orgId: req.orgId,
+    runId: req.runId,
+    emitEvent: (event: RunEvent) => {
+      if (emitted.has(event.id)) return event;
+      emitted.add(event.id);
+      return event;
+    },
+    buildCheckpoint: (state: DirectorStateSnapshot): RunCheckpoint => ({
+      completedNodes: ["director"],
+      outputs: { director: "" },
+      artifacts: [],
+      events: [],
+      evalAttempts: {},
+      pendingHumanInput: state.pendingHumanInput,
+      status: state.status,
+      failed: false,
+      failedNode: null,
+      error: null,
+      retryNodeId: null,
+      goal: state.goal,
+      budget: state.budget,
+      progress: state.progress,
+      verification: state.verification,
+      longHorizon: state.longHorizon
+    })
+  };
+
+  const checkControl = req.checkControl ?? (() => null);
+  const pre = checkControl();
+  if (pre === "cancel") {
+    yield { kind: "event", event: makeEvent(req.orgId, req.runId, "run_cancelled", "Director cancelled before invoke.") };
+    yield { kind: "done", status: "cancelled" };
+    return;
+  }
+
+  let run;
+  try {
+    run = req.directorResume
+      ? await agent.stream(
+          new Command({ resume: req.directorResume.answers }),
+          { signal: req.signal, configurable: { thread_id: req.runId } }
+        )
+      : await agent.stream(
+          { messages },
+          { signal: req.signal, configurable: { thread_id: req.runId } }
+        );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Director failed.";
+    yield { kind: "event", event: makeEvent(req.orgId, req.runId, "run_failed", message) };
+    yield {
+      kind: "checkpoint",
+      state: target.buildCheckpoint({
+        longHorizon: { pinnedState: emptyPinnedState(startedAt), milestones: [] },
+        goal: req.goal ?? { objective: req.prompt, constraints: [], successCriteria: ["Return a grounded response."] },
+        budget: {
+          maxInputTokens: null,
+          maxOutputTokens: null,
+          maxDurationMs: null,
+          maxToolCalls: null,
+          inputTokens: 0,
+          outputTokens: 0,
+          toolCalls: 0,
+          startedAt,
+          deadlineAt: null
+        },
+        progress: { milestone: "Director failed", completedActions: [], nextActions: ["Retry the Director turn."], unresolvedIssues: [message] },
+        verification: { required: true, status: "failed", evidence: [], checkedAt: new Date().toISOString() },
+        pendingHumanInput: null,
+        status: "failed"
+      })
+    };
+    yield { kind: "done", status: "failed" };
+    return;
+  }
+
+  let assistantText = "";
+  let toolCalls = 0;
+  let interrupted: unknown[] = [];
+  let outputState: Record<string, unknown> = {};
+
+  try {
+    for await (const event of run) {
+      const control = checkControl();
+      if (control === "cancel") {
+        yield { kind: "event", event: makeEvent(req.orgId, req.runId, "run_cancelled", "Director cancelled mid-stream.") };
+        yield { kind: "done", status: "cancelled" };
+        return;
+      }
+      const [, payload] = event as ["values" | "messages" | "updates" | "custom", unknown];
+      if (payload && typeof payload === "object" && "messages" in (payload as Record<string, unknown>)) {
+        const messages = (payload as { messages: unknown[] }).messages;
+        for (const message of messages) {
+          if (message && typeof message === "object" && "tool_call_id" in (message as Record<string, unknown>)) {
+            const tool = message as { tool_call_id: string; name?: string; content?: string };
+            target.emitEvent(makeEvent(req.orgId, req.runId, "tool_call_result", `Tool ${tool.name ?? tool.tool_call_id} returned.`, {
+              payload: { callId: tool.tool_call_id, output: tool.content }
+            }));
+          } else if (message && typeof message === "object" && "tool_calls" in (message as Record<string, unknown>)) {
+            const calls = (message as { tool_calls: Array<{ id?: string; name: string; args?: Record<string, unknown> }> }).tool_calls ?? [];
+            for (const call of calls) {
+              toolCalls += 1;
+              target.emitEvent(makeEvent(req.orgId, req.runId, "tool_call_started", `Director called ${call.name}.`, {
+                payload: { callId: call.id ?? `call_${toolCalls}`, operation: call.name, input: call.args ?? {} }
+              }));
+            }
+          } else if (message && typeof message === "object" && "content" in (message as Record<string, unknown>)) {
+            const content = (message as { content: string | unknown }).content;
+            if (typeof content === "string" && content) {
+              assistantText += content;
+              yield { kind: "text", text: content };
+              const usageMeta = (message as { usage_metadata?: { input_tokens?: number; output_tokens?: number } }).usage_metadata;
+              if (usageMeta) usage.record(usageMeta);
+            }
+          }
+        }
+      }
+      if (payload && typeof payload === "object" && "__interrupt__" in (payload as Record<string, unknown>)) {
+        interrupted = (payload as { __interrupt__: unknown[] }).__interrupt__;
+      }
+      if (event[0] === "values") {
+        outputState = (payload as Record<string, unknown>) ?? {};
+      }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Director stream failed.";
+    yield { kind: "event", event: makeEvent(req.orgId, req.runId, "run_failed", message) };
+    yield { kind: "done", status: "failed" };
+    return;
+  }
+
+  const interrupts = Array.isArray(outputState.__interrupt__) ? outputState.__interrupt__ : interrupted;
+  usage.foldOnce();
+  const humanRequest = mapDirectorInterrupts(target, interrupts);
+  if (humanRequest) {
+    yield { kind: "human_input", request: humanRequest };
+    yield {
+      kind: "checkpoint",
+      state: target.buildCheckpoint({
+        longHorizon: { pinnedState: emptyPinnedState(startedAt), milestones: [] },
+        goal: req.goal ?? { objective: req.prompt, constraints: [], successCriteria: ["Return a grounded response."] },
+        budget: {
+          maxInputTokens: null,
+          maxOutputTokens: null,
+          maxDurationMs: null,
+          maxToolCalls: null,
+          inputTokens: usage.snapshot().input,
+          outputTokens: usage.snapshot().output,
+          toolCalls,
+          startedAt,
+          deadlineAt: null
+        },
+        progress: { milestone: "Waiting for human input", completedActions: [], nextActions: ["Reply to the Director's question."], unresolvedIssues: [] },
+        verification: { required: true, status: "pending", evidence: [], checkedAt: null },
+        pendingHumanInput: humanRequest,
+        status: "waiting_human"
+      })
+    };
+    yield { kind: "done", status: "waiting_human" };
+    return;
+  }
+
+  yield {
+    kind: "event",
+    event: makeEvent(req.orgId, req.runId, "run_completed", "Director completed.", {
+      payload: { runType: "director", phase: "completed", usage: usage.snapshot(), toolCalls }
+    })
+  };
+  yield {
+    kind: "checkpoint",
+    state: target.buildCheckpoint({
+      longHorizon: { pinnedState: emptyPinnedState(startedAt), milestones: [] },
+      goal: req.goal ?? { objective: req.prompt, constraints: [], successCriteria: ["Return a grounded response."] },
+      budget: {
+        maxInputTokens: null,
+        maxOutputTokens: null,
+        maxDurationMs: null,
+        maxToolCalls: null,
+        inputTokens: usage.snapshot().input,
+        outputTokens: usage.snapshot().output,
+        toolCalls,
+        startedAt,
+        deadlineAt: null
+      },
+      progress: { milestone: "Director completed", completedActions: ["Generated response"], nextActions: [], unresolvedIssues: [] },
+      verification: { required: true, status: assistantText.trim() ? "passed" : "failed", evidence: assistantText.trim() ? ["Director returned a non-empty response."] : [], checkedAt: new Date().toISOString() },
+      pendingHumanInput: null,
+      status: "completed"
+    })
+  };
+  yield { kind: "done", status: "completed" };
+}
+
+function findDirectorRole(req: DirectorRunRequest): Role | null {
+  for (const role of Object.values(req.roles ?? {})) {
+    if (role.metadata?.systemRole === "orchestrator" && role.status === "active") return role;
+  }
+  return null;
 }
 
