@@ -82,7 +82,7 @@ function resolvePoolConfig(connectionString: string | undefined) {
   }
 }
 
-const pool = getCached("__auth_pool", () => {
+export const authDatabasePool = getCached("__auth_pool", () => {
   const baseUrl = process.env.DATABASE_URL;
   const config = resolvePoolConfig(baseUrl);
   const p = new Pool({
@@ -92,12 +92,12 @@ const pool = getCached("__auth_pool", () => {
     // pool-acquisition timeouts seen under normal page fan-out. Keep this
     // independently tunable because the safe ceiling depends on the deployed
     // database/pooler plan.
-    max: positiveIntegerEnv("AUTH_POOL_MAX", 4),
+    max: positiveIntegerEnv("AUTH_POOL_MAX", 6),
     min: 0,
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 5_000,
+    connectionTimeoutMillis: positiveIntegerEnv("AUTH_CONNECT_TIMEOUT_MS", 15_000),
     ssl: { rejectUnauthorized: false },
-    query_timeout: 8_000,
+    query_timeout: positiveIntegerEnv("PG_QUERY_TIMEOUT_MS", 30_000),
     // Keep idle connections alive so the server-side idle reaper
     // (Supabase sets `idle_in_transaction_session_timeout` aggressively
     // on free tier) does not kill sockets the `pg` library still
@@ -109,25 +109,17 @@ const pool = getCached("__auth_pool", () => {
   const mode = config.mode;
   p.on("error", (err: Error) => {
     console.error(`[pool ${id}] error:`, err.message);
-    // The pg library removes a dead client from the pool automatically;
-    // tearing the whole pool down on every error cascades into 200-500 ms
-    // TCP+TLS+auth handshakes against an already-overloaded Supabase
-    // pooler. Only reset when the error is a hard socket failure that
-    // leaves the pool itself in a bad state, and even then, log first
-    // so we do not silently re-create pools on every transient blip.
-    const socketDead = /ECONNRESET|connection refused|server closed the connection unexpectedly|FATAL: terminating connection/i.test(err.message);
-    if (socketDead) {
-      console.warn(`[pool ${id}] draining after socket-level failure (mode=${mode})`);
-      void p.end().catch(() => undefined);
-      const g = globalThis as unknown as Record<string, typeof p | undefined>;
-      g["__auth_pool"] = undefined;
-    }
+    // `pg` removes the failed client itself. Never drain the whole pool here:
+    // Better Auth retains the Pool object passed at construction, so replacing
+    // the global cache would leave that live auth instance bound to a closed
+    // pool and make every later session lookup fail after a transient socket.
   });
   if (process.env.NODE_ENV !== "production") {
     console.info(`[auth] pool mode=${mode} max=${p.options.max} keepAlive=true`);
   }
   return p;
 });
+const pool = authDatabasePool;
 
 export const auth = betterAuth({
   database: pool,

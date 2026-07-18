@@ -43,6 +43,9 @@ import {
 import { evaluateRules, type EvalResult } from "@spielos/evals";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { searchAttachedFiles } from "./knowledge-search.ts";
+
+export { searchAttachedFiles } from "./knowledge-search.ts";
 
 // ── Attached file (read-only context) ──────────────────────────
 export type AttachedFile = {
@@ -1545,23 +1548,11 @@ function executeKnowledgeSearch(
   node: WorkflowNode,
   query: string
 ): string {
-  const terms = `${state.prompt}\n${query}`.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 2);
   const filesToSearch =
     node.fileIds.length > 0
       ? state.files.filter((f) => node.fileIds.includes(f.id))
       : state.files;
-  const scored = filesToSearch
-    .map((f) => {
-      const haystack = `${f.title}\n${f.body}`.toLowerCase();
-      const score = terms.reduce((sum, t) => sum + (haystack.includes(t) ? 1 : 0), 0);
-      return { file: f, score };
-    })
-    .filter((e) => e.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 5);
-  return scored.length
-    ? scored.map((e) => `# ${e.file.title}\n\n${e.file.body}`).join("\n\n---\n\n")
-    : "No matching harness files found.";
+  return searchAttachedFiles(filesToSearch, query, state.prompt);
 }
 
 async function assertSafeOutboundUrl(url: URL): Promise<void> {
@@ -2258,10 +2249,11 @@ function buildGraph(workflow: WorkflowFile, req: RunRequest) {
 // ── Build a single-node graph (for chat/role/skill/eval targets) ─
 function buildSingleNodeGraph(req: RunRequest) {
   const single = req.singleNode!;
+  if (!single.role) throw new Error("Direct execution requires a file-backed role.");
   const virtualNode: WorkflowNode = {
     id: single.nodeId,
     title: single.title,
-    roleId: single.role?.id ?? "runtime.chat",
+    roleId: single.role.id,
     skillIds: single.skill?.id ? [single.skill.id] : [],
     fileIds: single.fileIds,
     inputContract: "any",
@@ -2588,7 +2580,7 @@ function checkpointFromState(state: typeof RunStateAnnotation.State): RunCheckpo
 // ── Plain chat run (uses a single-node graph with orchestrator prompt) ─
 export async function* streamChatRun(
   req: Omit<RunRequest, "workflow" | "singleNode"> & {
-    directorPrompt: string;
+    assistantPrompt: string;
     history?: ChatMessage[];
   }
 ): AsyncGenerator<RunYield, void, void> {
@@ -2624,7 +2616,7 @@ export async function* streamChatRun(
     req.workspaceInstructions?.length
       ? `Workspace configuration (highest workspace authority):\n${req.workspaceInstructions.map((file) => `\n--- ${file.title} ---\n${file.body}`).join("\n")}`
       : "Workspace configuration: none.",
-    req.directorPrompt,
+    req.assistantPrompt,
     "Do not assume the full library was attached.",
     selectedContext.length > 0
       ? `Selected context references: ${selectedContext.map((f) => `${f.fileType}:${f.title}`).join(", ")}`
@@ -2845,12 +2837,17 @@ export async function* streamChatRun(
 // and the SSE protocol.
 import {
   compileDirector,
+  directorEvalToolName,
+  directorSkillToolName,
   historyToMessages
 } from "./director/compile.ts";
 import { mapDirectorInterrupts, type DirectorStateSnapshot } from "./director/events.ts";
 import { DirectorUsageTracker } from "./director/usage.ts";
 import { noopToolContext } from "./director/tools.ts";
+import { artifactsFromDirectorFiles, buildDirectorFiles, mapDirectorValues, type DirectorToolPresentation } from "./director/values.ts";
+import { directorResumePayload } from "./director/interrupt.ts";
 import { Command } from "@langchain/langgraph";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 
 export type DirectorRunRequest = Omit<RunRequest, "workflow" | "singleNode"> & {
   directorPrompt: string;
@@ -2869,26 +2866,76 @@ export type DirectorRunRequest = Omit<RunRequest, "workflow" | "singleNode"> & {
   directorWorkflows?: Record<string, import("@spielos/core").WorkflowFile>;
   directorEvals?: Record<string, import("@spielos/core").EvalFile>;
   directorToolContext?: import("./director/tools.ts").DirectorToolContext;
+  /** Stable LangGraph thread identity. Chat ids preserve native Deep Agents
+   * state and compaction across turns; non-chat callers fall back to runId. */
+  directorThreadId?: string;
+  /**
+   * Phase 4: durable checkpointer. When provided, the deep
+   * agents runtime writes its state to Postgres and resumes
+   * from `runs.checkpoint` on retry.
+   */
+  directorCheckpointer?: import("@langchain/langgraph-checkpoint").BaseCheckpointSaver | null;
 };
 
 export async function* streamDirectorRun(
   req: DirectorRunRequest
 ): AsyncGenerator<RunYield, void, void> {
   const startedAt = new Date().toISOString();
+  const deadlineAt = req.budget?.maxDurationMs
+    ? new Date(Date.now() + req.budget.maxDurationMs).toISOString()
+    : null;
   if (!req.provider || !req.model) {
     yield { kind: "text", text: "No executable target or LLM is configured. Add a model in Settings to use the Director." };
     yield {
       kind: "event",
-      event: makeEvent(req.orgId, req.runId, "run_completed", "No model was available for the Director.", {
-        payload: { runType: "director", phase: "completed_without_model" }
+      event: makeEvent(req.orgId, req.runId, "run_failed", "No model was available for the Director.", {
+        payload: { runType: "director", phase: "failed" }
       })
     };
-    yield { kind: "done", status: "completed" };
+    yield { kind: "done", status: "failed" };
     return;
   }
 
   const directorRole = findDirectorRole(req);
+  if (!directorRole) {
+    yield {
+      kind: "event",
+      event: makeEvent(req.orgId, req.runId, "run_failed", "Director requires an active file-backed orchestrator role.", {
+        payload: { runType: "director", phase: "failed", reason: "missing_orchestrator" }
+      })
+    };
+    yield { kind: "done", status: "failed" };
+    return;
+  }
   const suggestedHarnessRefs = req.suggestedHarnessRefs ?? [];
+  const toolPresentation: Record<string, DirectorToolPresentation> = {};
+  for (const skill of Object.values(req.skills ?? {})) {
+    if (skill.status !== "active") continue;
+    const binding = skill.bindings.find((candidate) => candidate.enabled);
+    const connection = binding
+      ? req.connections?.[binding.connectionId] ?? Object.values(req.connections ?? {}).find((candidate) => candidate.operations.some((operation) => operation.id === binding.operation))
+      : null;
+    const operation = connection?.operations.find((candidate) => candidate.id === binding?.operation || candidate.id === skill.slug);
+    const icon = typeof connection?.config?.icon === "string" ? connection.config.icon : undefined;
+    const logo = typeof connection?.config?.logo === "string" ? connection.config.logo : undefined;
+    toolPresentation[directorSkillToolName(skill)] = {
+      label: operation?.label ?? skill.name,
+      icon,
+      logo,
+      integrationName: connection?.name
+    };
+  }
+  for (const evalFile of Object.values(req.directorEvals ?? {})) {
+    toolPresentation[directorEvalToolName(evalFile)] = { label: evalFile.name };
+  }
+  // Native Director lifecycle begins before model construction. This lets the
+  // timeline account for real checkpointer and agent-setup latency.
+  yield {
+    kind: "event",
+    event: makeEvent(req.orgId, req.runId, "run_started", "Director started.", {
+      payload: { runType: "director", phase: "started" }
+    })
+  };
   const { agent } = compileDirector({
     orgId: req.orgId,
     runId: req.runId,
@@ -2900,32 +2947,45 @@ export async function* streamDirectorRun(
     provider: req.provider,
     model: req.model,
     suggestedHarnessRefs,
+    fallbackPrompt: req.directorPrompt,
     toolContext: req.directorToolContext ?? noopToolContext(),
-    signal: req.signal
+    checkpointer: req.directorCheckpointer ?? null,
+    signal: req.signal,
+    maxInputTokens: req.budget?.maxInputTokens ?? null
   });
-
   const history: ChatMessage[] = [...(req.history ?? [])];
   if (history.at(-1)?.role !== "user" || history.at(-1)?.content !== req.prompt) {
     history.push({ role: "user", content: req.prompt });
   }
   const messages = historyToMessages(history);
+  const initialFiles = buildDirectorFiles([
+    { directory: "context", files: req.files ?? [] },
+    { directory: "workspace", files: req.workspaceInstructions ?? [] },
+    { directory: "memory", files: req.memories ?? [] }
+  ]);
+  const availablePaths = Object.keys(initialFiles);
+  if (availablePaths.length > 0) {
+    messages.unshift(new SystemMessage(`Workspace files available through the native filesystem:\n${availablePaths.map((path) => `- ${path}`).join("\n")}`));
+  }
 
   const usage = new DirectorUsageTracker((snapshot) => req.onUsage?.(snapshot));
   const emitted = new Set<string>();
 
-  yield {
-    kind: "event",
-    event: makeEvent(req.orgId, req.runId, "run_started", "Director started.", {
-      payload: { runType: "director", phase: "started" }
-    })
-  };
-
+  let toolCalls = 0;
   const target = {
     orgId: req.orgId,
     runId: req.runId,
     emitEvent: (event: RunEvent) => {
       if (emitted.has(event.id)) return event;
       emitted.add(event.id);
+      if (event.type === "tool_call_started") {
+        const next = toolCalls + 1;
+        if (req.budget?.maxToolCalls && next > req.budget.maxToolCalls) {
+          throw new Error(`Director tool-call budget exceeded (${req.budget.maxToolCalls}).`);
+        }
+        toolCalls = next;
+        req.onToolUsage?.(1);
+      }
       return event;
     },
     buildCheckpoint: (state: DirectorStateSnapshot): RunCheckpoint => ({
@@ -2948,7 +3008,12 @@ export async function* streamDirectorRun(
     })
   };
 
-  const checkControl = req.checkControl ?? (() => null);
+  const checkControl = (): "cancel" | "pause" | null => {
+    if (deadlineAt && Date.now() > Date.parse(deadlineAt)) {
+      throw new Error(`Director duration budget exceeded (${req.budget?.maxDurationMs} ms).`);
+    }
+    return req.checkControl?.() ?? null;
+  };
   const pre = checkControl();
   if (pre === "cancel") {
     yield { kind: "event", event: makeEvent(req.orgId, req.runId, "run_cancelled", "Director cancelled before invoke.") };
@@ -2956,35 +3021,55 @@ export async function* streamDirectorRun(
     return;
   }
 
+  const threadId = req.directorThreadId ?? req.runId;
+  let priorMessageCount = 0;
+  try {
+    const snapshot = await (agent as unknown as {
+      getState: (config: { configurable: { thread_id: string } }) => Promise<{ values?: { messages?: unknown[] } }>;
+    }).getState({ configurable: { thread_id: threadId } });
+    const priorMessages = (snapshot.values as { messages?: unknown[] } | null)?.messages;
+    if (Array.isArray(priorMessages)) priorMessageCount = priorMessages.length;
+  } catch {
+    priorMessageCount = 0;
+  }
+  const invocationMessages = priorMessageCount > 0
+    ? [new HumanMessage(req.prompt)]
+    : messages;
+  const skipRootMessages = req.directorResume
+    ? priorMessageCount
+    : priorMessageCount + invocationMessages.length;
+  const directorLongHorizon = longHorizonFromMetadata(req.chatMetadata, threadId);
+
   let run;
   try {
     run = req.directorResume
       ? await agent.stream(
-          new Command({ resume: req.directorResume.answers }),
-          { signal: req.signal, configurable: { thread_id: req.runId } }
+          new Command({ resume: directorResumePayload(req.directorResume.answers) }),
+          { streamMode: ["values"], subgraphs: true, signal: req.signal, configurable: { thread_id: threadId } }
         )
       : await agent.stream(
-          { messages },
-          { signal: req.signal, configurable: { thread_id: req.runId } }
+          { messages: invocationMessages, files: initialFiles },
+          { streamMode: ["values"], subgraphs: true, signal: req.signal, configurable: { thread_id: threadId } }
         );
   } catch (err) {
+    usage.foldOnce();
     const message = err instanceof Error ? err.message : "Director failed.";
     yield { kind: "event", event: makeEvent(req.orgId, req.runId, "run_failed", message) };
     yield {
       kind: "checkpoint",
       state: target.buildCheckpoint({
-        longHorizon: { pinnedState: emptyPinnedState(startedAt), milestones: [] },
+        longHorizon: directorLongHorizon,
         goal: req.goal ?? { objective: req.prompt, constraints: [], successCriteria: ["Return a grounded response."] },
         budget: {
-          maxInputTokens: null,
-          maxOutputTokens: null,
-          maxDurationMs: null,
-          maxToolCalls: null,
-          inputTokens: 0,
-          outputTokens: 0,
-          toolCalls: 0,
+          maxInputTokens: req.budget?.maxInputTokens ?? null,
+          maxOutputTokens: req.budget?.maxOutputTokens ?? null,
+          maxDurationMs: req.budget?.maxDurationMs ?? null,
+          maxToolCalls: req.budget?.maxToolCalls ?? null,
+          inputTokens: usage.snapshot().input,
+          outputTokens: usage.snapshot().output,
+          toolCalls,
           startedAt,
-          deadlineAt: null
+          deadlineAt
         },
         progress: { milestone: "Director failed", completedActions: [], nextActions: ["Retry the Director turn."], unresolvedIssues: [message] },
         verification: { required: true, status: "failed", evidence: [], checkedAt: new Date().toISOString() },
@@ -2997,80 +3082,116 @@ export async function* streamDirectorRun(
   }
 
   let assistantText = "";
-  let toolCalls = 0;
-  let interrupted: unknown[] = [];
-  let outputState: Record<string, unknown> = {};
 
+  yield { kind: "status", message: "Thinking\u2026" };
+
+  let outputState: Record<string, unknown> = {};
+  let interrupts: unknown[] = [];
   try {
-    for await (const event of run) {
-      const control = checkControl();
-      if (control === "cancel") {
-        yield { kind: "event", event: makeEvent(req.orgId, req.runId, "run_cancelled", "Director cancelled mid-stream.") };
-        yield { kind: "done", status: "cancelled" };
-        return;
+    const mapped = mapDirectorValues(
+      target,
+      run as AsyncIterable<unknown>,
+      usage,
+      checkControl,
+      skipRootMessages,
+      toolPresentation,
+      req.budget
+    );
+    while (true) {
+      const next = await mapped.next();
+      if (next.done) {
+        outputState = next.value.output as Record<string, unknown>;
+        interrupts = next.value.interrupts;
+        break;
       }
-      const [, payload] = event as ["values" | "messages" | "updates" | "custom", unknown];
-      if (payload && typeof payload === "object" && "messages" in (payload as Record<string, unknown>)) {
-        const messages = (payload as { messages: unknown[] }).messages;
-        for (const message of messages) {
-          if (message && typeof message === "object" && "tool_call_id" in (message as Record<string, unknown>)) {
-            const tool = message as { tool_call_id: string; name?: string; content?: string };
-            target.emitEvent(makeEvent(req.orgId, req.runId, "tool_call_result", `Tool ${tool.name ?? tool.tool_call_id} returned.`, {
-              payload: { callId: tool.tool_call_id, output: tool.content }
-            }));
-          } else if (message && typeof message === "object" && "tool_calls" in (message as Record<string, unknown>)) {
-            const calls = (message as { tool_calls: Array<{ id?: string; name: string; args?: Record<string, unknown> }> }).tool_calls ?? [];
-            for (const call of calls) {
-              toolCalls += 1;
-              target.emitEvent(makeEvent(req.orgId, req.runId, "tool_call_started", `Director called ${call.name}.`, {
-                payload: { callId: call.id ?? `call_${toolCalls}`, operation: call.name, input: call.args ?? {} }
-              }));
-            }
-          } else if (message && typeof message === "object" && "content" in (message as Record<string, unknown>)) {
-            const content = (message as { content: string | unknown }).content;
-            if (typeof content === "string" && content) {
-              assistantText += content;
-              yield { kind: "text", text: content };
-              const usageMeta = (message as { usage_metadata?: { input_tokens?: number; output_tokens?: number } }).usage_metadata;
-              if (usageMeta) usage.record(usageMeta);
-            }
-          }
-        }
-      }
-      if (payload && typeof payload === "object" && "__interrupt__" in (payload as Record<string, unknown>)) {
-        interrupted = (payload as { __interrupt__: unknown[] }).__interrupt__;
-      }
-      if (event[0] === "values") {
-        outputState = (payload as Record<string, unknown>) ?? {};
-      }
+      if (next.value.kind === "text") assistantText += next.value.text;
+      yield next.value;
     }
   } catch (err) {
+    usage.foldOnce();
+    if (err instanceof Error && err.name === "SpielOSPause") {
+      const paused = target.buildCheckpoint({
+        longHorizon: directorLongHorizon,
+        goal: req.goal ?? { objective: req.prompt, constraints: [], successCriteria: ["Return a grounded response."] },
+        budget: { maxInputTokens: req.budget?.maxInputTokens ?? null, maxOutputTokens: req.budget?.maxOutputTokens ?? null, maxDurationMs: req.budget?.maxDurationMs ?? null, maxToolCalls: req.budget?.maxToolCalls ?? null, inputTokens: usage.snapshot().input, outputTokens: usage.snapshot().output, toolCalls, startedAt, deadlineAt },
+        progress: { milestone: "Director paused", completedActions: [], nextActions: ["Resume the Director when ready."], unresolvedIssues: [] },
+        verification: { required: true, status: "pending", evidence: [], checkedAt: null },
+        pendingHumanInput: null,
+        status: "waiting_human"
+      });
+      yield { kind: "checkpoint", state: { ...paused, pause: { requested: true, reason: "Paused by user", requestedAt: new Date().toISOString() } } };
+      yield { kind: "done", status: "waiting_human" };
+      return;
+    }
+    const isAbort = err instanceof Error && (
+      req.signal?.aborted === true ||
+      err.name === "AbortError" ||
+      err.message?.includes("Abort") ||
+      err.message?.includes("cancel")
+    );
+    if (isAbort) {
+      yield { kind: "event", event: makeEvent(req.orgId, req.runId, "run_cancelled", "Director cancelled during execution.") };
+      yield { kind: "done", status: "cancelled" };
+      return;
+    }
     const message = err instanceof Error ? err.message : "Director stream failed.";
     yield { kind: "event", event: makeEvent(req.orgId, req.runId, "run_failed", message) };
-    yield { kind: "done", status: "failed" };
-    return;
-  }
-
-  const interrupts = Array.isArray(outputState.__interrupt__) ? outputState.__interrupt__ : interrupted;
-  usage.foldOnce();
-  const humanRequest = mapDirectorInterrupts(target, interrupts);
-  if (humanRequest) {
-    yield { kind: "human_input", request: humanRequest };
+    // Errors raised while consuming the native Deep Agents stream happen
+    // after `agent.stream()` has successfully returned. Persist the same
+    // terminal checkpoint shape as an invocation failure so a reload retains
+    // the objective, policy budget, failure reason, and resumable context
+    // metadata instead of the execute finalizer writing timings alone.
     yield {
       kind: "checkpoint",
       state: target.buildCheckpoint({
-        longHorizon: { pinnedState: emptyPinnedState(startedAt), milestones: [] },
+        longHorizon: directorLongHorizon,
         goal: req.goal ?? { objective: req.prompt, constraints: [], successCriteria: ["Return a grounded response."] },
         budget: {
-          maxInputTokens: null,
-          maxOutputTokens: null,
-          maxDurationMs: null,
-          maxToolCalls: null,
+          maxInputTokens: req.budget?.maxInputTokens ?? null,
+          maxOutputTokens: req.budget?.maxOutputTokens ?? null,
+          maxDurationMs: req.budget?.maxDurationMs ?? null,
+          maxToolCalls: req.budget?.maxToolCalls ?? null,
           inputTokens: usage.snapshot().input,
           outputTokens: usage.snapshot().output,
           toolCalls,
           startedAt,
-          deadlineAt: null
+          deadlineAt
+        },
+        progress: { milestone: "Director failed", completedActions: [], nextActions: ["Retry the Director turn."], unresolvedIssues: [message] },
+        verification: { required: true, status: "failed", evidence: [], checkedAt: new Date().toISOString() },
+        pendingHumanInput: null,
+        status: "failed"
+      })
+    };
+    yield { kind: "done", status: "failed" };
+    return;
+  }
+
+  usage.foldOnce();
+  const humanRequest = mapDirectorInterrupts(target, interrupts);
+  if (humanRequest) {
+    yield {
+      kind: "event",
+      event: makeEvent(req.orgId, req.runId, "human_input_requested", humanRequest.header ?? "Director needs input.", {
+        payload: { requestId: humanRequest.id, nativeType: humanRequest.metadata?.nativeType ?? null }
+      })
+    };
+    yield { kind: "human_input", request: humanRequest };
+    yield {
+      kind: "checkpoint",
+      state: target.buildCheckpoint({
+        longHorizon: directorLongHorizon,
+        goal: req.goal ?? { objective: req.prompt, constraints: [], successCriteria: ["Return a grounded response."] },
+        budget: {
+          maxInputTokens: req.budget?.maxInputTokens ?? null,
+          maxOutputTokens: req.budget?.maxOutputTokens ?? null,
+          maxDurationMs: req.budget?.maxDurationMs ?? null,
+          maxToolCalls: req.budget?.maxToolCalls ?? null,
+          inputTokens: usage.snapshot().input,
+          outputTokens: usage.snapshot().output,
+          toolCalls,
+          startedAt,
+          deadlineAt
         },
         progress: { milestone: "Waiting for human input", completedActions: [], nextActions: ["Reply to the Director's question."], unresolvedIssues: [] },
         verification: { required: true, status: "pending", evidence: [], checkedAt: null },
@@ -3082,35 +3203,60 @@ export async function* streamDirectorRun(
     return;
   }
 
+  const directorArtifacts = artifactsFromDirectorFiles(
+    outputState.files as Record<string, import("deepagents").FileData> | undefined,
+    initialFiles,
+    req.orgId,
+    req.runId
+  );
+  for (const artifact of directorArtifacts) {
+    yield { kind: "artifact", artifact };
+    yield {
+      kind: "event",
+      event: makeEvent(req.orgId, req.runId, "artifact_created", `${artifact.title} created.`, {
+        payload: { artifactId: artifact.id, artifactType: artifact.type, path: artifact.metadata.path }
+      })
+    };
+  }
+
+  const completionPassed = Boolean(assistantText.trim()) || directorArtifacts.length > 0;
+
   yield {
     kind: "event",
-    event: makeEvent(req.orgId, req.runId, "run_completed", "Director completed.", {
-      payload: { runType: "director", phase: "completed", usage: usage.snapshot(), toolCalls }
+    event: makeEvent(req.orgId, req.runId, completionPassed ? "run_completed" : "run_failed", completionPassed ? "Director completed." : "Director produced no answer or artifact.", {
+      payload: { runType: "director", phase: completionPassed ? "completed" : "failed", usage: usage.snapshot(), toolCalls }
     })
   };
   yield {
     kind: "checkpoint",
-    state: target.buildCheckpoint({
-      longHorizon: { pinnedState: emptyPinnedState(startedAt), milestones: [] },
-      goal: req.goal ?? { objective: req.prompt, constraints: [], successCriteria: ["Return a grounded response."] },
-      budget: {
-        maxInputTokens: null,
-        maxOutputTokens: null,
-        maxDurationMs: null,
-        maxToolCalls: null,
-        inputTokens: usage.snapshot().input,
-        outputTokens: usage.snapshot().output,
-        toolCalls,
-        startedAt,
-        deadlineAt: null
-      },
-      progress: { milestone: "Director completed", completedActions: ["Generated response"], nextActions: [], unresolvedIssues: [] },
-      verification: { required: true, status: assistantText.trim() ? "passed" : "failed", evidence: assistantText.trim() ? ["Director returned a non-empty response."] : [], checkedAt: new Date().toISOString() },
-      pendingHumanInput: null,
-      status: "completed"
-    })
+    state: {
+      ...target.buildCheckpoint({
+        longHorizon: directorLongHorizon,
+        goal: req.goal ?? { objective: req.prompt, constraints: [], successCriteria: ["Return a grounded response."] },
+        budget: {
+          maxInputTokens: req.budget?.maxInputTokens ?? null,
+          maxOutputTokens: req.budget?.maxOutputTokens ?? null,
+          maxDurationMs: req.budget?.maxDurationMs ?? null,
+          maxToolCalls: req.budget?.maxToolCalls ?? null,
+          inputTokens: usage.snapshot().input,
+          outputTokens: usage.snapshot().output,
+          toolCalls,
+          startedAt,
+          deadlineAt
+        },
+        progress: { milestone: "Director completed", completedActions: ["Generated response"], nextActions: [], unresolvedIssues: [] },
+        verification: { required: true, status: completionPassed ? "passed" : "failed", evidence: assistantText.trim() ? ["Director returned a non-empty response."] : directorArtifacts.length > 0 ? ["Director created an artifact."] : [], checkedAt: new Date().toISOString() },
+        pendingHumanInput: null,
+        status: completionPassed ? "completed" : "failed"
+      }),
+      outputs: { director: assistantText },
+      artifacts: directorArtifacts,
+      failed: !completionPassed,
+      failedNode: completionPassed ? null : "director",
+      error: completionPassed ? null : "Director produced no answer or artifact."
+    }
   };
-  yield { kind: "done", status: "completed" };
+  yield { kind: "done", status: completionPassed ? "completed" : "failed" };
 }
 
 function findDirectorRole(req: DirectorRunRequest): Role | null {
@@ -3119,4 +3265,3 @@ function findDirectorRole(req: DirectorRunRequest): Role | null {
   }
   return null;
 }
-

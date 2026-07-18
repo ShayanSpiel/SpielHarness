@@ -217,5 +217,8 @@ export function errorResponse(err: unknown): Response {
     return Response.json({ error: err.message }, { status: err.status });
   }
   const message = err instanceof Error ? err.message : "Unknown error";
+  if (/CONNECT_TIMEOUT|ETIMEDOUT|connection timed out/i.test(message)) {
+    return Response.json({ error: "The database connection timed out. Please retry the request." }, { status: 503 });
+  }
   return Response.json({ error: message }, { status: 500 });
 }

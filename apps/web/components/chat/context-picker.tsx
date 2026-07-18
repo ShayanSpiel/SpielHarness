@@ -12,6 +12,7 @@ import {
 import { ActionRow, Button, Dialog, DialogContent, EmptyState, Input, Pill, cn } from "@spielos/design-system";
 import { useRunContext, type ContextItem } from "../../lib/run-context";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
+import { type ExecutionMode } from "@spielos/core";
 
 type Section = {
   id: string;
@@ -43,6 +44,10 @@ export function ContextPicker() {
   const [active, setActive] = useState<string>("role");
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const activeChat = store.chats.find((chat) => chat.id === store.activeChatId) ?? null;
+  const executionMode: ExecutionMode = typeof activeChat?.metadata?.executionMode === "string"
+    ? activeChat.metadata.executionMode as ExecutionMode
+    : run.pendingExecutionMode as ExecutionMode;
 
   useEffect(() => {
     if (run.pickerOpen) {
@@ -96,6 +101,7 @@ export function ContextPicker() {
   const selectedIds = new Set(run.contextItems.map((entry) => entry.id));
 
   function conflictReason(candidate: Candidate) {
+    if (executionMode === "director") return null;
     const executable = run.contextItems.map((item) => item.kind);
     const hasWorkflow = executable.includes("workflow");
     const hasRole = executable.includes("role");

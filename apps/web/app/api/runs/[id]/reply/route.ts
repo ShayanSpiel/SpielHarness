@@ -5,6 +5,7 @@ import {
   createFile,
   getProjectSession,
   getRun,
+  instrumentSql,
   linkRunOutputFile,
   recordUsage,
   updateChatMetadata,
@@ -13,7 +14,11 @@ import {
 import { errorResponse, getOrg, HttpError, requireWrite } from "../../../../../lib/server";
 import { resolveExecution, type ExecuteBody } from "../../../../../lib/execution-service";
 import { generatedFileFolder } from "../../../../../lib/workspace-data";
-import { streamRun, type RunCheckpoint } from "@spielos/graph";
+import { streamRun, streamDirectorRun, type RunCheckpoint } from "@spielos/graph";
+import { buildPostgresSaver } from "@spielos/graph/director/checkpointer";
+import { buildDirectorToolContext, workflowsForDirector } from "../../../../../lib/director-tools";
+import { authDatabasePool } from "../../../../../lib/auth";
+import { onRunSignal, registerRun } from "../../../../../lib/run-registry";
 
 function frame(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -35,6 +40,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
 
     const run = await getRun(org.sql, org.orgId, runId);
+    const sql = instrumentSql(org.sql);
     if (!run) throw new HttpError(404, "Run not found");
     const project = run.project_id
       ? await getProjectSession(org.sql, org.orgId, run.project_id)
@@ -96,12 +102,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (definitionSnapshot.memories) {
       resolved.runRequest.memories = definitionSnapshot.memories as typeof resolved.runRequest.memories;
     }
+    if (definitionSnapshot.files) {
+      resolved.runRequest.files = definitionSnapshot.files as typeof resolved.runRequest.files;
+    }
+    if (definitionSnapshot.connections) {
+      resolved.runRequest.connections = definitionSnapshot.connections as typeof resolved.runRequest.connections;
+    }
     if (definitionSnapshot.provider) {
       resolved.runRequest.provider = definitionSnapshot.provider as typeof resolved.runRequest.provider;
     }
     if (definitionSnapshot.model) {
       resolved.runRequest.model = definitionSnapshot.model as typeof resolved.runRequest.model;
     }
+    const directorRuntimePolicy = (definitionSnapshot.directorRuntimePolicy
+      ?? resolved.directorRuntimePolicy) as typeof resolved.directorRuntimePolicy;
     let checkpoint: RunCheckpoint = (run.state as RunCheckpoint) ?? {
       completedNodes: [],
       outputs: {},
@@ -148,6 +162,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       state: checkpoint,
       error: null,
       completedAt: null,
+      cancelRequestedAt: null,
+      pauseRequestedAt: null,
+      resumedAt: new Date().toISOString(),
       expectedCheckpointVersion: Number(run.checkpoint_version ?? 0)
     });
     let checkpointVersion = initialCheckpoint.checkpointVersion;
@@ -155,7 +172,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
-        controller.enqueue(encoder.encode(frame({ kind: "run", runId, type: target.type })));
+        // Resumed executions are durable too: a reload detaches this reader,
+        // while an explicit /cancel request remains the cancellation authority.
+        let clientConnected = !request.signal.aborted;
+        const send = (value: unknown) => {
+          if (!clientConnected) return;
+          try {
+            controller.enqueue(encoder.encode(frame(value)));
+          } catch {
+            clientConnected = false;
+          }
+        };
+        const disconnectClient = () => { clientConnected = false; };
+        request.signal.addEventListener("abort", disconnectClient, { once: true });
+        send({ kind: "run", runId, type: target.type });
         let outputText = "";
         const outputFiles: Array<{ id: string; isProject: boolean }> = [];
         let terminalStatus: "completed" | "failed" | "cancelled" | "waiting_human" = "completed";
@@ -185,28 +215,28 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         const onUsage = (next: { input: number; output: number }) => {
           usage.input += next.input;
           usage.output += next.output;
-          controller.enqueue(encoder.encode(frame({
+          send({
             kind: "usage",
             usage: {
               inputTokens: priorUsage.input + usage.input,
               outputTokens: priorUsage.output + usage.output,
               toolCalls: priorUsage.tools + usage.tools
             }
-          })));
+          });
         };
         const onToolUsage = (count: number) => {
           const next = priorUsage.tools + usage.tools + count;
           const maximum = checkpoint.budget?.maxToolCalls;
           if (maximum && next > maximum) throw new Error(`Tool-call budget exceeded (${maximum}).`);
           usage.tools += count;
-          controller.enqueue(encoder.encode(frame({
+          send({
             kind: "usage",
             usage: {
               inputTokens: priorUsage.input + usage.input,
               outputTokens: priorUsage.output + usage.output,
               toolCalls: priorUsage.tools + usage.tools
             }
-          })));
+          });
         };
         const flushAtomicCheckpoint = async (stateOverride?: RunCheckpoint) => {
           if (queuedEvents.length === 0 && stateOverride === undefined) return;
@@ -218,24 +248,96 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           });
           checkpointVersion = result.checkpointVersion;
         };
+        const executionController = new AbortController();
+        let durableCancel = false;
+        let durablePause = false;
+        const unregister = registerRun(runId, executionController);
+        const removeSignalListener = onRunSignal(runId, (reason) => {
+          if (reason === "cancel") {
+            durableCancel = true;
+            if (!executionController.signal.aborted) executionController.abort("cancel");
+          } else if (reason === "pause") {
+            durablePause = true;
+          }
+        });
+        const checkControl = (): "cancel" | "pause" | null => {
+          if (durableCancel || executionController.signal.aborted) return "cancel";
+          if (durablePause) return "pause";
+          return null;
+        };
 
         try {
-          for await (const item of streamRun({
-            ...resolved.runRequest,
-            runId,
-            resume: resumeAnswers,
-            checkpoint,
-            goal: executeBody.goal,
-            budget: executeBody.budget,
-            onUsage,
-            onToolUsage,
-            signal: request.signal
-          })) {
+          const isDirector = previousInputs.executionMode === "director" && target.type === "chat";
+          const snapshottedWorkflows = definitionSnapshot.workflows
+            ? definitionSnapshot.workflows as typeof resolved.workflows
+            : resolved.workflows;
+          const snapshottedEvals = definitionSnapshot.evals
+            ? definitionSnapshot.evals as typeof resolved.evals
+            : resolved.evals;
+          const directorCheckpointer = isDirector
+            ? await buildPostgresSaver(process.env.DATABASE_URL?.trim() || null, "public", authDatabasePool)
+            : null;
+          const iterator = isDirector
+            ? streamDirectorRun({
+                ...resolved.runRequest,
+                runId,
+                directorPrompt: resolved.directorPrompt,
+                history: undefined,
+                chatMetadata: {},
+                goal: executeBody.goal,
+                budget: resolved.runRequest.budget,
+                onUsage,
+                onToolUsage,
+                signal: executionController.signal,
+                checkControl,
+                directorThreadId: run.chat_id ?? runId,
+                directorCheckpointer,
+                directorResume: controlAction ? undefined : { requestId: body.requestId, answers: resumeAnswers },
+                directorWorkflows: workflowsForDirector(snapshottedWorkflows),
+                directorEvals: snapshottedEvals,
+                directorToolContext: buildDirectorToolContext({
+                  sql,
+                  orgId: org.orgId,
+                  userId: org.userId,
+                  chatId: run.chat_id ?? null,
+                  turnId: run.turn_id ?? null,
+                  parentRunId: runId,
+                  projectId: run.project_id ?? null,
+                  roles: resolved.runRequest.roles,
+                  skills: resolved.runRequest.skills,
+                  workflows: snapshottedWorkflows,
+                  evals: snapshottedEvals,
+                  provider: resolved.runRequest.provider,
+                  model: resolved.runRequest.model,
+                  files: resolved.runRequest.files,
+                  searchableFiles: resolved.directorSearchFiles,
+                  workspaceInstructions: resolved.runRequest.workspaceInstructions ?? [],
+                  memories: resolved.runRequest.memories ?? [],
+                  connections: resolved.runRequest.connections,
+                  harnessFileAction: resolved.runRequest.harnessFileAction,
+                  memoryProposalAction: resolved.runRequest.memoryProposalAction,
+                  runtimePolicy: directorRuntimePolicy,
+                  signal: executionController.signal
+                })
+              })
+            : streamRun({
+                ...resolved.runRequest,
+                runId,
+                resume: resumeAnswers,
+                checkpoint,
+                goal: executeBody.goal,
+                budget: resolved.runRequest.budget,
+                onUsage,
+                onToolUsage,
+                signal: executionController.signal,
+                checkControl
+              });
+          for await (const item of iterator) {
             if (item.kind === "text") {
               outputText += item.text;
-              controller.enqueue(encoder.encode(frame({ kind: "text", text: item.text })));
+              send({ kind: "text", text: item.text });
             } else if (item.kind === "status") {
-              controller.enqueue(encoder.encode(frame({ kind: "status", message: item.message })));
+              send({ kind: "status", message: item.message });
             } else if (item.kind === "event") {
               if (!queuedEventIds.has(item.event.id)) {
                 queuedEventIds.add(item.event.id);
@@ -246,11 +348,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                   skill_id: item.event.skillId ?? null,
                   skill_name: item.event.skillName ?? null,
                   message: item.event.message,
-                  payload: item.event.payload ?? {}
+                  payload: item.event.payload ?? {},
+                  event_key: item.event.id
                 });
                 if (queuedEvents.length >= 12 || shouldPersistImmediately(item.event)) await flushAtomicCheckpoint();
               }
-              controller.enqueue(encoder.encode(frame({ kind: "event", event: item.event })));
+              send({ kind: "event", event: item.event });
             } else if (item.kind === "artifact") {
               const file = await createFile(org.sql, org.orgId, {
                 title: item.artifact.title,
@@ -269,14 +372,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 id: file.id,
                 isProject: item.artifact.metadata?.renderer === "project" || item.artifact.type === "artifact"
               });
-              controller.enqueue(encoder.encode(frame({ kind: "artifact", artifact: item.artifact })));
+              send({ kind: "artifact", artifact: item.artifact });
             } else if (item.kind === "human_input") {
               terminalStatus = "waiting_human";
-              controller.enqueue(encoder.encode(frame({ kind: "human_input", request: item.request })));
+              send({ kind: "human_input", request: item.request });
             } else if (item.kind === "checkpoint") {
               latestCheckpoint = item.state;
               await flushAtomicCheckpoint(latestCheckpoint);
-              controller.enqueue(encoder.encode(frame({
+              send({
                 kind: "run_state",
                 state: {
                   goal: latestCheckpoint.goal,
@@ -284,7 +387,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                   progress: latestCheckpoint.progress,
                   verification: latestCheckpoint.verification
                 }
-              })));
+              });
             } else if (item.kind === "done") {
               const allowed = ["completed", "failed", "cancelled", "waiting_human"] as const;
               terminalStatus = allowed.includes(item.status as (typeof allowed)[number])
@@ -294,11 +397,27 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }
         } catch (err) {
           errorMessage = err instanceof Error ? err.message : "Resume failed";
-          terminalStatus = "failed";
-          controller.enqueue(encoder.encode(frame({ kind: "error", message: errorMessage })));
+          const durable = await getRun(sql, org.orgId, runId);
+          if (durableCancel || executionController.signal.aborted || durable?.cancel_requested_at) {
+            terminalStatus = "cancelled";
+            errorMessage = null;
+            if (durable?.state) latestCheckpoint = durable.state as RunCheckpoint;
+          } else if (durablePause || durable?.pause_requested_at) {
+            terminalStatus = "waiting_human";
+            errorMessage = null;
+            if (durable?.state) latestCheckpoint = durable.state as RunCheckpoint;
+          } else {
+            terminalStatus = "failed";
+            send({ kind: "error", message: errorMessage });
+          }
+        } finally {
+          request.signal.removeEventListener("abort", disconnectClient);
+          unregister();
+          removeSignalListener();
+          try { await flushAtomicCheckpoint(); } catch { /* logged by final persistence */ }
         }
 
-        const completedAt =
+        let completedAt =
           terminalStatus === "completed" || terminalStatus === "failed" || terminalStatus === "cancelled"
             ? new Date().toISOString()
             : null;
@@ -315,29 +434,56 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           };
         }
 
-        // Final atomic checkpoint: bundles the final state, outputs,
-        // status, and any remaining events in one transaction.
+        // Preserve a concurrent durable cancel/pause and finalize through the
+        // same atomic persistence authority used by the initial execution.
+        const finalRun = await getRun(sql, org.orgId, runId);
+        if (finalRun?.cancel_requested_at || finalRun?.status === "cancelled") {
+          terminalStatus = "cancelled";
+          errorMessage = null;
+          if (finalRun.state) latestCheckpoint = finalRun.state as RunCheckpoint;
+        } else if (finalRun?.pause_requested_at || finalRun?.status === "waiting_human") {
+          terminalStatus = "waiting_human";
+          errorMessage = null;
+          completedAt = null;
+          if (finalRun.state) latestCheckpoint = finalRun.state as RunCheckpoint;
+        }
+        const finalCheckpointVersion = Number(finalRun?.checkpoint_version ?? checkpointVersion);
+        const finalEvents = queuedEvents.splice(0, queuedEvents.length);
         try {
           const finalResult = await atomicCheckpoint(org.sql, org.orgId, runId, {
-            events: queuedEvents.splice(0, queuedEvents.length),
+            events: finalEvents,
             state: latestCheckpoint,
             outputs: { text: outputText },
             status: terminalStatus,
             error: errorMessage,
             completedAt,
-            expectedCheckpointVersion: checkpointVersion
+            expectedCheckpointVersion: finalCheckpointVersion
           });
           checkpointVersion = finalResult.checkpointVersion;
         } catch (finalError) {
-          console.error("[runs/reply] final atomic checkpoint failed, falling back:", finalError);
-          const { updateRun } = await import("@spielos/db");
-          await updateRun(org.sql, org.orgId, runId, {
-            status: terminalStatus,
-            outputs: { text: outputText },
-            state: latestCheckpoint,
-            error: errorMessage,
-            completedAt
-          });
+          const latest = await getRun(sql, org.orgId, runId);
+          if (latest?.cancel_requested_at || latest?.status === "cancelled") {
+            terminalStatus = "cancelled";
+            errorMessage = null;
+          } else if (latest?.pause_requested_at || latest?.status === "waiting_human") {
+            terminalStatus = "waiting_human";
+            errorMessage = null;
+            completedAt = null;
+          }
+          try {
+            const retryResult = await atomicCheckpoint(org.sql, org.orgId, runId, {
+              events: finalEvents,
+              state: latestCheckpoint,
+              outputs: { text: outputText },
+              status: terminalStatus,
+              error: errorMessage,
+              completedAt,
+              expectedCheckpointVersion: Number(latest?.checkpoint_version ?? finalCheckpointVersion)
+            });
+            checkpointVersion = retryResult.checkpointVersion;
+          } catch (retryError) {
+            console.error("[runs/reply] final atomic checkpoint failed:", finalError, retryError);
+          }
         }
 
         if (resolved.runRequest.provider && resolved.runRequest.model && outputText) {
@@ -411,7 +557,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }
         }
 
-        controller.enqueue(encoder.encode(frame({
+        if (run.chat_id) {
+          await updateChatMetadata(org.sql, org.orgId, run.chat_id, {
+            activeRunId: terminalStatus === "waiting_human" ? runId : null,
+            lastRunId: runId
+          });
+        }
+
+        send({
           kind: "run_state",
           state: {
             goal: latestCheckpoint.goal,
@@ -419,10 +572,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             progress: latestCheckpoint.progress,
             verification: latestCheckpoint.verification
           }
-        })));
+        });
 
-        controller.enqueue(encoder.encode(frame({ kind: "done", runId, status: terminalStatus })));
-        controller.close();
+        send({ kind: "done", runId, status: terminalStatus });
+        if (clientConnected) {
+          try { controller.close(); } catch { /* reader detached */ }
+        }
       }
     });
 

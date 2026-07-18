@@ -19,8 +19,8 @@
 
 export type DirectorToolContext = {
   executeWorkflow: (args: { workflowId: string; input: Record<string, unknown> }) => Promise<string>;
-  executeSkill: (args: { skillId: string; input: string }) => Promise<string>;
-  executeEval: (args: { evalId: string; input: string }) => Promise<string>;
+  executeSkill: (args: { skillId: string; input: unknown }) => Promise<string>;
+  executeEval: (args: { evalId: string; input: unknown }) => Promise<string>;
 };
 
 /**

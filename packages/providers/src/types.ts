@@ -7,6 +7,15 @@ export type ChatMessage = {
   name?: string;
 };
 
+export type ToolSchema = {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: unknown;
+  };
+};
+
 export type ChatRequest = {
   provider: ModelProvider;
   model: Model;
@@ -15,6 +24,7 @@ export type ChatRequest = {
   maxTokens?: number;
   signal?: AbortSignal;
   onUsage?: (usage: ChatUsage) => void;
+  tools?: ToolSchema[];
 };
 
 export type ChatUsage = { input: number; output: number };
@@ -22,8 +32,35 @@ export type ChatUsage = { input: number; output: number };
 export type ChatResponse = {
   content: string;
   usage?: ChatUsage;
+  toolCalls?: Array<{ name: string; args: string; id: string }>;
   raw?: unknown;
 };
+
+// ── Streaming chunks ────────────────────────────────────────────
+export type TextDeltaChunk = { type: "text_delta"; text: string };
+export type ToolCallDeltaChunk = {
+  type: "tool_call_delta";
+  index: number;
+  id?: string;
+  name?: string;
+  argsDelta?: string;
+};
+export type ToolCallChunk = {
+  type: "tool_call";
+  index: number;
+  id: string;
+  name: string;
+  args: string;
+};
+export type UsageChunk = { type: "usage"; usage: ChatUsage };
+export type FinishChunk = { type: "finish"; reason?: string };
+
+export type ChatStreamChunk =
+  | TextDeltaChunk
+  | ToolCallDeltaChunk
+  | ToolCallChunk
+  | UsageChunk
+  | FinishChunk;
 
 /**
  * Extract only user-visible text from provider-native content blocks.
@@ -47,6 +84,23 @@ export interface ChatAdapter {
   chat(req: ChatRequest): Promise<ChatResponse>;
   stream?(req: ChatRequest): AsyncGenerator<string, ChatResponse, void>;
   countTokens?(req: ChatRequest): Promise<number>;
+}
+
+/**
+ * Strip JSON-Schema meta-fields that some providers reject.
+ * Mistral returns 400 when `$schema` or `additionalProperties` appear
+ * in tool parameter schemas. OpenAI tolerates them; this helper is safe
+ * for all providers since those fields are informational only.
+ */
+export function cleanToolSchema(tool: ToolSchema): ToolSchema {
+  const params = tool.function.parameters as Record<string, unknown> | undefined;
+  if (!params || typeof params !== "object") return tool;
+  const cleaned: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(params)) {
+    if (k === "$schema" || k === "additionalProperties") continue;
+    cleaned[k] = v;
+  }
+  return { ...tool, function: { ...tool.function, parameters: cleaned } };
 }
 
 function tryDecryptCredential(config: Record<string, unknown>): string | null {

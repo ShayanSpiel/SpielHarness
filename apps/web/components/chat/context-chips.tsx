@@ -20,10 +20,12 @@ const ICONS: Record<string, ReactNode> = {
 export function ContextChips({
   items,
   onRemove,
+  isSuggestion,
   className
 }: {
   items: ContextItem[];
   onRemove: (id: string) => void;
+  isSuggestion?: boolean;
   className?: string;
 }) {
   if (items.length === 0) return null;
@@ -32,22 +34,31 @@ export function ContextChips({
     <div className={cn("flex flex-wrap items-center gap-1.5", className)}>
       {items.map((item) => (
         <span
-          className="group inline-flex h-6 max-w-[220px] items-center gap-1.5 rounded-md border border-border bg-panel-strong px-2 text-xs text-foreground shadow-panel transition-colors hover:border-border-strong hover:bg-hover"
+          className={cn(
+            "group inline-flex h-6 max-w-[220px] items-center gap-1.5 rounded-md px-2 text-xs shadow-panel transition-colors",
+            isSuggestion
+              ? "border border-dashed border-info/40 bg-info/5 text-info"
+              : "border border-border bg-panel-strong text-foreground hover:border-border-strong hover:bg-hover"
+          )}
           key={item.id}
           title={item.subtitle ?? item.title}
         >
-          <span className="shrink-0 text-info">{ICONS[item.kind] ?? <Icon name="file-text" size={12} />}</span>
+          <span className={cn("shrink-0", isSuggestion ? "text-info/60" : "text-info")}>{ICONS[item.kind] ?? <Icon name="file-text" size={12} />}</span>
           <span className="truncate font-medium">{item.title}</span>
-          <button
-            aria-label={`Remove ${item.title}`}
-            className="rounded-sm p-0.5 text-muted-foreground transition-colors hover:bg-hover hover:text-foreground shrink-0"
-            onClick={() => {
-              onRemove(item.id);
-            }}
-            type="button"
-          >
-            <Icon name="x" size={10} />
-          </button>
+          {isSuggestion ? (
+            <span className="text-3xs uppercase tracking-wider text-info/40">suggestion</span>
+          ) : (
+            <button
+              aria-label={`Remove ${item.title}`}
+              className="rounded-sm p-0.5 text-muted-foreground transition-colors hover:bg-hover hover:text-foreground shrink-0"
+              onClick={() => {
+                onRemove(item.id);
+              }}
+              type="button"
+            >
+              <Icon name="x" size={10} />
+            </button>
+          )}
         </span>
       ))}
     </div>

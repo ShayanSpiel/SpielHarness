@@ -162,7 +162,10 @@ export function createSql(connectionString: string): Sql {
     max: Math.max(1, Number(process.env.DB_POOL_MAX) || 4),
     min: 0,
     idle_timeout: 30,
-    connect_timeout: 5,
+    // Remote transaction poolers can take several seconds to establish a
+    // fresh TLS socket after an idle period. Five seconds produced false
+    // CONNECT_TIMEOUT failures during otherwise healthy first run creation.
+    connect_timeout: Math.max(1, Number(process.env.DB_CONNECT_TIMEOUT_SECONDS) || 30),
     prepare,
     ssl,
     connection,
@@ -706,6 +709,7 @@ export type RunEventRow = {
   skill_name: string | null;
   message: string;
   payload: Record<string, unknown>;
+  event_key: string | null;
   created_at: string;
 };
 
@@ -854,6 +858,9 @@ export type AtomicCheckpointInput = {
   status?: string;
   error?: string | null;
   completedAt?: string | null;
+  cancelRequestedAt?: string | null;
+  pauseRequestedAt?: string | null;
+  resumedAt?: string | null;
   expectedCheckpointVersion?: number;
 };
 
@@ -965,7 +972,10 @@ export async function atomicCheckpoint(
           human_inputs = ${input.humanInputs === undefined ? sql`human_inputs` : toJsonb(sql, input.humanInputs)},
           status = coalesce(${input.status ?? null}, status),
           error = ${input.error === undefined ? sql`error` : input.error},
-          completed_at = ${input.completedAt === undefined ? sql`completed_at` : input.completedAt}
+          completed_at = ${input.completedAt === undefined ? sql`completed_at` : input.completedAt},
+          cancel_requested_at = ${input.cancelRequestedAt === undefined ? sql`cancel_requested_at` : input.cancelRequestedAt},
+          pause_requested_at = ${input.pauseRequestedAt === undefined ? sql`pause_requested_at` : input.pauseRequestedAt},
+          resumed_at = ${input.resumedAt === undefined ? sql`resumed_at` : input.resumedAt}
       where org_id = ${orgId} and id = ${runId}
     `;
 
@@ -1799,6 +1809,34 @@ export async function recordUsage(
       ${toJsonb(sql, data.metadata ?? {})}
     )
   `;
+}
+
+export type RunUsageTotals = {
+  input_tokens: number;
+  output_tokens: number;
+};
+
+/**
+ * The usage ledger is the billing authority.  Checkpoints are a convenience
+ * for live resume, so a failed checkpoint must never make historical usage
+ * disappear from a hydrated run.
+ */
+export async function getRunUsageTotals(
+  sql: Sql,
+  orgId: string,
+  runId: string
+): Promise<RunUsageTotals> {
+  const rows = await sql<RunUsageTotals[]>`
+    select
+      coalesce(sum(coalesce(actual_input_tokens, input_tokens)), 0)::bigint as input_tokens,
+      coalesce(sum(coalesce(actual_output_tokens, output_tokens)), 0)::bigint as output_tokens
+    from usage_ledger
+    where org_id = ${orgId} and run_id = ${runId}
+  `;
+  return {
+    input_tokens: Number(rows[0]?.input_tokens ?? 0),
+    output_tokens: Number(rows[0]?.output_tokens ?? 0)
+  };
 }
 
 export async function audit(

@@ -6,7 +6,10 @@ import { SIDEBAR } from "@spielos/design-system";
 export type UiStore = {
   inspectorOpen: boolean;
   inspectorWidth: number;
+  inspectorSection: "context" | "events" | "output";
   setInspectorOpen: (open: boolean) => void;
+  setInspectorSection: (section: "context" | "events" | "output") => void;
+  openInspector: (section?: "context" | "events" | "output") => void;
   setInspectorWidth: (width: number) => void;
   toggleInspector: () => void;
 };
@@ -16,12 +19,19 @@ const UiStoreContext = createContext<UiStore | null>(null);
 export function UiStoreProvider({ children }: { children: ReactNode }) {
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [inspectorWidth, setInspectorWidthState] = useState<number>(SIDEBAR.INSPECTOR.DEFAULT);
+  const [inspectorSection, setInspectorSection] = useState<"context" | "events" | "output">("context");
 
   const store = useMemo<UiStore>(
     () => ({
       inspectorOpen,
       inspectorWidth,
+      inspectorSection,
       setInspectorOpen,
+      setInspectorSection,
+      openInspector: (section = inspectorSection) => {
+        setInspectorSection(section);
+        setInspectorOpen(true);
+      },
       setInspectorWidth: (width: number) => {
         setInspectorWidthState(
           Math.min(SIDEBAR.INSPECTOR.MAX, Math.max(SIDEBAR.INSPECTOR.MIN, Math.round(width)))
@@ -29,7 +39,7 @@ export function UiStoreProvider({ children }: { children: ReactNode }) {
       },
       toggleInspector: () => setInspectorOpen((current) => !current)
     }),
-    [inspectorOpen, inspectorWidth]
+    [inspectorOpen, inspectorWidth, inspectorSection]
   );
 
   return createElement(UiStoreContext.Provider, { value: store }, children);

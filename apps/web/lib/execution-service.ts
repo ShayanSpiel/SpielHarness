@@ -1,13 +1,13 @@
 import {
-  defaultInputContract,
-  defaultOutputContract,
   DEFAULT_EXECUTION_MODE,
+  directorRuntimePolicySchema,
   executionModeSchema,
   parseEvalFile,
   parseRoleFile,
   parseSkillFile,
   parseWorkflowFile,
   type ExecutionMode,
+  type DirectorRuntimePolicy,
   type Model,
   type ModelCapabilities,
   type ModelProvider,
@@ -75,6 +75,7 @@ export type ExecuteBody = {
   workflowId?: string;
   // Generic context: anything user attached to the chat.
   contextFileIds?: string[];
+  chatContextItems?: Array<{ id: string; kind: string; title: string }>;
   // Direct nodes (legacy)
   nodes?: Array<{
     id: string;
@@ -112,9 +113,28 @@ export type ResolvedExecution = {
   target: { type: RunType; id: string | null };
   contextFileIds: string[];
   directorPrompt: string;
+  assistantPrompt: string;
   executionMode: ExecutionMode;
   suggestedHarnessRefs: SuggestedHarnessRef[];
+  evals: Record<string, EvalFile>;
+  workflows: Record<string, WorkflowFile>;
+  directorSearchFiles: AttachedFile[];
+  directorRuntimePolicy: DirectorRuntimePolicy | null;
 };
+
+function restrictBudgetToPolicy(
+  requested: ExecuteBody["budget"],
+  policy: DirectorRuntimePolicy
+): ExecuteBody["budget"] {
+  const capped = (value: number | undefined, maximum: number) =>
+    typeof value === "number" ? Math.min(value, maximum) : maximum;
+  return {
+    maxInputTokens: capped(requested?.maxInputTokens ?? undefined, policy.maxInputTokens),
+    maxOutputTokens: capped(requested?.maxOutputTokens ?? undefined, policy.maxOutputTokens),
+    maxDurationMs: capped(requested?.maxDurationMs ?? undefined, policy.maxDurationMs),
+    maxToolCalls: capped(requested?.maxToolCalls ?? undefined, policy.maxToolCalls)
+  };
+}
 
 // ── Main resolver ─────────────────────────────────────────────
 export async function resolveExecution(
@@ -123,14 +143,8 @@ export async function resolveExecution(
 ): Promise<ResolvedExecution> {
   if (!body.prompt?.trim()) throw new HttpError(400, "prompt is required");
 
-  // Resolve the execution mode server-side. The client may only
-  // suggest; the persisted chat metadata and workspace configuration
-  // are the authoritative source. We never read the client-provided
-  // value when the chat is a chat turn — direct mode is the default
-  // and Director mode is only honored when the persisted mode is
-  // also "director" (or no chat is supplied). Director mode is a
-  // literal no-op for now (Phase 1): the existing direct execution
-  // paths are unchanged.
+  // Resolve the explicit request mode against the shared schema. The client
+  // persists the chat preference; the core default applies when it is absent.
   const requestedMode = body.executionMode;
   if (requestedMode !== undefined) {
     const parsed = executionModeSchema.safeParse(requestedMode);
@@ -147,12 +161,6 @@ export async function resolveExecution(
   // Plain chat is a first-class assistant path, now mediated by the
   // file-backed Orchestrator role. The role receives only its declared safe
   // capabilities; it does not grant arbitrary integration access.
-  const isPlainChat = isChat
-    && !body.targetId
-    && !body.workflowId
-    && contextFileIds.length === 0
-    && !(body.nodes && body.nodes.length > 0);
-
   const toRecord = (f: FileRow) => fileRowToRecord(f);
 
   // Resolve the active harness for every chat turn so the default orchestrator
@@ -162,7 +170,7 @@ export async function resolveExecution(
     listHarnessFiles(org.sql, org.orgId),
     listModelsWithEnvironmentDefaults(org.sql, org.orgId)
   ]);
-  if (!isChat) {
+  if (!isChat || executionMode === "director") {
     connections = await listConnections(org.sql, org.orgId);
   }
 
@@ -216,6 +224,28 @@ export async function resolveExecution(
     }
   }
 
+  const directorWorkflows: Record<string, WorkflowFile> = {};
+  if (executionMode === "director") {
+    for (const candidate of Object.values(workflows)) {
+      if (candidate.status !== "active") continue;
+      try {
+        directorWorkflows[candidate.id] = normalizeWorkflow(
+          candidate,
+          roles,
+          skills,
+          roleBySlug,
+          skillBySlug,
+          fileReferenceIds
+        );
+      } catch (error) {
+        // A malformed unrelated workflow must not take down plain Director
+        // chat. Explicit Direct workflow execution still validates and returns
+        // the configuration error through the target branch below.
+        console.warn(`[execution-service] excluding invalid Director workflow "${candidate.name}":`, error);
+      }
+    }
+  }
+
   // Resolve target
   let targetId: string | null = null;
   let workflow: WorkflowFile | null = null;
@@ -229,7 +259,8 @@ export async function resolveExecution(
     if (wf.status !== "active") {
       throw new HttpError(400, `Workflow "${wf.name}" is disabled.`);
     }
-    workflow = normalizeWorkflow(wf, roles, skills, roleBySlug, skillBySlug, fileReferenceIds, org.orgId);
+    workflow = directorWorkflows[wf.id]
+      ?? normalizeWorkflow(wf, roles, skills, roleBySlug, skillBySlug, fileReferenceIds);
     targetId = wf.id;
   } else if (targetType === "role") {
     if (!body.targetId) throw new HttpError(400, "targetId is required for role runs.");
@@ -261,20 +292,8 @@ export async function resolveExecution(
     if (skill.status !== "active") {
       throw new HttpError(400, `Skill "${skill.name}" is disabled.`);
     }
-    const chatRole: Role = {
-      id: "runtime.chat",
-      orgId: org.orgId,
-      name: "Chat",
-      description: "Direct skill execution.",
-      prompt: "Run the selected skill against the request and selected context.",
-      modelId: null,
-      inputContract: defaultInputContract(),
-      outputContract: defaultOutputContract(),
-      skillIds: [skill.id],
-      status: "active",
-      metadata: {}
-    };
-    roles["runtime.chat"] = chatRole;
+    const chatRole = resolveDirectExecutorRole(roles, skill.id);
+    if (!chatRole) throw new HttpError(400, `Skill "${skill.name}" has no active file-backed execution role.`);
     singleNode = {
       kind: "skill",
       nodeId: `node_${crypto.randomUUID()}`,
@@ -295,20 +314,8 @@ export async function resolveExecution(
     // Build a synthetic eval skill
     const evalSkill = evalFileToSkill(evalFile, org.orgId);
     skills[evalSkill.id] = evalSkill;
-    const evalRole: Role = {
-      id: "runtime.eval",
-      orgId: org.orgId,
-      name: "Evaluation Runner",
-      description: "Runs a reusable evaluation definition.",
-      prompt: "Evaluate the supplied input against the selected rubric.",
-      modelId: null,
-      inputContract: defaultInputContract(),
-      outputContract: { ...defaultOutputContract(), name: "Eval report" },
-      skillIds: [evalSkill.id],
-      status: "active",
-      metadata: {}
-    };
-    roles["runtime.eval"] = evalRole;
+    const evalRole = resolveDirectExecutorRole(roles, evalSkill.id);
+    if (!evalRole) throw new HttpError(400, `Evaluation "${evalFile.name}" has no active file-backed execution role.`);
     singleNode = {
       kind: "eval",
       nodeId: `node_${crypto.randomUUID()}`,
@@ -320,13 +327,7 @@ export async function resolveExecution(
     };
     targetId = evalFile.id;
   } else if (targetType === "chat") {
-    // Note: the Director / Deep Agents integration is planned but not yet
-    // shipped. Until `ExecutionMode = "director" | "direct"` is wired and
-    // the official `deepagents` runtime is in place, plain chat falls
-    // through to the legacy `streamChatRun` path. The seed-flagged
-    // `systemRole: "orchestrator"` role is currently treated as the
-    // ordinary Director prompt source; the runtime does not wrap it in a
-    // `singleNode` skill set here.
+    // Plain chat is routed by executionMode in the execute route.
   } else {
     throw new HttpError(400, `Unknown run type: ${body.type}`);
   }
@@ -345,16 +346,60 @@ export async function resolveExecution(
   const attached: AttachedFile[] = files
     .filter((file) => runFileIds.includes(file.id) && file.status !== "deleted")
     .map(toAttached);
+  const orchestratorRole = Object.values(roles).find(
+    (role) => role.status === "active" && role.metadata?.systemRole === "orchestrator"
+  );
+  const orchestratorContextSlugs = new Set(
+    Array.isArray(orchestratorRole?.metadata?.contextSlugs)
+      ? orchestratorRole.metadata.contextSlugs.filter((value): value is string => typeof value === "string")
+      : []
+  );
+  const assistantPromptFile = files.find(
+    (file) => file.status === "active" &&
+      file.file_type === "prompt" &&
+      file.metadata?.systemRole === "orchestrator"
+  );
   const workspaceInstructions: AttachedFile[] = files
-    .filter((file) => file.status === "active" && file.metadata?.workspaceConfig === true)
+    .filter((file) => {
+      if (file.status !== "active" || file.id === assistantPromptFile?.id) return false;
+      const slug = typeof file.metadata?.slug === "string" ? file.metadata.slug : "";
+      return file.metadata?.workspaceConfig === true || orchestratorContextSlugs.has(slug);
+    })
     .map(toAttached);
+  const runtimePolicyFile = files.find((file) =>
+    file.status === "active" && file.metadata?.runtimePolicy === true
+  );
+  let directorRuntimePolicy: DirectorRuntimePolicy | null = null;
+  if (executionMode === "director") {
+    if (!runtimePolicyFile) {
+      throw new HttpError(409, "Director requires an active file-backed runtime policy.");
+    }
+    let parsedBody: unknown;
+    try {
+      parsedBody = JSON.parse(runtimePolicyFile.body);
+    } catch {
+      throw new HttpError(409, `Director runtime policy "${runtimePolicyFile.title}" is not valid JSON.`);
+    }
+    const parsedPolicy = directorRuntimePolicySchema.safeParse(parsedBody);
+    if (!parsedPolicy.success) {
+      throw new HttpError(409, `Director runtime policy "${runtimePolicyFile.title}" is invalid: ${parsedPolicy.error.issues[0]?.message ?? "unknown error"}`);
+    }
+    directorRuntimePolicy = parsedPolicy.data;
+  }
   const memories: AttachedFile[] = retrieveMemories(files, body.prompt, targetType, targetId, org.userId).map(toAttached);
+  const directorSearchFiles: AttachedFile[] = executionMode === "director"
+    ? files.filter((file) => file.status !== "deleted").map(toAttached)
+    : [];
 
-  // Resolve model
-  const preferredModelId = body.modelId ?? (workflow
+  // Resolve model — prefer explicit user choice, then the orchestrator
+  // role's modelId (so the Director has its own model), then fallback.
+  const orchestratorModelId = Object.values(roles).find(
+    (r) => r.metadata?.systemRole === "orchestrator"
+  )?.modelId ?? null;
+  const preferredModelId = body.modelId ?? orchestratorModelId ?? (workflow
     ? Object.values(roles).find((r) => workflow!.nodes.some((n) => n.roleId === r.id))?.modelId ?? null
     : singleNode?.role?.modelId ?? null);
-  let model = resolveModel(modelRows, preferredModelId, org.orgId);
+  let model = resolveModel(modelRows, preferredModelId);
   const allowedEffort = ["auto", "low", "medium", "high", "xhigh", "max"] as const;
   if (model && body.reasoningEffort && allowedEffort.includes(body.reasoningEffort)) {
     const withEffort = (value: Model): Model => ({
@@ -372,7 +417,7 @@ export async function resolveExecution(
 
   // Resolve connections (only for harness runs — chat doesn't execute skills)
   const connectionsById: Record<string, Connection> = {};
-  if (!isChat) {
+  if (!isChat || executionMode === "director") {
     const connectionIds = new Set<string>();
     const operationIds = new Set<string>();
     for (const skill of Object.values(skills)) {
@@ -411,7 +456,8 @@ export async function resolveExecution(
   // Existing workspaces can keep using the legacy direct-chat path until they
   // sync the new file-backed role. Once present, the Orchestrator owns the
   // turn and this fallback instruction is intentionally omitted.
-  const directorPrompt = resolveDirectorPrompt(files, isPlainChat && !singleNode);
+  const directorPrompt = resolveDirectorPrompt(files, roles);
+  const assistantPrompt = assistantPromptFile?.body ?? "";
   const harnessFileAction: NonNullable<RunRequest["harnessFileAction"]> = async (action, params, context) => {
     const allowedTypes = new Set(["harness_role", "harness_skill", "harness_workflow", "harness_eval", "harness_template"]);
     if (action === "create") {
@@ -543,7 +589,7 @@ export async function resolveExecution(
       provider: model?.provider ?? null,
       model: model?.model ?? null,
       goal: body.goal,
-      budget: body.budget,
+      budget: directorRuntimePolicy ? restrictBudgetToPolicy(body.budget, directorRuntimePolicy) : body.budget,
       previousCompaction: body.previousCompaction ?? null,
       harnessFileAction,
       memoryProposalAction,
@@ -558,8 +604,13 @@ export async function resolveExecution(
     target: { type: targetType, id: targetId },
     contextFileIds,
     directorPrompt,
+    assistantPrompt,
     executionMode,
-    suggestedHarnessRefs
+    suggestedHarnessRefs,
+    evals,
+    workflows: directorWorkflows,
+    directorSearchFiles,
+    directorRuntimePolicy
   };
 }
 
@@ -568,30 +619,11 @@ type ResolvedModel = { provider: ModelProvider; model: Model } | null;
 
 function resolveModel(
   rows: Awaited<ReturnType<typeof listModelsWithEnvironmentDefaults>>,
-  preferredModelId: string | null,
-  orgId: string
+  preferredModelId: string | null
 ): ResolvedModel {
   const enabled = rows.filter((row) => row.enabled);
   const row = (preferredModelId ? enabled.find((candidate) => candidate.id === preferredModelId) : null) ?? enabled[0];
-  if (!row) {
-    if (!process.env.MISTRAL_API_KEY) return null;
-    const modelId = process.env.MISTRAL_MODEL?.trim() || "mistral-small-latest";
-    const runtimeModel: Model = {
-      id: "runtime.env.mistral",
-      orgId,
-      name: "Mistral",
-      provider: "openai-compatible",
-      model: modelId,
-      baseUrl: process.env.MISTRAL_BASE_URL?.trim() || null,
-      secretEnvKey: "MISTRAL_API_KEY",
-      config: { source: "environment" },
-      enabled: true
-    };
-    return {
-      provider: { ...runtimeModel },
-      model: runtimeModel
-    };
-  }
+  if (!row) return null;
   const provider: ModelProvider = {
     id: row.id,
     orgId: row.org_id,
@@ -620,20 +652,22 @@ function resolveModel(
 // ── Director prompt (orchestrator) ────────────────────────────
 function resolveDirectorPrompt(
   files: FileRow[],
-  isPlainChat: boolean
+  roles: Record<string, Role>
 ): string {
-  const orchestrator = files.find(
+  const role = Object.values(roles).find(
+    (candidate) => candidate.status === "active" && candidate.metadata?.systemRole === "orchestrator"
+  );
+  if (role) {
+    return [
+      role.prompt,
+      role.inputContract?.body ? `# Input contract (${role.inputContract.name})\n\n${role.inputContract.body}` : "",
+      role.outputContract?.body ? `# Output contract (${role.outputContract.name})\n\n${role.outputContract.body}` : ""
+    ].filter(Boolean).join("\n\n");
+  }
+  const prompt = files.find(
     (f) => f.file_type === "prompt" && f.metadata?.systemRole === "orchestrator" && f.status === "active"
   );
-  const base = [
-    "You are the SpielOS assistant. Converse naturally and answer the user's question directly. You can explain the product and its workspace.",
-    "Never claim that you searched, executed a tool, ran a workflow, or read a file unless the runtime actually supplied that context or execution.",
-    orchestrator?.body ? `Workspace-authored assistant instructions:\n${orchestrator.body}` : ""
-  ];
-  if (isPlainChat) {
-    base.push("No harness tools, role, skill, eval, workflow, or attached file is selected for this turn. Answer from the system prompt and the conversation alone.");
-  }
-  return base.filter(Boolean).join("\n\n");
+  return prompt?.body ?? "";
 }
 
 // ── Workflow normalization: resolve role/skill slugs, attach files ─
@@ -643,8 +677,7 @@ function normalizeWorkflow(
   skills: Record<string, Skill>,
   roleBySlug: Map<string, string>,
   skillBySlug: Map<string, string>,
-  fileReferenceIds: Map<string, string>,
-  orgId: string
+  fileReferenceIds: Map<string, string>
 ): WorkflowFile {
   if (wf.nodes.length === 0) throw new HttpError(400, `Workflow "${wf.name}" has no steps.`);
   const seenNodeIds = new Set<string>();
@@ -656,7 +689,7 @@ function normalizeWorkflow(
     }
     const skillIds = node.skillIds.map((id) => skillBySlug.get(id) ?? id);
     // Ensure role has a valid skill list (or fall back to role's default)
-    const role = roles[roleId];
+    let role: Role | null = roles[roleId] ?? null;
     let effectiveSkillIds = skillIds;
     if (effectiveSkillIds.length === 0 && role) {
       effectiveSkillIds = role.skillIds.filter((id) => skills[id]?.status === "active");
@@ -677,20 +710,9 @@ function normalizeWorkflow(
       }
     }
     if (!role) {
-      roleId = `runtime.workflow.${wf.id}.${node.id || i + 1}`;
-      roles[roleId] = {
-        id: roleId,
-        orgId,
-        name: node.title,
-        description: "Workflow-owned execution role.",
-        prompt: node.promptOverride ?? `Execute the ${node.title} workflow step.`,
-        modelId: null,
-        inputContract: defaultInputContract(),
-        outputContract: defaultOutputContract(),
-        skillIds: effectiveSkillIds,
-        status: "active",
-        metadata: { runtime: true, workflowId: wf.id, nodeId: node.id }
-      };
+      role = resolveDirectExecutorRole(roles, effectiveSkillIds[0]);
+      if (!role) throw new HttpError(400, `Workflow node "${node.title}" has no active file-backed execution role.`);
+      roleId = role.id;
     }
     const n = node as WorkflowNode;
     const roleContextSlugs = role && Array.isArray(role.metadata?.contextSlugs)
@@ -807,6 +829,13 @@ function normalizeSuggestedHarnessRefs(input: SuggestedHarnessRef[] | undefined)
     });
   }
   return out;
+}
+
+function resolveDirectExecutorRole(roles: Record<string, Role>, skillId: string): Role | null {
+  const active = Object.values(roles).filter((role) => role.status === "active");
+  return active.find((role) => role.skillIds.includes(skillId))
+    ?? active.find((role) => role.metadata?.systemRole === "orchestrator")
+    ?? null;
 }
 
 function dedupe<T>(items: T[]): T[] {

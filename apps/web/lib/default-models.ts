@@ -47,7 +47,8 @@ function capabilities(
     reasoningSummaries: false,
     providerCompaction: false,
     reasoningEffort: reasoningFromEnv(prefix, reasoningEffort),
-    outputTokenParameter: prefix === "OPENAI" ? "max_completion_tokens" : "max_tokens"
+    outputTokenParameter: prefix === "OPENAI" ? "max_completion_tokens" : "max_tokens",
+    toolCallMetadata: "normalized"
   };
 }
 

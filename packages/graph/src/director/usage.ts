@@ -4,10 +4,9 @@ import type { ChatUsage } from "@spielos/providers";
  * Exactly-once usage folding for the Director runtime.
  *
  * The parent Director run records usage once; the deepagents v3
- * stream may surface the same usage multiple times (one per
- * `ChatModelStream.usage` iteration, plus the final assembled
- * `AIMessage.usage_metadata`). This tracker accumulates the
- * maximum-seen input/output totals and emits a single fold.
+ * values stream surfaces one final `usage_metadata` record for each
+ * native AI message. The mapper de-duplicates by message id, while this
+ * tracker adds distinct model and subagent calls and emits one billing fold.
  *
  * Subagent usage is folded into the parent once the subagent
  * completes (Phase 3 wires subagent.usage into the same tracker
@@ -28,8 +27,8 @@ export class DirectorUsageTracker {
 
   record(snapshot: { input_tokens?: number; output_tokens?: number } | undefined | null): void {
     if (!snapshot) return;
-    if (typeof snapshot.input_tokens === "number") this.input = Math.max(this.input, snapshot.input_tokens);
-    if (typeof snapshot.output_tokens === "number") this.output = Math.max(this.output, snapshot.output_tokens);
+    if (typeof snapshot.input_tokens === "number") this.input += snapshot.input_tokens;
+    if (typeof snapshot.output_tokens === "number") this.output += snapshot.output_tokens;
   }
 
   /**

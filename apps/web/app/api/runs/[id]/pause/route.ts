@@ -18,9 +18,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       state: {
         ...(existing.state ?? {}),
         status: "waiting_human",
-        pause_requested_at: requestedAt,
         pause: { requested: true, reason: body.reason?.trim() || "Paused by user.", requestedAt }
       },
+      pauseRequestedAt: requestedAt,
       events: [{
         event_type: "status",
         node_id: null,

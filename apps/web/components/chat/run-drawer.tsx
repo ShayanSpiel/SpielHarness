@@ -34,6 +34,7 @@ import {
   orderRunEvents,
   runtimeEventIcon
 } from "../../lib/run-events";
+import { useUiStore } from "../../lib/use-ui-store";
 
 type Section = "context" | "events" | "output";
 
@@ -200,9 +201,6 @@ function RuntimeCapacity({ run }: { run: ReturnType<typeof useRunContext> }) {
   const budget = run.durableState?.budget;
   const usage = run.liveUsage;
   const contextMaximum = budget?.maxInputTokens ?? capabilities?.contextWindow ?? 0;
-  const outputMaximum = budget?.maxOutputTokens ?? capabilities?.maxOutputTokens ?? 0;
-  const outputValue = usage?.outputTokens ?? budget?.outputTokens ?? 0;
-  const historicalCumulativeOutput = outputMaximum > 0 && outputValue > outputMaximum;
   const compaction = activeChat?.metadata?.compaction && typeof activeChat.metadata.compaction === "object"
     ? activeChat.metadata.compaction as Record<string, unknown>
     : null;
@@ -226,18 +224,6 @@ function RuntimeCapacity({ run }: { run: ReturnType<typeof useRunContext> }) {
       {capabilities ? (
         <>
           <CapacityMeter icon={CONTEXT_ICON} label="Context window" maximum={contextMaximum} value={usage?.inputTokens ?? budget?.inputTokens ?? 0} />
-          {historicalCumulativeOutput ? (
-            <div className="grid gap-1 rounded-md bg-panel px-2 py-1.5">
-              <div className="flex items-center gap-1.5 text-2xs">
-                <Icon className="text-muted-foreground" name="arrow-up" size={10} />
-                <span className="font-medium text-foreground">Generated output</span>
-                <span className="ml-auto tabular-nums text-muted-foreground">{compactTokens(outputValue)} total</span>
-              </div>
-              <div className="text-3xs text-muted-foreground">Historical cumulative run · {compactTokens(outputMaximum)} per-call cap</div>
-            </div>
-          ) : (
-            <CapacityMeter icon="arrow-up" label="Output budget" maximum={outputMaximum} value={outputValue} />
-          )}
           <div className="grid grid-cols-3 gap-1.5">
             <div className="rounded-md bg-panel px-2 py-1.5">
               <div className="text-3xs text-muted-foreground">Tools</div>
@@ -245,7 +231,7 @@ function RuntimeCapacity({ run }: { run: ReturnType<typeof useRunContext> }) {
             </div>
             <div className="rounded-md bg-panel px-2 py-1.5">
               <div className="text-3xs text-muted-foreground">Compaction</div>
-              <div className="mt-0.5 text-xs font-medium tabular-nums text-foreground">{compactedMessages > 0 ? `${compactedMessages} msgs` : `${Math.round(capabilities.compactionThreshold * 100)}%`}</div>
+              <div className="mt-0.5 text-xs font-medium tabular-nums text-foreground">{compactedMessages > 0 ? `${compactedMessages} msgs` : `at ${compactTokens(Math.floor(contextMaximum * capabilities.compactionThreshold))}`}</div>
             </div>
             <div className="rounded-md bg-panel px-2 py-1.5">
               <div className="text-3xs text-muted-foreground">Counter</div>
@@ -420,7 +406,8 @@ function OutputSection({ run }: { run: ReturnType<typeof useRunContext> }) {
 
 export function RunDrawer() {
   const run = useRunContext();
-  const [section, setSection] = useState<Section>("context");
+  const ui = useUiStore();
+  const section: Section = ui.inspectorSection;
   const [controlBusy, setControlBusy] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
   const totalEvents = run.events.length;
@@ -489,7 +476,7 @@ export function RunDrawer() {
       <InspectorHeader actions={run.status !== "idle" ? <Pill tone={statusTone}>{run.status === "waiting_human" ? "waiting" : run.status}</Pill> : null} icon={ENTITY_ICONS.run} title="Run inspector" />
 
       <InspectorTabs
-        onChange={(value) => setSection(value as Section)}
+        onChange={(value) => ui.setInspectorSection(value as Section)}
         tabs={[
           { id: "context", label: `Context ${totalContext}`, icon: CONTEXT_ICON },
           { id: "events", label: `Events ${totalEvents}`, icon: "activity" },

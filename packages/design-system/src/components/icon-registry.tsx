@@ -148,6 +148,7 @@ const DEFAULT_ICON_MAP: Record<string, string> = {
   community: "Community",
   task: "Task",
   psychology: "Psychology",
+  intellect: "Intellect",
   head: "Head",
 };
 

@@ -116,6 +116,7 @@ export default function SettingsPage() {
   const [confirmModelDelete, setConfirmModelDelete] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [apiKey, setApiKey] = useState("");
+  const [clearApiKey, setClearApiKey] = useState(false);
   const [connectionSaving, setConnectionSaving] = useState(false);
   const [disconnecting, setDisconnecting] = useState<typeof integrations[number] | null>(null);
   const [disconnectingBusy, setDisconnectingBusy] = useState(false);
@@ -273,6 +274,7 @@ export default function SettingsPage() {
     setSelectedId(null);
     setAdvancedOpen(false);
     setApiKey("");
+    setClearApiKey(false);
     reset(emptyModel());
   }
 
@@ -283,7 +285,7 @@ export default function SettingsPage() {
       let extra: Record<string, unknown> = {};
       if (apiKey) {
         extra = { apiKey };
-      } else if (hasApiKey && !apiKey) {
+      } else if (clearApiKey) {
         extra = { apiKey: null };
       }
       if (isNew) {
@@ -301,12 +303,14 @@ export default function SettingsPage() {
         reset(toProviderModel(created));
         setCreatingModel(false);
         setApiKey("");
+        setClearApiKey(false);
         toast.success("Model created");
       } else {
         const id = (draft as ProviderModel).id;
         await store.updateModel(id, { name: draft.label, provider: draft.provider as Model["provider"], model: draft.model, baseUrl: draft.baseUrl || null, secretEnvKey: draft.secretEnvKey || null, enabled: draft.enabled, config, ...extra });
         markSaved();
         setApiKey("");
+        setClearApiKey(false);
         toast.success("Model saved");
       }
     } catch (err) {
@@ -402,6 +406,7 @@ export default function SettingsPage() {
                         setSelectedId(model.id);
                         setAdvancedOpen(false);
                         setApiKey("");
+                        setClearApiKey(false);
                         reset(toProviderModel(model));
                       }}
                       subtitle={compactTokens(capabilitiesForModel(model).contextWindow)}
@@ -500,7 +505,7 @@ export default function SettingsPage() {
                             <Input
                               className="min-w-0 flex-1"
                               disabled={isEnvModel}
-                              onChange={(event) => setApiKey(event.target.value)}
+                          onChange={(event) => { setApiKey(event.target.value); setClearApiKey(false); }}
                               type="password"
                               placeholder={hasApiKey && !apiKey ? "••••••••" : ""}
                               value={apiKey}
@@ -516,7 +521,7 @@ export default function SettingsPage() {
                                   <Icon name="shield" size={11} />
                                   Saved
                                 </Pill>
-                                <button className="text-3xs text-link underline" onClick={() => setApiKey("")} type="button">
+                                <button className="text-3xs text-link underline" onClick={() => { setApiKey(""); setClearApiKey(true); }} type="button">
                                   Clear
                                 </button>
                               </>
@@ -526,7 +531,7 @@ export default function SettingsPage() {
                       </div>
                     </div>
                     <Field hint="Sets the default power level. Every chat can override it before the first message or mid-conversation." label="Reasoning power">
-                      <div className={cn(isEnvModel && "pointer-events-none opacity-50")}>
+                      <div>
                         <ReasoningEffortControl
                           onChange={(reasoningEffort) => setDraft({ ...draft, capabilities: { ...draft.capabilities, reasoningEffort } })}
                           value={draft.capabilities.reasoningEffort}
@@ -546,7 +551,7 @@ export default function SettingsPage() {
                       </span>
                       <Icon className="text-muted-foreground" name={advancedOpen ? "chevron-up" : "chevron-down"} size={13} />
                     </button>
-                    {advancedOpen ? <div className={cn("grid gap-5 rounded-md bg-panel-raised p-4", isEnvModel && "pointer-events-none opacity-50")}>
+                    {advancedOpen ? <div className="grid gap-5 rounded-md bg-panel-raised p-4">
                       <section className="grid gap-3">
                         <div>
                           <h3 className="text-xs font-medium text-foreground">Capacity</h3>
@@ -575,9 +580,10 @@ export default function SettingsPage() {
                           <p className="mt-0.5 text-2xs text-muted-foreground">Only change these when using a proxy, compatible endpoint, or provider-specific token behavior.</p>
                         </div>
                         <div className="grid items-start gap-3 md:grid-cols-2">
-                          <Field label="Base URL"><Input onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} value={draft.baseUrl ?? ""} /></Field>
+                          <Field label="Base URL"><Input disabled={isEnvModel} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} value={draft.baseUrl ?? ""} /></Field>
                           <Field label="Token counter"><NativeSelect ariaLabel="Token counter" onChange={(value) => setDraft({ ...draft, capabilities: { ...draft.capabilities, tokenCounter: value as ProviderModel["capabilities"]["tokenCounter"] } })} options={[{ label: "Provider", value: "provider" }, { label: "Tiktoken", value: "tiktoken" }, { label: "Estimate", value: "estimate" }]} value={draft.capabilities.tokenCounter} /></Field>
                           {(draft.provider === "openai-compatible" || draft.provider === "custom") ? <Field label="Output token parameter"><NativeSelect ariaLabel="Output token parameter" onChange={(value) => setDraft({ ...draft, capabilities: { ...draft.capabilities, outputTokenParameter: value as ProviderModel["capabilities"]["outputTokenParameter"] } })} options={[{ label: "max_tokens", value: "max_tokens" }, { label: "max_completion_tokens", value: "max_completion_tokens" }]} value={draft.capabilities.outputTokenParameter} /></Field> : null}
+                          {(draft.provider === "openai-compatible" || draft.provider === "custom") ? <Field hint="Preserve provider-specific metadata attached to function calls across tool-loop turns." label="Tool-call metadata"><NativeSelect ariaLabel="Tool-call metadata" onChange={(value) => setDraft({ ...draft, capabilities: { ...draft.capabilities, toolCallMetadata: value as ProviderModel["capabilities"]["toolCallMetadata"] } })} options={[{ label: "Normalized", value: "normalized" }, { label: "Preserve provider metadata", value: "provider_raw" }]} value={draft.capabilities.toolCallMetadata} /></Field> : null}
                         </div>
                       </section>
                       <section className="grid gap-3 border-t border-border pt-4">

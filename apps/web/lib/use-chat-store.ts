@@ -43,6 +43,7 @@ export type ChatStore = {
 };
 
 const ChatStoreContext = createContext<ChatStore | null>(null);
+const ACTIVE_CHAT_STORAGE_KEY = "spielos.activeChatId";
 
 function nowIso() {
   return new Date().toISOString();
@@ -65,6 +66,9 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     .find((row) => row.startsWith("spielos.org="))
     ?.split("=")[1] ?? null;
   const realtimeListener = useCallback((event: DomainEvent) => {
+    if (event.type === "run.event.appended" || event.type === "run.usage.updated" || event.type === "run.status.changed") {
+      window.dispatchEvent(new CustomEvent("spielos:run-update", { detail: event }));
+    }
     if (event.type === "run.status.changed" || event.type === "context.invalidated") {
       void reloadRef.current?.();
     }
@@ -125,9 +129,11 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       }
       setChats(newChats);
       setMessages(newMessages);
-      if (!initialLoaded.current && newChats.length > 0 && !activeChatId) {
-        setActiveChatId(newChats[0].id);
-      }
+      const storedActiveChatId = typeof window !== "undefined" ? window.localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY) : null;
+      setActiveChatId((current) => {
+        const candidate = current ?? storedActiveChatId;
+        return candidate && newChats.some((chat) => chat.id === candidate) ? candidate : null;
+      });
       initialLoaded.current = true;
       loadErrorShown.current = false;
       setReady(true);
@@ -139,7 +145,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       }
       setReady(true);
     }
-  }, [activeChatId]);
+  }, []);
 
   useEffect(() => {
     void reload();
@@ -170,7 +176,10 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       };
       setChats((current) => [chat, ...current]);
       setMessages((current) => ({ ...current, [chat.id]: [] }));
-      if (activate) setActiveChatId(chat.id);
+      if (activate) {
+        setActiveChatId(chat.id);
+        window.localStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, chat.id);
+      }
       return chat;
     },
     []
@@ -201,7 +210,11 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       delete next[id];
       return next;
     });
-    setActiveChatId((current) => (current === id ? null : current));
+    setActiveChatId((current) => {
+      if (current !== id) return current;
+      window.localStorage.removeItem(ACTIVE_CHAT_STORAGE_KEY);
+      return null;
+    });
   }, []);
 
   const updateChatMetadata = useCallback(async (id: string, patch: Record<string, unknown>) => {
@@ -252,7 +265,11 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       activeChatId,
       messages,
       ready,
-      setActiveChat: setActiveChatId,
+      setActiveChat: (id) => {
+        setActiveChatId(id);
+        if (id) window.localStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, id);
+        else window.localStorage.removeItem(ACTIVE_CHAT_STORAGE_KEY);
+      },
       createChat,
       renameChat,
       archiveChat,

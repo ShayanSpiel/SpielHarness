@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode
 } from "react";
-import type { Artifact, HumanInputRequest, RunBudget, RunEvent, RunGoal, RunProgress, RunStatus, RunType, RunVerification } from "@spielos/core";
+import { DEFAULT_EXECUTION_MODE, type Artifact, type ExecutionMode, type HumanInputRequest, type RunBudget, type RunEvent, type RunGoal, type RunProgress, type RunStatus, type RunType, type RunVerification } from "@spielos/core";
 import { orderRunEvents } from "./run-events";
 
 export type RunLifecycleStatus = "idle" | RunStatus;
@@ -44,6 +44,8 @@ export type RunContextValue = {
   setPendingModelId: (id: string | null) => void;
   pendingReasoningEffort: string;
   setPendingReasoningEffort: (effort: string) => void;
+  pendingExecutionMode: ExecutionMode;
+  setPendingExecutionMode: (mode: ExecutionMode) => void;
   pickerOpen: boolean;
   setPickerOpen: (open: boolean) => void;
   activeRunId: string | null;
@@ -82,6 +84,7 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
   const [contextItems, setContextItems] = useState<ContextItem[]>([]);
   const [pendingModelId, setPendingModelId] = useState<string | null>(null);
   const [pendingReasoningEffort, setPendingReasoningEffort] = useState("auto");
+  const [pendingExecutionMode, setPendingExecutionMode] = useState(DEFAULT_EXECUTION_MODE);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [durableState, setDurableState] = useState<DurableRunState | null>(null);
@@ -178,6 +181,9 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
       if ((event.type === "node_completed" || event.type === "node_failed" || event.type === "node_skipped") && event.nodeId) {
         map.delete(event.nodeId);
       }
+      if (event.type === "tool_call_result" && typeof event.payload?.callId === "string") {
+        map.delete(event.payload.callId);
+      }
     }
     return { activeActor: latest, activeActors: Array.from(map.values()) };
   }, [events]);
@@ -218,6 +224,8 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
       setPendingModelId,
       pendingReasoningEffort,
       setPendingReasoningEffort,
+      pendingExecutionMode,
+      setPendingExecutionMode,
       pickerOpen,
       setPickerOpen,
       activeRunId,
@@ -257,6 +265,8 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
       clearContext,
       pendingModelId,
       pendingReasoningEffort,
+      pendingExecutionMode,
+      setPendingExecutionMode,
       pickerOpen,
       setPickerOpen,
       activeRunId,

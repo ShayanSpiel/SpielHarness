@@ -19,6 +19,8 @@ import {
   type RunYield
 } from "@spielos/graph";
 
+process.env.SPIELOS_TEST_LLM_KEY = process.env.SPIELOS_TEST_LLM_KEY ?? "sk-test-fake-key-for-unit-tests";
+
 const orgId = "00000000-0000-0000-0000-000000000001";
 const role: Role = {
   id: "role-direct",
@@ -69,7 +71,7 @@ function fakeModel(): Model {
     model: "test-direct-model",
     baseUrl: "https://provider.invalid/v1",
     secretEnvKey: "SPIELOS_TEST_LLM_KEY",
-    config: { capabilities: { contextWindow: 4096, maxOutputTokens: 1024 } },
+    config: { capabilities: { contextWindow: 4096, maxOutputTokens: 1024, toolCalling: true } },
     enabled: true
   };
 }
@@ -87,8 +89,8 @@ function fakeStreamingFetch(calls: Array<Record<string, unknown>>) {
   };
 }
 
-test("default execution mode is direct and the schema accepts only the two known modes", () => {
-  assert.equal(DEFAULT_EXECUTION_MODE, "direct");
+test("default execution mode is Director and the schema accepts only the two known modes", () => {
+  assert.equal(DEFAULT_EXECUTION_MODE, "director");
   assert.deepEqual(executionModeSchema.options, ["director", "direct"]);
   assert.equal(executionModeSchema.parse("director"), "director");
   assert.equal(executionModeSchema.parse("direct"), "direct");
@@ -107,7 +109,7 @@ test("direct mode with no target routes to streamChatRun and emits a single comp
       orgId,
       runId: "run-direct-chat",
       prompt: "What's the market?",
-      directorPrompt: "Be concise.",
+      assistantPrompt: "Be concise.",
       roles: {},
       skills: {},
       files: [],
@@ -256,7 +258,8 @@ test("director mode is wired and reaches the deepagents runtime when the orchest
     model,
     chatMetadata: {},
     history: [{ role: "user", content: "Plain chat question" }],
-    executionMode: "director"
+    executionMode: "director",
+    signal: AbortSignal.timeout(200)
   } as DirectorRunRequest));
   assert.ok(items.some((item) => item.kind === "event" && item.event.type === "run_started"));
   assert.equal(items.filter((item) => item.kind === "done").length, 1);
@@ -266,4 +269,10 @@ test("director mode is wired and reaches the deepagents runtime when the orchest
   const done = items.find((item): item is Extract<RunYield, { kind: "done" }> => item.kind === "done");
   assert.ok(done);
   assert.ok(["completed", "failed", "waiting_human", "cancelled"].includes(done.status));
+  if (done.status === "failed") {
+    const checkpoint = [...items].reverse().find((item): item is Extract<RunYield, { kind: "checkpoint" }> => item.kind === "checkpoint");
+    assert.ok(checkpoint, "a native Director stream failure must persist a terminal checkpoint");
+    assert.equal(checkpoint.state.status, "failed");
+    assert.ok(checkpoint.state.error, "the persisted checkpoint must retain the provider failure reason");
+  }
 });

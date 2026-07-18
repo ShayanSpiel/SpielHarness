@@ -4,7 +4,7 @@ import { use, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { AppShell } from "../../../components/app-shell";
 import { useRunContext } from "../../../lib/run-context";
-import type { Artifact, RunEvent } from "@spielos/core";
+import { useWorkspaceStore } from "../../../lib/use-workspace-store";
 
 const RunsView = dynamic(() => import("../../../components/chat/runs-view").then((m) => m.RunsView), {
   ssr: false,
@@ -19,66 +19,24 @@ const RunDrawer = dynamic(() => import("../../../components/chat/run-drawer").th
   ssr: false
 });
 
-type DbRunEvent = {
-  id: string;
-  org_id: string;
-  run_id: string;
-  event_type: string;
-  node: string | null;
-  skill: string | null;
-  message: string;
-  payload: Record<string, unknown>;
-  created_at: string;
-};
-
-function eventFromDb(row: DbRunEvent) {
-  return {
-    id: row.id,
-    orgId: row.org_id,
-    runId: row.run_id,
-    type: row.event_type as RunEvent["type"],
-    sequence: 0,
-    nodeId: row.node ?? undefined,
-    skillName: row.skill ?? undefined,
-    message: row.message,
-    payload: row.payload ?? {},
-    createdAt: row.created_at
-  };
-}
-
 function RunLoader({ runId }: { runId: string }) {
   const run = useRunContext();
+  const store = useWorkspaceStore();
 
   useEffect(() => {
     run.setActiveRunId(runId);
-    run.clearArtifacts();
-    run.setHumanInputRequest(null);
-
     fetch(`/api/runs/${runId}`, { cache: "no-store" })
-      .then((res) => {
-        if (!res.ok) run.reset();
+      .then(async (res) => {
+        if (!res.ok) {
+          run.reset();
+          return null;
+        }
+        return res.json() as Promise<{ run: { chat_id: string | null } }>;
+      })
+      .then((payload) => {
+        if (payload?.run.chat_id) store.setActiveChat(payload.run.chat_id);
       })
       .catch(() => run.reset());
-
-    fetch(`/api/runs/${runId}/events`, { cache: "no-store" })
-      .then((res) => (res.ok ? res.json() : { events: [] }))
-      .then((data: { events?: DbRunEvent[] }) => {
-        run.clearEvents();
-        for (const evt of data.events ?? []) {
-          run.appendEvent(eventFromDb(evt));
-        }
-      })
-      .catch(() => run.clearEvents());
-
-    fetch(`/api/runs/${runId}/artifacts`, { cache: "no-store" })
-      .then((res) => (res.ok ? res.json() : { artifacts: [] }))
-      .then((data: { artifacts?: Artifact[] }) => {
-        run.clearArtifacts();
-        for (const a of data.artifacts ?? []) {
-          run.appendArtifact(a);
-        }
-      })
-      .catch(() => run.clearArtifacts());
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
 

@@ -47,6 +47,7 @@ type ManifestEntry = {
   sideEffect?: "none" | "read" | "write" | "external";
   folder?: string;
   workspaceConfig?: boolean;
+  runtimePolicy?: boolean;
   harnessAction?: "create" | "update";
   inputSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
@@ -127,6 +128,7 @@ function classify(relPath: string, manifest: Manifest): { fileType: string; meta
   if (entry?.sideEffect) metadata.sideEffect = entry.sideEffect;
   if (entry?.contextSlugs) metadata.contextSlugs = entry.contextSlugs;
   if (entry?.workspaceConfig) metadata.workspaceConfig = true;
+  if (entry?.runtimePolicy) metadata.runtimePolicy = true;
   if (entry?.harnessAction) metadata.harnessAction = entry.harnessAction;
   if (entry?.inputSchema) metadata.inputSchema = entry.inputSchema;
   if (entry?.outputSchema) metadata.outputSchema = entry.outputSchema;

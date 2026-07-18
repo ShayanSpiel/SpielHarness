@@ -2,6 +2,7 @@
 
 import type { RunEvent } from "@spielos/core";
 import { Icon, StatusIcon, cn } from "@spielos/design-system";
+import Image from "next/image";
 import { useState } from "react";
 
 function formatPayload(value: unknown): string {
@@ -29,11 +30,15 @@ export function ToolCallCard({
       : "neutral";
 
   const paramsDisplay =
-    event.payload?.params != null ? formatPayload(event.payload.params) : null;
+    event.payload?.params != null ? formatPayload(event.payload.params) : event.payload?.input != null ? formatPayload(event.payload.input) : null;
   const resultDisplay =
     event.payload?.result != null ? formatPayload(event.payload.result) : null;
   const hasDetails = paramsDisplay || resultDisplay;
   const parallelCount = typeof event.payload?.parallelCount === "number" ? event.payload.parallelCount : 1;
+  const icon = typeof event.payload?.icon === "string" ? event.payload.icon : isStarted ? "tool" : "check-circle";
+  const logo = typeof event.payload?.logo === "string" ? event.payload.logo : null;
+  const label = typeof event.payload?.label === "string" ? event.payload.label : event.message;
+  const integrationName = typeof event.payload?.integrationName === "string" ? event.payload.integrationName : null;
 
   return (
     <div
@@ -42,13 +47,11 @@ export function ToolCallCard({
         active && "text-foreground"
       )}
     >
-      <StatusIcon
-        busy={isStarted && active}
-        className="mt-0.5 shrink-0"
-        icon={isStarted ? "tool" : "check-circle"}
-        size={11}
-        tone={tone}
-      />
+      {logo ? (
+        <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center overflow-hidden rounded-sm bg-panel-strong">
+          <Image alt="" height={12} src={logo} width={12} />
+        </span>
+      ) : <StatusIcon busy={isStarted && active} className="mt-0.5 shrink-0" icon={icon} size={11} tone={tone} />}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <span
@@ -57,8 +60,9 @@ export function ToolCallCard({
               active && "text-foreground"
             )}
           >
-            {event.message}
+            {label}
           </span>
+          {integrationName ? <span className="shrink-0 text-3xs text-muted-foreground">{integrationName}</span> : null}
           {event.skillName ? (
             <span className="ml-auto shrink-0 rounded-full bg-selected px-2 py-0.5 text-3xs text-muted-foreground">
               {event.skillName}

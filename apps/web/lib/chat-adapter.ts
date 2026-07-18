@@ -4,7 +4,7 @@ import { useMemo, useRef } from "react";
 import type { ChatModelAdapter, ChatModelRunResult, ThreadAssistantMessagePart } from "@assistant-ui/react";
 import { useRunContext } from "./run-context";
 import { useWorkspaceStore } from "./use-workspace-store";
-import type { HumanInputRequest, RunEvent, Artifact, RunStatus } from "@spielos/core";
+import { DEFAULT_EXECUTION_MODE, executionModeSchema, type HumanInputRequest, type RunEvent, type Artifact, type RunStatus } from "@spielos/core";
 
 type StreamFrame =
   | { kind: "run"; runId: string; type: string }
@@ -55,12 +55,35 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
         const text = getMessageText(lastUser);
         const ctx = runRef.current;
         const ws = storeRef.current;
+        const currentChat = ws.chats.find((entry) => entry.id === ws.activeChatId) ?? null;
+        const executionMode = executionModeSchema.catch(DEFAULT_EXECUTION_MODE).parse(
+          typeof currentChat?.metadata?.executionMode === "string"
+            ? currentChat.metadata.executionMode
+            : ctx.pendingExecutionMode
+        );
+        const explicit = ctx.contextItems.find((item) =>
+          ["role", "skill", "eval", "workflow"].includes(item.kind)
+        );
+        let type: "chat" | "role" | "skill" | "eval" | "workflow" = "chat";
+        let targetId: string | undefined;
+        if (executionMode === "direct" && explicit) {
+          type = explicit.kind as "role" | "skill" | "eval" | "workflow";
+          targetId = explicit.id;
+        }
+
+        // This must precede chat creation and all network work. The assistant
+        // turn is already visible at this point, so render genuine local
+        // submission activity immediately while the durable run is created.
+        ctx.startRun(type, "Thinking\u2026");
+
         let chatId = ws.activeChatId;
         let createdChatId: string | null = null;
         if (!chatId) {
-          const created = await ws.createChat(text.trim().slice(0, 80) || "New chat", false);
-          chatId = created.id;
-          createdChatId = created.id;
+          // The execute route creates the chat and run together. Generating
+          // the id locally removes a blocking duplicate POST before the SSE
+          // request and keeps chat creation inside the durable run boundary.
+          chatId = crypto.randomUUID();
+          createdChatId = chatId;
         }
 
         // Map context items to file ids.
@@ -68,28 +91,8 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
           .filter((item) => item.kind === "file" || item.kind === "library" || item.kind === "knowledge" || item.kind === "prompt" || item.kind === "strategy")
           .map((item) => item.id);
 
-        // Find first explicit target (role/skill/eval/workflow). Empty context is fine.
-        const explicit = ctx.contextItems.find((item) =>
-          ["role", "skill", "eval", "workflow"].includes(item.kind)
-        );
-        let type: "chat" | "role" | "skill" | "eval" | "workflow" = "chat";
-        let targetId: string | undefined;
-        if (explicit) {
-          type = explicit.kind as "role" | "skill" | "eval" | "workflow";
-          targetId = explicit.id;
-        }
-        const activeProject = chatProject(ws.chats.find((entry) => entry.id === chatId)?.metadata?.activeProject);
-        // Once a project has a revision artifact, ordinary follow-up requests
-        // are revisions by default. Starting a new project or attaching a
-        // workflow remains an explicit user action in the composer.
-        if (!explicit && activeProject?.artifactId && activeProject.revisionRoleSlug) {
-          type = "role";
-          targetId = activeProject.revisionRoleSlug;
-          if (!contextFileIds.includes(activeProject.artifactId)) contextFileIds.push(activeProject.artifactId);
-        }
-        ctx.startRun(type);
-
         const chat = ws.chats.find((entry) => entry.id === chatId) ?? null;
+
         const configuredModelId = typeof chat?.metadata?.modelId === "string"
           ? chat.metadata.modelId
           : ctx.pendingModelId;
@@ -106,12 +109,6 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
           : selectedModel?.config?.capabilities && typeof selectedModel.config.capabilities === "object"
             ? (selectedModel.config.capabilities as Record<string, unknown>).reasoningEffort
             : "auto";
-        await ws.updateChatMetadata(chatId, {
-          modelId: selectedModel?.id ?? null,
-          reasoningEffort,
-          contextItems: ctx.contextItems
-        });
-
         const payload = {
           prompt: text,
           chatId,
@@ -119,10 +116,16 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
           targetId: type === "workflow" ? undefined : targetId,
           workflowId: type === "workflow" ? targetId : undefined,
           contextFileIds,
+          chatContextItems: ctx.contextItems,
           modelId: selectedModel?.id,
           reasoningEffort,
+          executionMode,
+          suggestedHarnessRefs: ctx.contextItems.map((item) => ({
+            id: item.id,
+            type: item.kind,
+            title: item.title
+          })).filter((item) => ["role", "skill", "workflow", "eval"].includes(item.type)),
           previousCompaction,
-          projectId: activeProject?.id,
           goal: {
             objective: text,
             constraints: [],
@@ -192,7 +195,7 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
 
         const applyFrame = (item: PendingFrame) => {
           if (item.kind === "run") {
-            ctx.setActiveRunId(item.runId);
+                ctx.setActiveRunId(item.runId);
           } else if (item.kind === "status") {
             ctx.setActivity(item.message);
           } else if (item.kind === "run_state") {
@@ -329,18 +332,9 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
             ctx.setRunStatus(interruptedStatus);
           }
           inFlightMessages.delete(messageKey);
-          const activeRunId = runRef.current.activeRunId;
-          if (
-            abortSignal.aborted &&
-            activeRunId &&
-            terminalStatus !== "completed" &&
-            terminalStatus !== "failed" &&
-            terminalStatus !== "cancelled"
-          ) {
-            fetch(`/api/runs/${activeRunId}/cancel`, { method: "POST" }).catch(() => {
-              // ignore
-            });
-          }
+          // A component unmount or reload aborts the browser reader too, so it
+          // cannot be treated as user cancellation. The visible Stop control
+          // calls the durable /cancel endpoint explicitly.
           if (createdChatId && !storeRef.current.activeChatId) {
             const createdAt = new Date().toISOString();
             const localMessages = messages
@@ -374,9 +368,6 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
               }
             });
             storeRef.current.setActiveChat(createdChatId);
-            // The store already has the new chat from `createChat`; no
-            // full reload is needed and would re-fetch messages the
-            // adapter has just inserted locally, causing a visible flash.
           }
         }
 
@@ -385,21 +376,4 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
     }),
     []
   );
-}
-
-type ActiveProject = {
-  id: string;
-  artifactId: string | null;
-  revisionRoleSlug: string | null;
-};
-
-function chatProject(value: unknown): ActiveProject | null {
-  if (!value || typeof value !== "object") return null;
-  const record = value as Record<string, unknown>;
-  if (typeof record.id !== "string") return null;
-  return {
-    id: record.id,
-    artifactId: typeof record.artifactId === "string" ? record.artifactId : null,
-    revisionRoleSlug: typeof record.revisionRoleSlug === "string" ? record.revisionRoleSlug : null
-  };
 }

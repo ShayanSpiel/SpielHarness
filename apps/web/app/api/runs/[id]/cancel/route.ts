@@ -19,9 +19,10 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     await atomicCheckpoint(org.sql, org.orgId, id, {
       status: "cancelled",
       completedAt: requestedAt,
+      cancelRequestedAt: requestedAt,
       state: {
         ...(existing.state ?? {}),
-        cancel_requested_at: requestedAt
+        status: "cancelled"
       },
       events: [
         {

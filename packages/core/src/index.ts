@@ -16,7 +16,7 @@ import { z } from "zod";
 export const executionModeSchema = z.enum(["director", "direct"]);
 export type ExecutionMode = z.infer<typeof executionModeSchema>;
 
-export const DEFAULT_EXECUTION_MODE: ExecutionMode = "direct";
+export const DEFAULT_EXECUTION_MODE: ExecutionMode = "director";
 
 export interface SuggestedHarnessRef {
   type: "role" | "skill" | "workflow" | "eval";
@@ -402,7 +402,8 @@ export const modelCapabilitiesSchema = z.object({
   reasoningSummaries: z.boolean().default(false),
   providerCompaction: z.boolean().default(false),
   reasoningEffort: z.enum(["auto", "low", "medium", "high", "xhigh", "max"]).default("auto"),
-  outputTokenParameter: z.enum(["max_tokens", "max_completion_tokens"]).default("max_tokens")
+  outputTokenParameter: z.enum(["max_tokens", "max_completion_tokens"]).default("max_tokens"),
+  toolCallMetadata: z.enum(["normalized", "provider_raw"]).default("normalized")
 });
 export type ModelCapabilities = z.infer<typeof modelCapabilitiesSchema>;
 
@@ -911,6 +912,31 @@ export const runBudgetSchema = z.object({
   deadlineAt: z.string().nullable().default(null)
 });
 export type RunBudget = z.infer<typeof runBudgetSchema>;
+
+/**
+ * Workspace-owned safety envelope for autonomous Director runs. The values
+ * live in an active file-backed configuration record; application code only
+ * owns this typed contract and enforcement.
+ */
+export const directorRuntimePolicySchema = z.object({
+  maxInputTokens: z.number().int().positive(),
+  maxOutputTokens: z.number().int().positive(),
+  maxDurationMs: z.number().int().positive(),
+  maxToolCalls: z.number().int().positive(),
+  maxChildRuns: z.number().int().positive(),
+  maxParallelChildRuns: z.number().int().positive(),
+  maxCallsPerCapability: z.number().int().positive(),
+  maxChildInputTokens: z.number().int().positive()
+}).superRefine((policy, context) => {
+  if (policy.maxParallelChildRuns > policy.maxChildRuns) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["maxParallelChildRuns"],
+      message: "maxParallelChildRuns cannot exceed maxChildRuns."
+    });
+  }
+});
+export type DirectorRuntimePolicy = z.infer<typeof directorRuntimePolicySchema>;
 
 export const runProgressSchema = z.object({
   milestone: z.string().nullable().default(null),

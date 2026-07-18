@@ -12,6 +12,8 @@ import { compileDirector } from "@spielos/graph/director/compile";
 import { buildRoleSubagents } from "@spielos/graph/director/compile";
 import { noopToolContext } from "@spielos/graph/director/tools";
 
+process.env.SPIELOS_TEST_LLM_KEY = process.env.SPIELOS_TEST_LLM_KEY ?? "sk-test-fake-key-for-unit-tests";
+
 const orgId = "00000000-0000-0000-0000-000000000001";
 
 function fakeModel(): Model {
@@ -23,7 +25,7 @@ function fakeModel(): Model {
     model: "test-phase3-model",
     baseUrl: "https://provider.invalid/v1",
     secretEnvKey: "SPIELOS_TEST_LLM_KEY",
-    config: { capabilities: { contextWindow: 4096, maxOutputTokens: 1024 } },
+    config: { capabilities: { contextWindow: 4096, maxOutputTokens: 1024, toolCalling: true } },
     enabled: true
   };
 }
@@ -139,32 +141,34 @@ test("compileDirector builds one execute_workflow tool when an active workflow i
   assert.ok(workflowTool, "execute_workflow tool should be present");
 });
 
-test("compileDirector builds one tool per active non-LLM skill", () => {
+test("compileDirector binds only file-backed orchestrator and explicitly suggested skills", () => {
   const model = fakeModel();
   const skills = {
-    search: skillWith("skill-search", "search", "knowledge_search"),
-    rag: skillWith("skill-rag", "rag.file.read", "knowledge_search"),
-    ask: skillWith("skill-ask", "ask-the-user", "human_input"),
-    archived: skillWith("skill-archived", "archived", "knowledge_search")
+    "skill-search": skillWith("skill-search", "search", "knowledge_search"),
+    "skill-rag": skillWith("skill-rag", "rag.file.read", "knowledge_search"),
+    "skill-ask": skillWith("skill-ask", "ask-the-user", "human_input"),
+    "skill-archived": skillWith("skill-archived", "archived", "knowledge_search")
   };
-  skills.archived.status = "archived";
+  skills["skill-archived"].status = "archived";
+  const director = roleWith("role-orch", "Orchestrator", "orchestrator");
+  director.skillIds = ["skill-search", "skill-archived"];
   const compiled = compileDirector({
     orgId,
     runId: "run-1",
-    directorRole: roleWith("role-orch", "Orchestrator", "orchestrator"),
+    directorRole: director,
     roles: {},
     skills,
     workflows: {},
     evals: {},
     provider: { ...model },
     model,
-    suggestedHarnessRefs: [],
+    suggestedHarnessRefs: [{ type: "skill", id: "skill-ask" }],
     toolContext: noopToolContext()
   });
   const toolNames = compiled.tools.map((t) => t.name);
   assert.ok(toolNames.includes("execute_skill_search"));
-  assert.ok(toolNames.includes("execute_skill_rag_file_read"));
   assert.ok(toolNames.includes("execute_skill_ask_the_user"));
+  assert.ok(!toolNames.includes("execute_skill_rag_file_read"));
   assert.ok(!toolNames.includes("execute_skill_archived"));
 });
 
@@ -192,7 +196,7 @@ test("compileDirector skips LLM and artifact_create skills (they belong to roles
   assert.ok(!toolNames.includes("execute_skill_artifact"));
 });
 
-test("compileDirector builds one tool per active eval", () => {
+test("compileDirector binds an active eval only when explicitly suggested", () => {
   const model = fakeModel();
   const compiled = compileDirector({
     orgId,
@@ -216,7 +220,7 @@ test("compileDirector builds one tool per active eval", () => {
     },
     provider: { ...model },
     model,
-    suggestedHarnessRefs: [],
+    suggestedHarnessRefs: [{ type: "eval", id: "eval-1" }],
     toolContext: noopToolContext()
   });
   const toolNames = compiled.tools.map((t) => t.name);

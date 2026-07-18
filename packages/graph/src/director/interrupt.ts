@@ -42,3 +42,18 @@ export function resumePayloadFromReply(body: ReplyBody): Record<string, unknown>
     ? { ...body.answers }
     : {};
 }
+
+/** Convert the UI's typed approval answers back into LangChain HITL's native
+ * decision envelope. Non-approval interrupts retain their structured map. */
+export function directorResumePayload(answers: Record<string, unknown>): Record<string, unknown> {
+  const actionKeys = Object.keys(answers)
+    .filter((key) => /^action_\d+$/.test(key))
+    .sort((left, right) => Number(left.slice(7)) - Number(right.slice(7)));
+  if (actionKeys.length === 0) return { ...answers };
+  return {
+    decisions: actionKeys.map((key) => ({
+      type: answers[key] === "approve" ? "approve" : "reject",
+      ...(answers[key] === "approve" ? {} : { message: "Rejected by the user." })
+    }))
+  };
+}

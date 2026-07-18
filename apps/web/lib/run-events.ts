@@ -66,7 +66,9 @@ export function isStartEvent(event: RunEvent): boolean {
 
 function compactKey(event: RunEvent): string {
   if (event.type === "tool_call_started" || event.type === "tool_call_result") {
-    return `tool:${event.nodeId ?? ""}:${event.skillId ?? ""}`;
+    const callId = typeof event.payload?.callId === "string" ? event.payload.callId : null;
+    const operation = typeof event.payload?.operation === "string" ? event.payload.operation : null;
+    return `tool:${callId ?? `${event.nodeId ?? ""}:${event.skillId ?? operation ?? event.id}`}`;
   }
   if (event.type.startsWith("skill_")) return `skill:${event.nodeId ?? ""}:${event.skillId ?? event.id}`;
   if (event.type.startsWith("node_")) return `node:${event.nodeId ?? event.id}`;

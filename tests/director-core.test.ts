@@ -4,17 +4,19 @@ import { defaultInputContract, defaultOutputContract, type Model, type Role, typ
 import {
   buildDirectorSystemPrompt,
   compileDirector,
+  directorCompactionTrigger,
   historyToMessages
 } from "@spielos/graph/director/compile";
 import {
-  mapDirectorInterrupts,
-  mapDirectorMessages,
-  mapDirectorSubagents,
-  mapDirectorToolCalls
+  mapDirectorInterrupts
 } from "@spielos/graph/director/events";
+import { mapDirectorValues } from "@spielos/graph/director/values";
 import { DirectorUsageTracker } from "@spielos/graph/director/usage";
 import { commandFromReply, resumePayloadFromReply } from "@spielos/graph/director/interrupt";
 import { Command } from "@langchain/langgraph";
+import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
+
+process.env.SPIELOS_TEST_LLM_KEY = process.env.SPIELOS_TEST_LLM_KEY ?? "sk-test-fake-key-for-unit-tests";
 
 const orgId = "00000000-0000-0000-0000-000000000001";
 const role: Role = {
@@ -40,7 +42,7 @@ function fakeModel(): Model {
     model: "test-director-model",
     baseUrl: "https://provider.invalid/v1",
     secretEnvKey: "SPIELOS_TEST_LLM_KEY",
-    config: { capabilities: { contextWindow: 4096, maxOutputTokens: 1024 } },
+    config: { capabilities: { contextWindow: 4096, maxOutputTokens: 1024, toolCalling: true } },
     enabled: true
   };
 }
@@ -56,16 +58,24 @@ test("buildDirectorSystemPrompt falls back when no role is provided", () => {
   assert.equal(buildDirectorSystemPrompt(null, "fallback"), "fallback");
 });
 
-test("historyToMessages converts user/system/assistant into LangChain messages", () => {
+test("director compaction follows the resolved run budget instead of the model maximum", () => {
+  const model = fakeModel();
+  assert.equal(directorCompactionTrigger({ model, maxInputTokens: 48_000 }), 38_400);
+  assert.equal(directorCompactionTrigger({ model, maxInputTokens: null }), 2_457);
+});
+
+test("historyToMessages converts user/system/assistant/tool into LangChain messages", () => {
   const messages = historyToMessages([
     { role: "system", content: "You are helpful." },
     { role: "user", content: "Hello" },
-    { role: "assistant", content: "Hi!" }
+    { role: "assistant", content: "Hi!" },
+    { role: "tool", content: "result", name: "call_123" }
   ]);
-  assert.equal(messages.length, 3);
+  assert.equal(messages.length, 4);
   assert.equal(messages[0].getType(), "system");
   assert.equal(messages[1].getType(), "human");
-  assert.equal(messages[2].getType(), "human");
+  assert.equal(messages[2].getType(), "ai");
+  assert.equal(messages[3].getType(), "tool");
 });
 
 test("compileDirector requires a configured provider and model", () => {
@@ -104,7 +114,7 @@ test("compileDirector produces a deep agent with a system prompt and bound model
   assert.ok(compiled.model);
 });
 
-test("mapDirectorMessages yields text and emits usage events for the chat model stream", async () => {
+test("mapDirectorValues yields per-message deltas and native tool activity without duplication", async () => {
   const target = {
     orgId,
     runId: "run-1",
@@ -137,22 +147,74 @@ test("mapDirectorMessages yields text and emits usage events for the chat model 
       return event;
     }
   };
-  const handle = {
-    node: "agent",
-    namespace: ["agent"],
-    text: (async function* () {
-      yield "Hello ";
-      yield "world.";
-    })(),
-    usage: (async function* () {
-      yield { input_tokens: 3, output_tokens: 4, total_tokens: 7 };
-    })()
-  };
-  for await (const yield_ of mapDirectorMessages(targetWithCollect, (async function* () { yield handle; })())) {
+  const first = new AIMessage({
+    id: "message-1",
+    content: "Hello",
+    tool_calls: [{ id: "call-1", name: "read_file", args: { path: "/context/a.md" }, type: "tool_call" }]
+  });
+  const second = new AIMessage({
+    id: "message-1",
+    content: "Hello world",
+    tool_calls: [{ id: "call-1", name: "read_file", args: { path: "/context/a.md" }, type: "tool_call" }],
+    usage_metadata: { input_tokens: 3, output_tokens: 4, total_tokens: 7 }
+  });
+  const result = new ToolMessage({ id: "tool-1", content: "evidence", tool_call_id: "call-1" });
+  const child = new AIMessage({ id: "child-message", content: "private child synthesis" });
+  const tracker = new DirectorUsageTracker(() => {});
+  const source = (async function* () {
+    yield ["values", { messages: [first], todos: [{ content: "Read evidence", status: "in_progress" }] }];
+    yield [["task:child"], "values", { messages: [child], todos: [{ content: "Independent check", status: "in_progress" }] }];
+    yield ["values", { messages: [second, result], todos: [{ content: "Read evidence", status: "completed" }] }];
+    const summary = new HumanMessage({
+      id: "summary-1",
+      content: "Here is a summary of the conversation to date: evidence was read.",
+      additional_kwargs: { lc_source: "summarization" }
+    });
+    yield ["values", {
+      messages: [first, second, result],
+      todos: [{ content: "Read evidence", status: "completed" }],
+      _summarizationSessionId: "session-1",
+      _summarizationEvent: { cutoffIndex: 2, summaryMessage: summary, filePath: "/conversation_history/session-1.md" }
+    }];
+  })();
+  for await (const yield_ of mapDirectorValues(targetWithCollect, source, tracker, () => null)) {
     if (yield_.kind === "text") collected.push(yield_.text);
   }
-  assert.deepEqual(collected, ["Hello ", "world."]);
-  assert.ok(emitted.some((event) => event.type === "status" && event.payload?.category === "usage"));
+  assert.deepEqual(collected, ["Hello", " world"]);
+  assert.equal(emitted.filter((event) => event.type === "tool_call_started").length, 1);
+  assert.equal(emitted.filter((event) => event.type === "tool_call_result").length, 1);
+  assert.ok(emitted.some((event) => event.type === "status" && event.payload?.category === "planning"));
+  assert.ok(emitted.some((event) => event.type === "status" && event.payload?.category === "compaction"));
+  assert.ok(!collected.join("").includes("private child synthesis"));
+  assert.deepEqual(tracker.snapshot(), { input: 3, output: 4 });
+});
+
+test("mapDirectorValues does not mistake a shorter values snapshot for compaction", async () => {
+  const emitted: import("@spielos/core").RunEvent[] = [];
+  const tracker = new DirectorUsageTracker(() => {});
+  const buildCheckpoint = (state: import("@spielos/graph/director/events").DirectorStateSnapshot) => ({
+    completedNodes: [], outputs: {}, artifacts: [], events: [], evalAttempts: {},
+    pendingHumanInput: null, status: "running" as const, failed: false,
+    failedNode: null, error: null, retryNodeId: null,
+    longHorizon: state.longHorizon, goal: state.goal, budget: state.budget,
+    progress: state.progress, verification: state.verification
+  });
+  const source = (async function* () {
+    yield ["values", { messages: [new HumanMessage("one"), new AIMessage("two")] }];
+    yield ["values", { messages: [new AIMessage("two")] }];
+  })();
+  for await (const _ of mapDirectorValues({
+    orgId,
+    runId: "run-no-false-compaction",
+    emitEvent: (event) => {
+      emitted.push(event);
+      return event;
+    },
+    buildCheckpoint
+  }, source, tracker, () => null)) {
+    // Drain native values.
+  }
+  assert.equal(emitted.filter((event) => event.payload?.category === "compaction").length, 0);
 });
 
 test("mapDirectorInterrupts converts a LangGraph interrupt payload into a HumanInputRequest", () => {
@@ -194,6 +256,27 @@ test("mapDirectorInterrupts converts a LangGraph interrupt payload into a HumanI
   assert.equal(request.nodeId, "director");
 });
 
+test("mapDirectorInterrupts preserves native LangChain approval actions", () => {
+  const target = {
+    orgId,
+    runId: "run-approval",
+    emitEvent: (event: import("@spielos/core").RunEvent) => event,
+    buildCheckpoint: () => { throw new Error("not used"); }
+  };
+  const request = mapDirectorInterrupts(target, [{
+    id: "approval-1",
+    value: {
+      actionRequests: [{ name: "execute_skill_send", args: { input: "send" }, description: "Send the message?" }],
+      reviewConfigs: [{ actionName: "execute_skill_send", allowedDecisions: ["approve", "reject"] }]
+    }
+  }]);
+  assert.ok(request);
+  assert.equal(request.id, "approval-1");
+  assert.equal(request.questions[0].question, "Send the message?");
+  assert.deepEqual(request.questions[0].options?.map((option) => option.id), ["approve", "reject"]);
+  assert.equal(request.metadata?.nativeType, "langgraph_hitl");
+});
+
 test("mapDirectorInterrupts returns null when the payload is empty or malformed", () => {
   const target = {
     orgId,
@@ -223,103 +306,6 @@ test("mapDirectorInterrupts returns null when the payload is empty or malformed"
   assert.equal(mapDirectorInterrupts(target, [{ value: "not a question" }]), null);
 });
 
-test("mapDirectorToolCalls emits a tool_call_started event for every call", async () => {
-  const emitted: import("@spielos/core").RunEvent[] = [];
-  const target = {
-    orgId,
-    runId: "run-1",
-    emitEvent: (event: import("@spielos/core").RunEvent) => {
-      emitted.push(event);
-      return event;
-    },
-    buildCheckpoint: (state: import("@spielos/graph/director/events").DirectorStateSnapshot) => ({
-      completedNodes: [],
-      outputs: {},
-      artifacts: [],
-      events: [],
-      evalAttempts: {},
-      pendingHumanInput: null,
-      status: "running" as const,
-      failed: false,
-      failedNode: null,
-      error: null,
-      retryNodeId: null,
-      longHorizon: state.longHorizon,
-      goal: state.goal,
-      budget: state.budget,
-      progress: state.progress,
-      verification: state.verification
-    })
-  };
-  const calls: AsyncIterable<{
-    name: string;
-    callId: string;
-    input: unknown;
-    output: Promise<unknown>;
-    status: Promise<"running" | "finished" | "error">;
-    error: Promise<string | undefined>;
-  }> = (async function* () {
-    yield {
-      name: "knowledge.search",
-      callId: "call-1",
-      input: { q: "What is a Director?" },
-      output: Promise.resolve("A Director orchestrates."),
-      status: Promise.resolve("finished"),
-      error: Promise.resolve(undefined)
-    };
-  })();
-  for await (const _yield_ of mapDirectorToolCalls(target, calls)) {
-    void _yield_;
-  }
-  assert.ok(emitted.some((event) => event.type === "tool_call_started" && event.payload?.operation === "knowledge.search"));
-  assert.ok(emitted.some((event) => event.type === "tool_call_result" && event.payload?.success === true));
-});
-
-test("mapDirectorSubagents recurses through nested delegation", async () => {
-  const emitted: import("@spielos/core").RunEvent[] = [];
-  const target = {
-    orgId,
-    runId: "run-1",
-    emitEvent: (event: import("@spielos/core").RunEvent) => {
-      emitted.push(event);
-      return event;
-    },
-    buildCheckpoint: (state: import("@spielos/graph/director/events").DirectorStateSnapshot) => ({
-      completedNodes: [],
-      outputs: {},
-      artifacts: [],
-      events: [],
-      evalAttempts: {},
-      pendingHumanInput: null,
-      status: "running" as const,
-      failed: false,
-      failedNode: null,
-      error: null,
-      retryNodeId: null,
-      longHorizon: state.longHorizon,
-      goal: state.goal,
-      budget: state.budget,
-      progress: state.progress,
-      verification: state.verification
-    })
-  };
-  const source = (async function* () {
-    yield {
-      name: "general-purpose",
-      cause: undefined,
-      output: Promise.resolve({}),
-      messages: (async function* () { yield { node: "child-agent", namespace: ["child-agent"], text: (async function* () { yield "child response"; })(), usage: (async function* () {})() }; })(),
-      toolCalls: (async function* () {})(),
-      subagents: (async function* () {})()
-    };
-  })();
-  for await (const _yield_ of mapDirectorSubagents(target, source)) {
-    void _yield_;
-  }
-  assert.ok(emitted.some((event) => event.type === "status" && event.payload?.category === "subagent_entered"));
-  assert.ok(emitted.some((event) => event.type === "status" && event.payload?.category === "subagent_exited"));
-});
-
 test("DirectorUsageTracker folds once and ignores later folds", () => {
   let calls = 0;
   const tracker = new DirectorUsageTracker(() => { calls += 1; });
@@ -327,8 +313,8 @@ test("DirectorUsageTracker folds once and ignores later folds", () => {
   tracker.record({ input_tokens: 4, output_tokens: 9 });
   const first = tracker.foldOnce();
   const second = tracker.foldOnce();
-  assert.deepEqual(first, { input: 5, output: 9 });
-  assert.deepEqual(second, { input: 5, output: 9 });
+  assert.deepEqual(first, { input: 9, output: 12 });
+  assert.deepEqual(second, { input: 9, output: 12 });
   assert.equal(calls, 1);
 });
 

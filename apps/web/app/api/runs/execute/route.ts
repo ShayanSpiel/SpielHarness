@@ -15,8 +15,8 @@ import {
   linkRunOutputFile,
   recordUsage,
   updateChatMetadata,
-  updateRun,
   upsertRunMetrics,
+  CheckpointVersionMismatch,
   type InstrumentedSql,
   type RunEventInput
 } from "@spielos/db";
@@ -24,9 +24,11 @@ import { errorResponse, getOrg, HttpError, requireWrite } from "../../../../lib/
 import { resolveExecution, type ExecuteBody } from "../../../../lib/execution-service";
 import { generatedFileFolder } from "../../../../lib/workspace-data";
 import { streamChatRun, streamRun, streamDirectorRun, type RunCheckpoint, type RunYield } from "@spielos/graph";
+import { buildPostgresSaver } from "@spielos/graph/director/checkpointer";
 import { registerRun, onRunSignal } from "../../../../lib/run-registry";
 import { publishDomainEvent } from "../../../../lib/realtime";
 import { buildDirectorToolContext, workflowsForDirector } from "../../../../lib/director-tools";
+import { authDatabasePool } from "../../../../lib/auth";
 import type { RunEvent, RunStatus, ExecutionMode } from "@spielos/core";
 
 function frame(data: unknown): string {
@@ -101,7 +103,7 @@ export async function POST(request: Request) {
         modelId: body.modelId ?? null,
         reasoningEffort: body.reasoningEffort ?? null,
         goal: body.goal ?? { objective: body.prompt, constraints: [], successCriteria: ["Return a grounded result."] },
-        budget: body.budget ?? {},
+        budget: resolved.runRequest.budget ?? {},
         projectId: project?.id ?? null,
         executionMode: resolved.executionMode,
         suggestedHarnessRefs: resolved.suggestedHarnessRefs
@@ -114,8 +116,13 @@ export async function POST(request: Request) {
         skills: resolved.runRequest.skills,
         workspaceInstructions: resolved.runRequest.workspaceInstructions,
         memories: resolved.runRequest.memories,
+        files: resolved.runRequest.files,
+        connections: resolved.runRequest.connections,
+        workflows: resolved.workflows,
+        evals: resolved.evals,
         provider: resolved.runRequest.provider,
-        model: resolved.runRequest.model
+        model: resolved.runRequest.model,
+        directorRuntimePolicy: resolved.directorRuntimePolicy
       },
       idempotencyKey
     });
@@ -139,6 +146,14 @@ export async function POST(request: Request) {
         activeRunId: run.id,
         lastRunId: run.id,
         executionMode: resolved.executionMode,
+        modelId: body.modelId ?? null,
+        reasoningEffort: body.reasoningEffort ?? "auto",
+        contextItems: Array.isArray(body.chatContextItems)
+          ? body.chatContextItems.flatMap((item) => {
+              if (!item || typeof item.id !== "string" || typeof item.kind !== "string" || typeof item.title !== "string") return [];
+              return [{ id: item.id, kind: item.kind, title: item.title }];
+            })
+          : [],
         ...(project ? {
           activeProject: {
             id: project.id,
@@ -159,8 +174,44 @@ export async function POST(request: Request) {
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
+        // The HTTP reader is only a viewer of the durable run. Navigating or
+        // reloading may detach that viewer, but must not cancel the LangGraph
+        // execution. Explicit cancellation travels through /cancel instead.
+        let clientConnected = !request.signal.aborted;
+        const send = (value: unknown) => {
+          if (!clientConnected) return;
+          try {
+            controller.enqueue(encoder.encode(frame(value)));
+          } catch {
+            clientConnected = false;
+          }
+        };
+        const disconnectClient = () => { clientConnected = false; };
+        request.signal.addEventListener("abort", disconnectClient, { once: true });
         let firstByteSent = false;
-        controller.enqueue(encoder.encode(frame({ kind: "run", runId: run.id, type: resolved.type })));
+        send({ kind: "run", runId: run.id, type: resolved.type });
+        send({ kind: "status", message: "Thinking\u2026" });
+        const startedAt = new Date().toISOString();
+        const maxDurationMs = resolved.runRequest.budget?.maxDurationMs ?? null;
+        // This is the resolved, file-backed budget already persisted in the
+        // run input. Send it before provider work begins so the inspector
+        // never briefly substitutes the model's broader context window.
+        send({
+          kind: "run_state",
+          state: {
+            budget: {
+              maxInputTokens: resolved.runRequest.budget?.maxInputTokens ?? null,
+              maxOutputTokens: resolved.runRequest.budget?.maxOutputTokens ?? null,
+              maxDurationMs,
+              maxToolCalls: resolved.runRequest.budget?.maxToolCalls ?? null,
+              inputTokens: 0,
+              outputTokens: 0,
+              toolCalls: 0,
+              startedAt,
+              deadlineAt: maxDurationMs ? new Date(Date.parse(startedAt) + maxDurationMs).toISOString() : null
+            }
+          }
+        });
         let outputText = "";
         let terminalStatus: RunStatus = "completed";
         let errorMessage: string | null = null;
@@ -181,12 +232,12 @@ export async function POST(request: Request) {
           if (firstProviderByteAt === null) firstProviderByteAt = performance.now();
           billableUsage.input += next.input;
           billableUsage.output += next.output;
-          usage.input = Math.max(usage.input, next.input);
-          usage.output = Math.max(usage.output, next.output);
-          controller.enqueue(encoder.encode(frame({
+          usage.input += next.input;
+          usage.output += next.output;
+          send({
             kind: "usage",
             usage: { inputTokens: usage.input, outputTokens: usage.output, toolCalls: usage.tools }
-          })));
+          });
           publishDomainEvent(`run:${run.id}`, {
             type: "run.usage.updated",
             orgId: org.orgId,
@@ -200,14 +251,15 @@ export async function POST(request: Request) {
         const onToolUsage = (count: number) => {
           if (firstProviderByteAt === null) firstProviderByteAt = performance.now();
           const next = usage.tools + count;
-          if (body.budget?.maxToolCalls && next > body.budget.maxToolCalls) {
-            throw new Error(`Tool-call budget exceeded (${body.budget.maxToolCalls}).`);
+          const maximum = resolved.runRequest.budget?.maxToolCalls;
+          if (maximum && next > maximum) {
+            throw new Error(`Tool-call budget exceeded (${maximum}).`);
           }
           usage.tools = next;
-          controller.enqueue(encoder.encode(frame({
+          send({
             kind: "usage",
             usage: { inputTokens: usage.input, outputTokens: usage.output, toolCalls: usage.tools }
-          })));
+          });
         };
         const liveEventIds = new Set<string>();
         const queuedEventIds = new Set<string>();
@@ -222,7 +274,8 @@ export async function POST(request: Request) {
             skill_id: event.skillId ?? null,
             skill_name: event.skillName ?? null,
             message: event.message,
-            payload: event.payload ?? {}
+            payload: event.payload ?? {},
+            event_key: event.id
           });
         };
         // Phase 2.5: events are persisted atomically with the run state.
@@ -256,6 +309,13 @@ export async function POST(request: Request) {
             }
           } catch (checkpointError) {
             if (batch.length > 0) queuedEvents.unshift(...batch);
+            if (checkpointError instanceof CheckpointVersionMismatch) {
+              const latest = await getRun(sql, org.orgId, run.id);
+              if (latest?.cancel_requested_at || latest?.status === "cancelled" || latest?.pause_requested_at || latest?.status === "waiting_human") {
+                checkpointVersion = Number(latest.checkpoint_version ?? checkpointVersion);
+                return;
+              }
+            }
             console.error("[runs/execute] atomic checkpoint failed:", checkpointError);
             throw checkpointError;
           }
@@ -263,7 +323,7 @@ export async function POST(request: Request) {
         const onEvent = (event: RunEvent) => {
           liveEventIds.add(event.id);
           queueEvent(event);
-          controller.enqueue(encoder.encode(frame({ kind: "event", event })));
+          send({ kind: "event", event });
           publishDomainEvent(`run:${run.id}`, {
             type: "run.event.appended",
             orgId: org.orgId,
@@ -274,9 +334,6 @@ export async function POST(request: Request) {
           });
         };
         const executionController = new AbortController();
-        const abortFromRequest = () => executionController.abort(request.signal.reason);
-        if (request.signal.aborted) abortFromRequest();
-        else request.signal.addEventListener("abort", abortFromRequest, { once: true });
 
         // Phase 3: register the controller so cancel/pause routes can
         // signal this run from another request. The local signal is the
@@ -300,7 +357,13 @@ export async function POST(request: Request) {
           return null;
         };
 
-        const systemPrompt = resolved.directorPrompt ?? "";
+        const resolvedExecutionMode: ExecutionMode = resolved.executionMode;
+        const isDirectorChat = resolvedExecutionMode === "director"
+          && resolved.type === "chat"
+          && !resolved.runRequest.singleNode;
+        const systemPrompt = isDirectorChat
+          ? resolved.directorPrompt
+          : resolved.assistantPrompt;
         if (systemPrompt) {
           systemPromptTokensEstimate = Math.ceil(systemPrompt.length / 4);
         }
@@ -319,12 +382,9 @@ export async function POST(request: Request) {
         // interrupts. It uses the same SSE protocol and the same
         // RunYield shape; the route does not maintain a second
         // parser.
-        const resolvedExecutionMode: ExecutionMode = resolved.executionMode;
-        const isDirectorChat = resolvedExecutionMode === "director"
-          && resolved.type === "chat"
-          && !resolved.runRequest.singleNode;
-        const gen: AsyncGenerator<RunYield, void, void> = isDirectorChat
-          ? streamDirectorRun({
+        try {
+          const gen: AsyncGenerator<RunYield, void, void> = isDirectorChat
+            ? streamDirectorRun({
               ...resolved.runRequest,
               runId: run.id,
               directorPrompt: resolved.directorPrompt,
@@ -332,21 +392,15 @@ export async function POST(request: Request) {
               previousCompaction: body.previousCompaction,
               chatMetadata: chat?.metadata ?? {},
               goal: body.goal,
-              budget: body.budget,
+              budget: resolved.runRequest.budget,
               onUsage,
+              onToolUsage,
               signal: executionController.signal,
               checkControl,
-              directorWorkflows: workflowsForDirector(
-                Object.fromEntries(
-                  Object.entries(resolved.runRequest.roles ?? {})
-                    .map((roleId) => {
-                      const workflow = resolved.runRequest.workflow;
-                      if (workflow) return [workflow.id, workflow] as const;
-                      return [roleId, null] as const;
-                    })
-                    .filter((entry): entry is readonly [string, import("@spielos/core").WorkflowFile] => entry[1] !== null)
-                )
-              ),
+              directorThreadId: chatId ?? run.id,
+              directorCheckpointer: await buildPostgresSaver(process.env.DATABASE_URL?.trim() || null, "public", authDatabasePool),
+              directorWorkflows: workflowsForDirector(resolved.workflows),
+              directorEvals: resolved.evals,
               directorToolContext: buildDirectorToolContext({
                 sql,
                 orgId: org.orgId,
@@ -357,33 +411,37 @@ export async function POST(request: Request) {
                 projectId: project?.id ?? null,
                 roles: resolved.runRequest.roles,
                 skills: resolved.runRequest.skills,
-                workflows: resolved.runRequest.workflow
-                  ? { [resolved.runRequest.workflow.id]: resolved.runRequest.workflow }
-                  : {},
-                evals: {},
+                workflows: resolved.workflows,
+                evals: resolved.evals,
                 provider: resolved.runRequest.provider,
                 model: resolved.runRequest.model,
+                files: resolved.runRequest.files,
+                searchableFiles: resolved.directorSearchFiles,
+                workspaceInstructions: resolved.runRequest.workspaceInstructions ?? [],
+                memories: resolved.runRequest.memories ?? [],
+                connections: resolved.runRequest.connections,
                 harnessFileAction: resolved.runRequest.harnessFileAction,
-                memoryProposalAction: resolved.runRequest.memoryProposalAction
+                memoryProposalAction: resolved.runRequest.memoryProposalAction,
+                runtimePolicy: resolved.directorRuntimePolicy,
+                signal: executionController.signal
               })
             })
           : resolved.type === "chat" && !resolved.runRequest.singleNode
             ? streamChatRun({
                 ...resolved.runRequest,
                 runId: run.id,
-                directorPrompt: resolved.directorPrompt,
+                assistantPrompt: resolved.assistantPrompt,
                 history: body.messages,
                 previousCompaction: body.previousCompaction,
                 chatMetadata: chat?.metadata ?? {},
                 goal: body.goal,
-                budget: body.budget,
+                budget: resolved.runRequest.budget,
                 onUsage,
                 signal: executionController.signal,
                 checkControl
               })
-            : streamRun({ ...resolved.runRequest, runId: run.id, chatMetadata: chat?.metadata ?? {}, goal: body.goal, budget: body.budget, onUsage, onToolUsage, onEvent, signal: executionController.signal, checkControl });
+            : streamRun({ ...resolved.runRequest, runId: run.id, chatMetadata: chat?.metadata ?? {}, goal: body.goal, budget: resolved.runRequest.budget, onUsage, onToolUsage, onEvent, signal: executionController.signal, checkControl });
 
-        try {
           for await (const item of gen) {
             if (!firstByteSent) {
               firstByteSent = true;
@@ -393,10 +451,10 @@ export async function POST(request: Request) {
               if (firstProviderByteAt === null) firstProviderByteAt = performance.now();
               outputText += item.text;
               if (firstClientByteAt === null) firstClientByteAt = performance.now();
-              controller.enqueue(encoder.encode(frame({ kind: "text", text: item.text })));
+              send({ kind: "text", text: item.text });
             } else if (item.kind === "status") {
               if (firstProviderByteAt === null) firstProviderByteAt = performance.now();
-              controller.enqueue(encoder.encode(frame({ kind: "status", message: item.message })));
+              send({ kind: "status", message: item.message });
             } else if (item.kind === "event") {
               if (firstProviderByteAt === null) firstProviderByteAt = performance.now();
               if (item.event.type === "status" && item.event.payload?.category === "compaction") {
@@ -413,11 +471,19 @@ export async function POST(request: Request) {
               }
               queueEvent(item.event);
               if (!liveEventIds.has(item.event.id)) {
-                controller.enqueue(encoder.encode(frame({ kind: "event", event: item.event })));
+                send({ kind: "event", event: item.event });
+                publishDomainEvent(`run:${run.id}`, {
+                  type: "run.event.appended",
+                  orgId: org.orgId,
+                  runId: run.id,
+                  eventId: item.event.id,
+                  eventType: item.event.type,
+                  ts: new Date().toISOString()
+                });
               }
               if (queuedEvents.length >= 12) await flushAtomicCheckpoint();
             } else if (item.kind === "artifact") {
-              controller.enqueue(encoder.encode(frame({ kind: "artifact", artifact: item.artifact })));
+              send({ kind: "artifact", artifact: item.artifact });
               try {
                 const file = await createFile(sql, org.orgId, {
                   title: item.artifact.title,
@@ -436,11 +502,11 @@ export async function POST(request: Request) {
               }
             } else if (item.kind === "human_input") {
               terminalStatus = "waiting_human";
-              controller.enqueue(encoder.encode(frame({ kind: "human_input", request: item.request })));
+              send({ kind: "human_input", request: item.request });
             } else if (item.kind === "checkpoint") {
               checkpoint = item.state;
               await flushAtomicCheckpoint(checkpoint);
-              controller.enqueue(encoder.encode(frame({
+              send({
                 kind: "run_state",
                 state: {
                   goal: checkpoint.goal,
@@ -448,7 +514,7 @@ export async function POST(request: Request) {
                   progress: checkpoint.progress,
                   verification: checkpoint.verification
                 }
-              })));
+              });
             } else if (item.kind === "done") {
               const allowed: RunStatus[] = ["running", "waiting_human", "completed", "failed", "cancelled"];
               terminalStatus = (allowed.includes(item.status as RunStatus) ? item.status : "completed") as RunStatus;
@@ -465,16 +531,16 @@ export async function POST(request: Request) {
         } catch (err) {
           errorMessage = err instanceof Error ? err.message : "Run failed";
           const durable = await getRun(sql, org.orgId, run.id);
-          if (request.signal.aborted || durableCancel || executionController.signal.aborted) {
+          if (durableCancel || executionController.signal.aborted) {
             terminalStatus = "cancelled";
             if (durable?.state) checkpoint = durable.state as RunCheckpoint;
             errorMessage = null;
           } else {
             terminalStatus = "failed";
-            controller.enqueue(encoder.encode(frame({ kind: "error", message: errorMessage })));
+            send({ kind: "error", message: errorMessage });
           }
         } finally {
-          request.signal.removeEventListener("abort", abortFromRequest);
+          request.signal.removeEventListener("abort", disconnectClient);
           unregister();
           signalListener();
           // Best-effort drain. The final atomic checkpoint below is the
@@ -494,7 +560,7 @@ export async function POST(request: Request) {
               ...checkpoint.budget,
               inputTokens: usage.input || checkpoint.budget.inputTokens,
               outputTokens: usage.output || checkpoint.budget.outputTokens,
-              toolCalls: usage.tools
+              toolCalls: Math.max(usage.tools, checkpoint.budget.toolCalls)
             }
           };
         }
@@ -522,31 +588,62 @@ export async function POST(request: Request) {
         // status, and any remaining events in one transaction. On a
         // process crash here, the next call to getRun sees the prior
         // checkpoint and the next atomicCheckpoint picks up from there.
+        // Re-read the current checkpoint version from DB so a concurrent
+        // cancel (which bumps the version via its own atomicCheckpoint)
+        // doesn't cause a CheckpointVersionMismatch.
+        const finalRun = await getRun(sql, org.orgId, run.id);
+        if (finalRun?.cancel_requested_at || finalRun?.status === "cancelled") {
+          terminalStatus = "cancelled";
+          errorMessage = null;
+          if (finalRun.state) checkpoint = finalRun.state as RunCheckpoint;
+          // The cancel endpoint already persisted the authoritative terminal
+          // event. Do not append buffered activity after that event.
+          queuedEvents.length = 0;
+        } else if (finalRun?.pause_requested_at || finalRun?.status === "waiting_human") {
+          terminalStatus = "waiting_human";
+          errorMessage = null;
+          if (finalRun.state) checkpoint = finalRun.state as RunCheckpoint;
+        }
+        const finalCheckpointVersion = Number(finalRun?.checkpoint_version ?? checkpointVersion);
+        const finalEvents = queuedEvents.splice(0, queuedEvents.length);
         try {
           const finalResult = await atomicCheckpoint(sql, org.orgId, run.id, {
-            events: queuedEvents.splice(0, queuedEvents.length),
+            events: finalEvents,
             state: { ...(checkpoint ?? {}), _timings: timings },
             outputs: { text: outputText },
             status: terminalStatus,
             error: errorMessage,
             completedAt,
-            expectedCheckpointVersion: checkpointVersion
+            expectedCheckpointVersion: finalCheckpointVersion
           });
           checkpointVersion = finalResult.checkpointVersion;
         } catch (finalError) {
-          // Fall back to a non-transactional update so the run still
-          // reaches a terminal state. The events that were about to be
-          // persisted are dropped, but the run status is what callers
-          // observe via SSE; the lost events are recovered on resume
-          // through the durable state.
-          console.error("[runs/execute] final atomic checkpoint failed, falling back:", finalError);
-          await updateRun(sql, org.orgId, run.id, {
-            status: terminalStatus,
-            outputs: { text: outputText },
-            state: { ...(checkpoint ?? {}), _timings: timings },
-            error: errorMessage,
-            completedAt
-          });
+          // A concurrent durable control write may advance the optimistic
+          // version between the pre-final read and this transaction. Re-read
+          // once, preserve its authoritative terminal/waiting state, and retry
+          // through the same atomic persistence authority.
+          const latest = await getRun(sql, org.orgId, run.id);
+          if (latest?.cancel_requested_at || latest?.status === "cancelled") {
+            terminalStatus = "cancelled";
+            errorMessage = null;
+          } else if (latest?.pause_requested_at || latest?.status === "waiting_human") {
+            terminalStatus = "waiting_human";
+            errorMessage = null;
+          }
+          try {
+            const retryResult = await atomicCheckpoint(sql, org.orgId, run.id, {
+              events: finalEvents,
+              state: { ...(checkpoint ?? {}), _timings: timings },
+              outputs: { text: outputText },
+              status: terminalStatus,
+              error: errorMessage,
+              completedAt: terminalStatus === "waiting_human" ? null : completedAt,
+              expectedCheckpointVersion: Number(latest?.checkpoint_version ?? finalCheckpointVersion)
+            });
+            checkpointVersion = retryResult.checkpointVersion;
+          } catch (retryError) {
+            console.error("[runs/execute] final atomic checkpoint failed:", finalError, retryError);
+          }
         }
         if (chatId && compaction && resolved.type === "chat") {
           await updateChatMetadata(sql, org.orgId, chatId, { compaction });
@@ -563,7 +660,9 @@ export async function POST(request: Request) {
         }
         if (chatId) {
           await updateChatMetadata(sql, org.orgId, chatId, {
-            activeRunId: terminalStatus === "completed" ? null : run.id,
+            // Only resumable runs are active. Keeping failed or cancelled ids
+            // here made a later chat hydration present a terminal run as live.
+            activeRunId: terminalStatus === "waiting_human" ? run.id : null,
             lastRunId: run.id
           });
         }
@@ -663,7 +762,7 @@ export async function POST(request: Request) {
         }
 
         if (checkpoint) {
-          controller.enqueue(encoder.encode(frame({
+          send({
             kind: "run_state",
             state: {
               goal: checkpoint.goal,
@@ -671,11 +770,13 @@ export async function POST(request: Request) {
               progress: checkpoint.progress,
               verification: checkpoint.verification
             }
-          })));
+          });
         }
 
-        controller.enqueue(encoder.encode(frame({ kind: "done", runId: run.id, status: terminalStatus })));
-        controller.close();
+        send({ kind: "done", runId: run.id, status: terminalStatus });
+        if (clientConnected) {
+          try { controller.close(); } catch { /* reader detached */ }
+        }
       }
     });
 

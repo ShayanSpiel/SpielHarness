@@ -13,6 +13,7 @@
 
   "system/rules.md": { "fileType": "prompt", "slug": "pipeline-rules", "folder": "Prompts" },
   "system/orchestrator-prompt.md": { "fileType": "prompt", "slug": "orchestrator-prompt", "systemRole": "orchestrator", "folder": "Prompts" },
+  "system/director-runtime-policy.json": { "fileType": "strategy", "slug": "director-runtime-policy", "folder": "Strategy", "workspaceConfig": true, "runtimePolicy": true },
   "system/post-command.md": { "fileType": "prompt", "slug": "post-command", "folder": "Prompts" },
 
   "agents/orchestrator.md": { "slug": "orchestrator", "systemRole": "orchestrator", "skillSlugs": ["knowledge.search", "rag.file.read", "harness.create-draft", "harness.update-draft"], "contextSlugs": ["workspace-identity", "pipeline-rules", "orchestrator-prompt"] },
