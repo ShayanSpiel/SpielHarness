@@ -409,7 +409,7 @@ export default function WorkflowsPage() {
                   {draft.status === "active" ? "Enabled" : "Disabled"}
                 </Pill>
               </div>
-              <div className="ml-auto flex items-center gap-1.5">
+              <div className="ms-auto flex items-center gap-1.5">
                 <Button
                   icon="play"
                   loading={running}
@@ -449,7 +449,7 @@ export default function WorkflowsPage() {
                   </Field>
                 </div>
                 <div className="flex h-10 w-full shrink-0 items-center gap-2 overflow-x-auto border-b border-border px-3">
-                  <span className="mr-2 shrink-0 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  <span className="me-2 shrink-0 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
                     Steps
                   </span>
                   {store.roles.map((role) => {

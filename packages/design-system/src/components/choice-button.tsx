@@ -22,7 +22,7 @@ export const ChoiceButton = forwardRef<HTMLButtonElement, ChoiceButtonProps>(fun
       aria-checked={selectionMode === "action" ? undefined : selected}
       aria-pressed={selectionMode === "action" ? selected : undefined}
       className={cn(
-        "group flex w-full items-start gap-2.5 rounded-md px-3 py-2 text-left transition-colors duration-[var(--duration)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:pointer-events-none disabled:bg-[var(--disabled-surface)] disabled:text-[var(--disabled-foreground)]",
+        "group flex w-full items-start gap-2.5 rounded-md px-3 py-2 text-start transition-colors duration-[var(--duration)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:pointer-events-none disabled:bg-[var(--disabled-surface)] disabled:text-[var(--disabled-foreground)]",
         selected
           ? "bg-selected text-foreground-strong"
           : "bg-transparent text-foreground hover:bg-hover",

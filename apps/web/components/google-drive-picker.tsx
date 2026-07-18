@@ -202,7 +202,7 @@ export function GoogleDrivePicker() {
               Google Drive
             </span>
             {status.account && (
-              <span className="ml-auto min-w-0 truncate text-2xs text-muted-foreground">
+              <span className="ms-auto min-w-0 truncate text-2xs text-muted-foreground">
                 {status.account}
               </span>
             )}
@@ -223,7 +223,7 @@ export function GoogleDrivePicker() {
                 {files.map((file) => (
                   <li key={file.id}>
                     <button
-                      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${
+                      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-start text-sm ${
                         selectedFile?.id === file.id
                           ? "bg-selected text-foreground-strong"
                           : "text-foreground-muted hover:bg-hover hover:text-foreground"
@@ -260,7 +260,7 @@ export function GoogleDrivePicker() {
                 {selectedFile.modifiedTime && (
                   <span className="hidden shrink-0 text-muted-foreground xl:inline">{formatDate(selectedFile.modifiedTime)}</span>
                 )}
-                <div className="ml-auto flex shrink-0 items-center gap-1">
+                <div className="ms-auto flex shrink-0 items-center gap-1">
                   <Button
                     aria-label="Import to workspace"
                     onClick={() => importToWorkspace(selectedFile)}

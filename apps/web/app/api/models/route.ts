@@ -50,7 +50,9 @@ export async function GET() {
   try {
     const org = await getOrg();
     const models = await listModelsWithEnvironmentDefaults(org.sql, org.orgId);
-    return Response.json({ models: models.map(toClient) });
+    return Response.json({ models: models.map(toClient) }, {
+      headers: { "Cache-Control": "private, max-age=60, stale-while-revalidate=300" }
+    });
   } catch (err) {
     console.error("[api/models] GET failed:", err);
     return errorResponse(err);

@@ -15,7 +15,7 @@ export function PageHeader({ icon, title, actions, children, className }: PageHe
   return (
     <header
       className={cn(
-        "flex h-10 shrink-0 items-center gap-3 border-b border-border px-4",
+        "flex h-9 shrink-0 items-center gap-2 border-b border-border px-3",
         className
       )}
     >
@@ -24,7 +24,7 @@ export function PageHeader({ icon, title, actions, children, className }: PageHe
       </div>
       <h1 className="truncate text-sm font-semibold text-foreground">{title}</h1>
       {children}
-      {actions ? <div className="ml-auto flex items-center gap-1.5">{actions}</div> : null}
+      {actions ? <div className="ms-auto flex items-center gap-1.5">{actions}</div> : null}
     </header>
   );
 }

@@ -249,7 +249,7 @@ export default function RolesPage() {
                   {draft.status === "active" ? "Enabled" : "Disabled"}
                 </Pill>
               </div>
-              <div className="ml-auto flex items-center gap-1.5">
+              <div className="ms-auto flex items-center gap-1.5">
                 <ToggleRow
                   checked={draft.status === "active"}
                   description={draft.status === "active" ? "Enabled" : "Disabled"}
@@ -316,7 +316,7 @@ export default function RolesPage() {
                   <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-panel-raised px-3">
                      <Icon name="file-text" className="text-muted-foreground" size={14} />
                     <span className="text-xs font-medium text-foreground">System Prompt</span>
-                    <div className="ml-auto flex items-center gap-2 text-3xs text-muted-foreground">
+                    <div className="ms-auto flex items-center gap-2 text-3xs text-muted-foreground">
                       <span>{draft.prompt.length} chars</span>
                       <span className="select-none">@ to mention</span>
                     </div>
@@ -494,7 +494,7 @@ function ContractEditor({
               <div className="flex h-8 items-center gap-2 border-b border-border bg-panel-raised px-2">
                 <Pill className="text-3xs">{contract.format}</Pill>
                 <span className="text-3xs text-muted-foreground">{contract.body.length} chars</span>
-                <span className="ml-auto text-3xs text-muted-foreground select-none">
+                <span className="ms-auto text-3xs text-muted-foreground select-none">
                   @ to mention
                 </span>
               </div>

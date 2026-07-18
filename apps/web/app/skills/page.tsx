@@ -187,7 +187,7 @@ export default function SkillsPage() {
                   {draft.status === "active" ? "Enabled" : "Disabled"}
                 </Pill>
               </div>
-              <div className="ml-auto flex items-center gap-1.5">
+              <div className="ms-auto flex items-center gap-1.5">
                 {!isNew ? (
                   <Tooltip content="Delete skill" side="bottom">
                     <Button aria-label="Delete skill" icon="trash" onClick={() => setConfirmDelete(true)} size="icon-xs" variant="ghost" />
@@ -230,7 +230,7 @@ export default function SkillsPage() {
                 <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-panel-raised px-4">
                    <Icon name="code" className="text-muted-foreground" size={14} />
                   <span className="text-xs font-medium text-foreground">Instructions</span>
-                  <span className="ml-auto text-3xs text-muted-foreground select-none">
+                  <span className="ms-auto text-3xs text-muted-foreground select-none">
                     @ to mention
                   </span>
                 </div>
@@ -276,7 +276,7 @@ function SkillInspector({
       <InspectorHeader icon="code" title="Skill settings" />
       <InspectorBody className="p-3">
         <div>
-          <div className="mb-2 flex items-center gap-2"><Icon name="tool" size={14} /><span className="text-xs font-medium text-foreground">Tools</span><Pill className="ml-auto">{draft.bindings.filter((binding) => binding.enabled).length}</Pill></div>
+          <div className="mb-2 flex items-center gap-2"><Icon name="tool" size={14} /><span className="text-xs font-medium text-foreground">Tools</span><Pill className="ms-auto">{draft.bindings.filter((binding) => binding.enabled).length}</Pill></div>
           <div className="grid gap-1">
             {connectionsLoading ? (
               Array.from({ length: 4 }).map((_, i) => (

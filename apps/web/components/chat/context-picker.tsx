@@ -182,13 +182,13 @@ export function ContextPicker() {
         </div>
 
         <div className="flex min-h-0 flex-1">
-          <nav className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-border bg-panel-raised p-1.5">
+          <nav className="flex w-44 shrink-0 flex-col gap-0.5 border-e border-border bg-panel-raised p-1.5">
             {SECTIONS.map((section) => {
               const attachedCount = run.contextItems.filter((item) => section.kinds.includes(item.kind)).length;
               return (
                 <button
                   className={cn(
-                    "group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
+                    "group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-start text-xs transition-colors",
                     active === section.id
                       ? "bg-selected text-foreground"
                       : "text-muted-foreground hover:bg-hover hover:text-foreground"

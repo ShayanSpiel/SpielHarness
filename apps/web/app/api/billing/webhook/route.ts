@@ -1,24 +1,26 @@
-import { getOrg, errorResponse } from "../../../../lib/server";
+import { createOrgSql } from "@spielos/db";
+import { getSql } from "../../../../lib/server";
 
 export async function POST(request: Request) {
   try {
-    const org = await getOrg();
-    if (!org.userId) {
-      return Response.json({ error: "Authentication required" }, { status: 401 });
+    const sql = getSql();
+    if (!sql) {
+      return Response.json({ error: "Database not configured" }, { status: 500 });
     }
 
     const body = await request.json();
-    const { provider, event } = body;
+    const { provider, event, org_id } = body;
 
-    if (!provider || !event) {
-      return Response.json({ error: "provider and event are required" }, { status: 400 });
+    if (!provider || !event || !org_id) {
+      return Response.json({ error: "provider, event, and org_id are required" }, { status: 400 });
     }
 
-    // Store the billing event
-    await org.sql`
+    const ctx = createOrgSql(sql, org_id);
+
+    await ctx.sql`
       INSERT INTO billing_events (org_id, provider, provider_event_id, event_type, payload)
       VALUES (
-        ${org.orgId},
+        ${ctx.orgId},
         ${provider},
         ${event.id || "manual"},
         ${event.type || "unknown"},
@@ -29,6 +31,7 @@ export async function POST(request: Request) {
 
     return Response.json({ received: true });
   } catch (err) {
-    return errorResponse(err);
+    console.error("[billing/webhook]", err);
+    return Response.json({ error: "Webhook processing failed" }, { status: 500 });
   }
 }

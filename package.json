@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "NODE_OPTIONS=\"--max-old-space-size=4096\" npm run dev --workspace @spielos/web",
     "build": "npm run build --workspace @spielos/web",
+    "start": "npm run start --workspace @spielos/web",
     "lint": "npm run lint --workspace @spielos/web",
     "check:ui": "npm run check:colors --workspace @spielos/web && bash scripts/check-ui-contracts.sh",
     "typecheck": "tsc --noEmit",

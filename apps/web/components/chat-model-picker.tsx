@@ -66,7 +66,7 @@ export function ChatModelPicker({
                 <div className="flex items-center gap-1.5 px-2 py-1 text-3xs font-medium uppercase tracking-wider text-muted-foreground">
                   <ProviderLogo provider={provider} size={10} />
                   <span>{providerLabel(provider)}</span>
-                <span className="ml-auto tabular-nums">{providerModels.length}</span>
+                <span className="ms-auto tabular-nums">{providerModels.length}</span>
               </div>
               <div className="grid gap-0.5">
                 {providerModels.map((model) => {
@@ -77,7 +77,7 @@ export function ChatModelPicker({
                     <button
                       aria-checked={active}
                       className={cn(
-                        "group grid w-full grid-cols-[1fr_auto] items-center gap-x-3 rounded-md px-2 py-2 text-left transition-colors duration-[var(--duration)]",
+                        "group grid w-full grid-cols-[1fr_auto] items-center gap-x-3 rounded-md px-2 py-2 text-start transition-colors duration-[var(--duration)]",
                         active ? "bg-selected text-foreground" : "text-foreground hover:bg-hover"
                       )}
                       key={model.id}

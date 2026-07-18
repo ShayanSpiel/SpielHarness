@@ -57,12 +57,12 @@ export const DropdownMenuCheckboxItem = forwardRef<
       ref={ref}
       checked={checked}
       className={cn(
-        "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm py-1.5 pl-7 pr-2 text-sm outline-none transition-colors focus:bg-selected focus:text-foreground-strong data-[disabled]:pointer-events-none data-[disabled]:text-[var(--disabled-foreground)]",
+        "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm py-1.5 ps-7 pe-2 text-sm outline-none transition-colors focus:bg-selected focus:text-foreground-strong data-[disabled]:pointer-events-none data-[disabled]:text-[var(--disabled-foreground)]",
         className
       )}
       {...props}
     >
-      <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
+      <span className="absolute start-2 flex h-3.5 w-3.5 items-center justify-center">
         <DropdownMenuPrimitive.ItemIndicator>
           <Icon name="check" size={14} className="text-primary" />
         </DropdownMenuPrimitive.ItemIndicator>
@@ -107,7 +107,7 @@ export const DropdownMenuShortcut = ({
 }: React.HTMLAttributes<HTMLSpanElement>) => {
   return (
     <span
-      className={cn("ml-auto text-xs tracking-wider text-muted-foreground", className)}
+      className={cn("ms-auto text-xs tracking-wider text-muted-foreground", className)}
       {...props}
     />
   );
@@ -127,7 +127,7 @@ export const DropdownMenuSubTrigger = forwardRef<
       {...props}
     >
       {children}
-      <Icon name="chevron-right" size={14} className="ml-auto" />
+      <Icon name="chevron-right" size={14} className="ms-auto" />
     </DropdownMenuPrimitive.SubTrigger>
   );
 });

@@ -69,7 +69,7 @@ export function AppShell({
         <button
           aria-label="Close inspector"
           aria-hidden={!store.inspectorOpen}
-          className="motion-overlay fixed inset-0 z-30 bg-[color:color-mix(in_oklab,var(--background)_70%,transparent)] backdrop-blur-sm data-[state=closed]:pointer-events-none lg:hidden"
+          className="motion-overlay fixed inset-0 z-30 bg-overlay backdrop-blur-sm data-[state=closed]:pointer-events-none lg:hidden"
           data-state={store.inspectorOpen ? "open" : "closed"}
           onClick={() => store.setInspectorOpen(false)}
           tabIndex={store.inspectorOpen ? 0 : -1}
@@ -82,7 +82,7 @@ export function AppShell({
           ref={asideRef}
           aria-hidden={!store.inspectorOpen}
           data-inspector
-          className="fixed inset-y-0 right-0 z-40 max-w-full shrink-0 overflow-hidden border-l border-border bg-panel shadow-popover transition-[width] duration-[var(--duration-slow)] ease-[var(--ease)] lg:relative lg:z-auto lg:shadow-none"
+          className="fixed inset-y-0 end-0 z-40 max-w-full shrink-0 overflow-hidden border-s border-border bg-panel shadow-popover transition-[width] duration-[var(--duration-slow)] ease-[var(--ease)] lg:relative lg:z-auto lg:shadow-none"
           style={{ width: store.inspectorOpen ? store.inspectorWidth : 0 }}
         >
           <button
@@ -91,7 +91,7 @@ export function AppShell({
             aria-valuemax={SIDEBAR.INSPECTOR.MAX}
             aria-valuemin={SIDEBAR.INSPECTOR.MIN}
             aria-valuenow={store.inspectorWidth}
-            className="group absolute left-0 top-0 z-20 hidden h-full w-1.5 cursor-col-resize items-center justify-center text-muted-foreground transition-colors hover:bg-border-strong/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] lg:flex"
+            className="group absolute start-0 top-0 z-20 hidden h-full w-1.5 cursor-col-resize items-center justify-center text-muted-foreground transition-colors hover:bg-border-strong/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] lg:flex"
             onDoubleClick={() => store.setInspectorWidth(SIDEBAR.INSPECTOR.DEFAULT)}
             onKeyDown={(event) => {
               if (event.key === "ArrowLeft") store.setInspectorWidth(store.inspectorWidth + 16);
@@ -125,7 +125,7 @@ export function AppShell({
       <CommandPalette open={paletteOpen} setOpen={setPaletteOpen} />
 
       {hasInspector ? (
-        <div className="fixed right-3 top-0 z-50 flex h-10 items-center">
+        <div className="fixed end-3 top-0 z-50 flex h-10 items-center">
           <InspectorToggle label="Toggle inspector" />
         </div>
       ) : null}

@@ -320,12 +320,7 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
   useRealtimeSubscription(orgCookie ? `org:${orgCookie}` : null, orgCookie, realtimeListener);
 
   const reload = useCallback(async () => {
-    // Phase 4: expose the latest reload so the realtime listener
-    // (registered above) can trigger it on file.* events.
     reloadRef.current = reload;
-    // The Better Auth session cookie is HttpOnly by design and therefore cannot
-    // be inspected through document.cookie. Protected app routes can ask the
-    // server directly; only the public sign-in surface should skip eager loads.
     if (typeof window !== "undefined" && window.location.pathname === "/login") {
       setReady(true);
       return;
@@ -345,11 +340,18 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
           enabled: boolean;
         }> }>("/api/models", { cache: "no-store" }),
       ]);
+
+      for (const result of [filesResult, modelsResult]) {
+        if (result.status === "rejected" && result.reason?.message?.includes("401")) {
+          if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+            window.location.href = `/login?callbackUrl=${encodeURIComponent(window.location.pathname)}`;
+          }
+          return;
+        }
+      }
+
       if (filesResult.status === "fulfilled") {
         const dbFiles = filesResult.value.files ?? [];
-        // Google Drive is external, read-only context and belongs solely to
-        // Files > Files. Its dedicated picker owns loading and refresh so a
-        // normal workspace boot never performs a duplicate Drive API call.
         setFiles(dbFiles);
         const folders = new Set<string>();
         const libraryFileTypes = new Set([
@@ -377,7 +379,9 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
       loadErrorShown.current = false;
       setReady(true);
     } catch (err) {
-      console.error("Failed to load domain:", err);
+      if (process.env.NODE_ENV !== "production") {
+        console.error("Failed to load domain:", err);
+      }
       if (!loadErrorShown.current) {
         toast.error("Workspace data could not be loaded", { description: "SpielOS will retry on the next workspace refresh." });
         loadErrorShown.current = true;
@@ -425,7 +429,11 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ id, ...patch })
-          }).catch((err) => console.warn("Save failed:", err));
+          }).catch((err) => {
+            if (process.env.NODE_ENV !== "production") {
+              console.warn("Save failed:", err);
+            }
+          });
           saveTimers.current.delete(id);
         }, 400)
       );

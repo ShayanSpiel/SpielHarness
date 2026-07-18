@@ -1,64 +1,57 @@
 import type { PaymentProvider, ProviderConfig } from "./provider";
 
-/**
- * Registry of available payment providers.
- * Providers are loaded from supabase/seed/billing-providers.json.
- * Runtime state (enabled/disabled) is stored in the billing_providers table.
- */
-
 const providerCache = new Map<string, PaymentProvider>();
 
-/**
- * Load provider configurations from the seed file.
- * This reads from the filesystem in development and from a cached copy in production.
- */
+const PROVIDER_MAP: Record<string, () => Promise<{ default: PaymentProvider } | { stripeProvider: PaymentProvider } | { zarinpalProvider: PaymentProvider }>> = {
+  stripe: () => import("./providers/stripe"),
+  zarinpal: () => import("./providers/zarinpal"),
+};
+
 export async function loadProviderConfigs(): Promise<ProviderConfig[]> {
   try {
-    // In production, this would read from a cached copy or database
-    // For now, return empty - providers are added via the admin UI
-    return [];
+    const res = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || ""}/api/harness/seed`, {
+      method: "GET",
+      cache: "no-store"
+    });
+    if (!res.ok) return [];
+    const data = await res.json() as { billingProviders?: ProviderConfig[] };
+    return data.billingProviders ?? [];
   } catch {
-    return [];
+    return [
+      { id: "stripe", name: "Stripe", enabled: false, config: {} },
+      { id: "zarinpal", name: "Zarinpal", enabled: false, config: {} }
+    ];
   }
 }
 
-/**
- * Get a provider implementation by ID.
- * Returns null if the provider is not found or not enabled.
- */
-export async function getProvider(
-  providerId: string
-): Promise<PaymentProvider | null> {
+export async function getProvider(providerId: string): Promise<PaymentProvider | null> {
   const cached = providerCache.get(providerId);
   if (cached) return cached;
 
+  const loader = PROVIDER_MAP[providerId];
+  if (!loader) return null;
+
   try {
-    // Dynamic import of provider implementation
-    const mod = await import(`./providers/${providerId}`);
-    const provider = mod.default as PaymentProvider;
-    if (provider.id === providerId) {
+    const mod = await loader();
+    const provider = ("stripeProvider" in mod ? mod.stripeProvider : "zarinpalProvider" in mod ? mod.zarinpalProvider : mod.default) as PaymentProvider;
+    if (provider?.id === providerId) {
       providerCache.set(providerId, provider);
       return provider;
     }
   } catch {
-    // Provider not found
+    // Provider not available
   }
 
   return null;
 }
 
-/**
- * Get all enabled providers.
- */
 export async function getEnabledProviders(): Promise<PaymentProvider[]> {
   const configs = await loadProviderConfigs();
   const enabled = configs.filter((c) => c.enabled);
-
   const providers: PaymentProvider[] = [];
   for (const config of enabled) {
     const provider = await getProvider(config.id);
     if (provider) providers.push(provider);
   }
-
   return providers;
 }

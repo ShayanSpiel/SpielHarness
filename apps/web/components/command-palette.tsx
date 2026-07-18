@@ -3,7 +3,7 @@
 import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { ActionRow, Dialog, DialogContent, EmptyState, Input, Pill } from "@spielos/design-system";
+import { ActionRow, Dialog, DialogContent, EmptyState, Input, Pill, Skeleton } from "@spielos/design-system";
 import { useWorkspaceStore } from "../lib/use-workspace-store";
 import { useRunContext } from "../lib/run-context";
 
@@ -30,7 +30,6 @@ type Entry = {
 };
 
 const NAV: { href: string; label: string; icon: ReactNode; keywords: string[] }[] = [
-  { href: "/", label: "Runs", icon: <Icon name={ENTITY_ICONS.run} size={14} />, keywords: ["run", "chat", "home"] },
   { href: "/knowledge", label: "Files", icon: <Icon name={ENTITY_ICONS.knowledge} size={14} />, keywords: ["knowledge", "evidence", "library", "file", "drive"] },
   { href: "/strategy", label: "Strategy", icon: <Icon name={ENTITY_ICONS.strategy} size={14} />, keywords: ["strategy", "prompt", "positioning"] },
   { href: "/roles", label: "Roles", icon: <Icon name={ENTITY_ICONS.role} size={14} />, keywords: ["role", "agent"] },
@@ -68,6 +67,28 @@ function runStatusTone(status: string): "default" | "success" | "warning" | "des
   return "default";
 }
 
+function RunListSkeleton() {
+  return (
+    <section className="flex flex-col gap-px" aria-label="Loading recent runs">
+      <header className="flex items-center gap-1.5 px-2 pb-0.5 pt-0.5 text-3xs uppercase tracking-wider text-muted-foreground">
+        <span>Last Runs</span>
+        <Pill className="ms-auto text-3xs">...</Pill>
+      </header>
+      <ul className="flex flex-col gap-px">
+        {Array.from({ length: 5 }, (_, i) => (
+          <li className="flex items-center gap-2.5 rounded-md px-2 py-1.5" key={i}>
+            <Skeleton className="h-4 w-4 shrink-0 rounded-sm" />
+            <div className="min-w-0 flex-1">
+              <Skeleton className="h-3.5 w-3/4" />
+            </div>
+            <Skeleton className="h-4 w-10 shrink-0 rounded-sm" />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export function CommandPalette({
   open,
   setOpen
@@ -81,15 +102,18 @@ export function CommandPalette({
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [runs, setRuns] = useState<DbRun[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (open) {
       const t = setTimeout(() => inputRef.current?.focus(), 50);
+      setRunsLoading(true);
       fetch("/api/runs", { cache: "no-store" })
         .then((res) => (res.ok ? res.json() : { runs: [] }))
         .then((data: { runs?: DbRun[] }) => setRuns((data.runs ?? []).slice(0, 10)))
-        .catch(() => setRuns([]));
+        .catch(() => setRuns([]))
+        .finally(() => setRunsLoading(false));
       return () => clearTimeout(t);
     }
     setQuery("");
@@ -118,7 +142,7 @@ export function CommandPalette({
         id: "act-new-run",
         label: "New Run",
         group: "Actions",
-        icon: <Icon name="plus" size={14} />,
+        icon: <Icon name={ENTITY_ICONS.run} size={14} />,
         hint: "Clear the workbench",
         keywords: ["new", "run", "chat", "start"],
         onSelect: newRun
@@ -214,13 +238,13 @@ export function CommandPalette({
             value={query}
             variant="ghost"
           />
-          <div className="text-3xs uppercase tracking-wider text-muted-foreground">
+          <span className="shrink-0 whitespace-nowrap text-3xs uppercase tracking-wider text-muted-foreground">
             {filtered.length} results
-          </div>
+          </span>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {filtered.length === 0 ? (
+          {filtered.length === 0 && !runsLoading ? (
             <EmptyState icon={<Icon name="search" size={16} />} title="No matches" />
           ) : (
             <div className="flex flex-col gap-1.5">
@@ -228,14 +252,14 @@ export function CommandPalette({
                 <section className="flex flex-col gap-px" key={group}>
                   <header className="flex items-center gap-1.5 px-2 pb-0.5 pt-0.5 text-3xs uppercase tracking-wider text-muted-foreground">
                     <span>{group}</span>
-                    {group === "Last Runs" ? <Pill className="ml-auto text-3xs">{list.length}</Pill> : null}
+                    {group === "Last Runs" ? <Pill className="ms-auto text-3xs">{list.length}</Pill> : null}
                   </header>
                   <ul className="flex flex-col gap-px">
                     {list.map((entry) => {
                       const idx = visibleIndex++;
                       const selected = idx === active;
                       const isRun = entry.group === "Last Runs";
-                      const run = isRun ? runs.find((r) => `run-${r.id}` === entry.id) : null;
+                      const runEntry = isRun ? runs.find((r) => `run-${r.id}` === entry.id) : null;
                       return (
                         <li key={entry.id}>
                           <ActionRow
@@ -246,10 +270,10 @@ export function CommandPalette({
                             onMouseEnter={() => setActive(idx)}
                             title={entry.label}
                             trailing={
-                              isRun && run ? (
-                                <Pill tone={runStatusTone(run.status)} className="text-3xs capitalize">{run.status.replace("_", " ")}</Pill>
+                              isRun && runEntry ? (
+                                <Pill tone={runStatusTone(runEntry.status)} className="text-3xs capitalize">{runEntry.status.replace("_", " ")}</Pill>
                               ) : entry.hint ? (
-                                <span className="text-3xs text-muted-foreground">{entry.hint}</span>
+                                <span className="text-xs text-muted-foreground">{entry.hint}</span>
                               ) : null
                             }
                           />
@@ -259,6 +283,9 @@ export function CommandPalette({
                   </ul>
                 </section>
               ))}
+              {runsLoading && runs.length === 0 ? (
+                <RunListSkeleton />
+              ) : null}
             </div>
           )}
         </div>

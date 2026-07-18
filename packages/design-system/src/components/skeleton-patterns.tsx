@@ -18,7 +18,7 @@ export function SkeletonListItem({
         <div className="flex items-center gap-2">
           <Skeleton className="h-4 w-2/5" />
           {metadata && (
-            <span className="ml-auto flex shrink-0 items-center gap-1">
+            <span className="ms-auto flex shrink-0 items-center gap-1">
               <Skeleton className="h-4 w-10 rounded-sm" />
               <Skeleton className="h-4 w-7 rounded-sm" />
             </span>
@@ -48,7 +48,7 @@ export function SkeletonCard({ className }: { className?: string }) {
       </div>
       <div className="mt-auto flex items-center gap-2 pt-3">
         <Skeleton className="h-4 w-14 rounded-sm" />
-        <Skeleton className="ml-auto h-6 w-16 rounded-md" />
+        <Skeleton className="ms-auto h-6 w-16 rounded-md" />
       </div>
     </div>
   );

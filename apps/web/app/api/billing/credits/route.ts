@@ -12,6 +12,8 @@ export async function GET() {
     return Response.json({
       balance: credits.balance,
       lifetimeUsed: credits.lifetime_used,
+    }, {
+      headers: { "Cache-Control": "no-store" }
     });
   } catch (err) {
     return errorResponse(err);

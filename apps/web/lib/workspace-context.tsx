@@ -52,8 +52,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (!showedName.current) {
       showedName.current = true;
       fetch("/api/orgs", { cache: "no-store" })
-        .then((res) => (res.ok ? res.json() : { orgs: [] }))
-        .then((data: { orgs?: WorkspaceInfo[] }) => {
+        .then((res) => {
+          if (res.status === 401) {
+            if (window.location.pathname !== "/login") {
+              window.location.href = `/login?callbackUrl=${encodeURIComponent(window.location.pathname)}`;
+            }
+            return null;
+          }
+          return res.ok ? res.json() : { orgs: [] };
+        })
+        .then((data: { orgs?: WorkspaceInfo[] } | null) => {
+          if (!data) return;
           const orgList = data.orgs ?? [];
           const cookieId = getCookie("spielos.org");
           const current = orgList.find((o) => o.org_id === cookieId) ?? orgList[0];

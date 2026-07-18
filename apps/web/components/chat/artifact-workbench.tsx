@@ -138,7 +138,7 @@ export function ArtifactWorkbench({ artifact, compact = false, fullscreen = fals
             {item}
           </button>
         ))}
-        <span className="ml-auto truncate text-3xs text-muted-foreground">{selected.path}</span>
+        <span className="ms-auto truncate text-3xs text-muted-foreground">{selected.path}</span>
         <Pill className="h-4 text-3xs">{project.files.length} files</Pill>
       </div>
 
@@ -147,7 +147,7 @@ export function ArtifactWorkbench({ artifact, compact = false, fullscreen = fals
           <div className="grid gap-0.5" role="list">
             {project.files.map((file) => (
               <button
-                className={cn("flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-hover", selected.path === file.path && "bg-selected")}
+                className={cn("flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-start hover:bg-hover", selected.path === file.path && "bg-selected")}
                 key={file.path}
                 onClick={() => {
                   setSelectedPath(file.path);

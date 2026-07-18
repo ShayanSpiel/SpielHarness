@@ -4,6 +4,12 @@ import { Slot } from "@radix-ui/react-slot";
 import { type HTMLAttributes } from "react";
 import { cn } from "../index";
 
+const FOCUSABLE_FIELD_CLASSES = "overflow-hidden rounded-md border border-border bg-input transition-colors focus-within:border-[var(--focus-border)] focus-within:ring-2 focus-within:ring-[var(--focus-ring)]";
+
+export function FocusableField({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn(FOCUSABLE_FIELD_CLASSES, className)} {...props} />;
+}
+
 export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <label className="grid gap-1.5">

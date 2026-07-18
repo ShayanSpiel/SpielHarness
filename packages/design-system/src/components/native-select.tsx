@@ -21,7 +21,7 @@ export const NativeSelect = forwardRef<HTMLSelectElement, NativeSelectProps>(
       <div className={cn("relative", className)}>
         <select
           aria-label={ariaLabel}
-          className="h-8 w-full appearance-none rounded-md border border-border bg-input px-2.5 pr-8 text-sm text-foreground outline-none transition-colors duration-[var(--duration)] focus-visible:border-[var(--focus-border)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:pointer-events-none disabled:border-[var(--disabled-border)] disabled:bg-[var(--disabled-surface)] disabled:text-[var(--disabled-foreground)]"
+          className="h-8 w-full appearance-none rounded-md border border-border bg-input px-2.5 pe-8 text-sm text-foreground outline-none transition-colors duration-[var(--duration)] focus-visible:border-[var(--focus-border)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:pointer-events-none disabled:border-[var(--disabled-border)] disabled:bg-[var(--disabled-surface)] disabled:text-[var(--disabled-foreground)]"
           onChange={(event) => onChange(event.target.value)}
           ref={ref}
           value={value}
@@ -34,7 +34,7 @@ export const NativeSelect = forwardRef<HTMLSelectElement, NativeSelectProps>(
           ))}
         </select>
         <Icon
-          className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
+          className="pointer-events-none absolute end-2 top-1/2 -translate-y-1/2 text-muted-foreground"
           name="chevron-down"
           size={14}
         />

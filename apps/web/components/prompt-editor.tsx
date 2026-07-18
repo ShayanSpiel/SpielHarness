@@ -84,7 +84,7 @@ export function PromptEditor({
 
         {isJson ? (
           <Tooltip content="Format JSON" side="bottom">
-            <Button aria-label="Format JSON" className="ml-auto" icon="code" onClick={formatJson} size="icon-xs" type="button" variant="ghost" />
+            <Button aria-label="Format JSON" className="ms-auto" icon="code" onClick={formatJson} size="icon-xs" type="button" variant="ghost" />
           </Tooltip>
         ) : null}
       </div>

@@ -21,7 +21,7 @@ export function ContractFlow({
   return (
     <div className="overflow-hidden rounded-md border border-border bg-panel">
       <button
-        className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-hover transition-colors"
+        className="flex w-full items-center gap-2 px-2 py-1.5 text-start hover:bg-hover transition-colors"
         onClick={() => setOpen(!open)}
         type="button"
       >
@@ -30,7 +30,7 @@ export function ContractFlow({
         <span className="text-2xs font-medium text-muted-foreground min-w-0 truncate">
           Input &rarr; Output
         </span>
-        <span className="ml-auto text-3xs text-muted-foreground/60 shrink-0 truncate">
+        <span className="ms-auto text-3xs text-muted-foreground/60 shrink-0 truncate">
           {inputLabel} &rarr; {outputLabel}
         </span>
         {roleId && roleId !== "runtime.eval" && (

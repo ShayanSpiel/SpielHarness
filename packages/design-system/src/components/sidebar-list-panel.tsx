@@ -55,7 +55,7 @@ export function SidebarListPanel({
           {title}
         </span>
         {count !== undefined ? (
-          <Pill className="ml-auto">{count}</Pill>
+          <Pill className="ms-auto">{count}</Pill>
         ) : null}
         {onNew ? (
           <Tooltip

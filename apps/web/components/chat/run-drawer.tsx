@@ -141,7 +141,7 @@ function WorkingStateCard() {
         <Icon className="text-muted-foreground" name="Layers" size={12} />
         <span className="text-2xs font-medium text-foreground">Working state</span>
         {pinned ? (
-          <Pill className="ml-auto text-3xs uppercase tracking-wider">v{pinned.version}</Pill>
+          <Pill className="ms-auto text-3xs uppercase tracking-wider">v{pinned.version}</Pill>
         ) : null}
       </div>
       {pinned?.primaryGoal?.text ? (
@@ -180,7 +180,7 @@ function CapacityMeter({ label, value, maximum, icon }: { label: string; value: 
       <div className="flex items-center gap-1.5 text-2xs">
         <Icon className="text-muted-foreground" name={icon} size={10} />
         <span className="font-medium text-foreground">{label}</span>
-        <span className="ml-auto tabular-nums text-muted-foreground">{compactTokens(value)} / {compactTokens(maximum)}</span>
+        <span className="ms-auto tabular-nums text-muted-foreground">{compactTokens(value)} / {compactTokens(maximum)}</span>
       </div>
       <div aria-label={`${label} ${Math.round(ratio * 100)} percent used`} className="grid grid-cols-12 gap-0.5">
         {Array.from({ length: 12 }, (_, index) => (
@@ -265,7 +265,7 @@ function ContextSection({ run }: { run: ReturnType<typeof useRunContext> }) {
             <Icon className="text-muted-foreground" name="task" size={12} />
             <span className="text-2xs font-medium text-foreground">Execution state</span>
             {run.durableState.verification ? (
-              <Pill className="ml-auto capitalize" tone={run.durableState.verification.status === "passed" ? "success" : run.durableState.verification.status === "failed" ? "destructive" : "warning"}>
+              <Pill className="ms-auto capitalize" tone={run.durableState.verification.status === "passed" ? "success" : run.durableState.verification.status === "failed" ? "destructive" : "warning"}>
                 {run.durableState.verification.status}
               </Pill>
             ) : null}
@@ -296,7 +296,7 @@ function ContextSection({ run }: { run: ReturnType<typeof useRunContext> }) {
           <div className="flex items-center gap-1.5 text-3xs uppercase tracking-wider text-muted-foreground">
             {CONTEXT_ICONS[kind]}
             <span>{kind}</span>
-            <span className="ml-auto tabular-nums">{items.length}</span>
+            <span className="ms-auto tabular-nums">{items.length}</span>
           </div>
           <div className="flex flex-col gap-1">
             {items.map((item) => (
@@ -333,7 +333,7 @@ function EventsSection({ run }: { run: ReturnType<typeof useRunContext> }) {
           return (
             <div className="flex min-h-8 items-start gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-hover" key={event.id}>
               <ToolCallCard active={active} event={event} />
-              <span className="ml-auto font-mono text-3xs text-muted-foreground shrink-0 self-center">
+              <span className="ms-auto font-mono text-3xs text-muted-foreground shrink-0 self-center">
                 {new Date(event.createdAt).toLocaleTimeString([], { hour12: false })}
               </span>
             </div>
@@ -354,7 +354,7 @@ function EventsSection({ run }: { run: ReturnType<typeof useRunContext> }) {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5 text-2xs text-foreground">
                 <span className={cn("min-w-0 flex-1 leading-4", failed && "text-destructive", waiting && "text-warning")}>{event.message}</span>
-                <span className="ml-auto font-mono text-3xs text-muted-foreground shrink-0">
+                <span className="ms-auto font-mono text-3xs text-muted-foreground shrink-0">
                   {new Date(event.createdAt).toLocaleTimeString([], { hour12: false })}
                 </span>
               </div>
@@ -393,7 +393,7 @@ function OutputSection({ run }: { run: ReturnType<typeof useRunContext> }) {
           <header className="flex items-center gap-2 border-b border-border bg-panel-raised px-2.5 py-1.5">
             <Icon name="file-text" className="text-muted-foreground" size={12} />
             <span className="truncate text-xs font-medium text-foreground">{artifact.title}</span>
-            <div className="ml-auto">
+            <div className="ms-auto">
               <ArtifactFullscreenButton artifact={artifact} />
             </div>
           </header>
@@ -494,7 +494,7 @@ export function RunDrawer() {
       <InspectorFooter>
         {controlError ? <Notice className="mb-2" tone="destructive">{controlError}</Notice> : null}
         <div className="flex items-center gap-1.5">
-          <span className="mr-auto">{totalContext} attached · {totalEvents} events · {totalArtifacts} artifacts</span>
+          <span className="me-auto">{totalContext} attached · {totalEvents} events · {totalArtifacts} artifacts</span>
           {run.status === "running" ? <Button disabled={controlBusy} onClick={() => void control("pause")} size="sm" variant="outline">Pause</Button> : null}
           {run.status === "running" ? <Button disabled={controlBusy} onClick={() => void control("cancel")} size="sm" variant="ghost">Cancel</Button> : null}
           {run.status === "waiting_human" && !run.humanInputRequest ? <Button loading={controlBusy} onClick={() => void control("resume")} size="sm">Resume</Button> : null}

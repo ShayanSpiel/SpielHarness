@@ -161,7 +161,7 @@ export function UserMenu() {
               <Icon name="mail" size={11} />
             </span>
             <span>Open Gmail</span>
-            <Icon className="ml-auto text-muted-foreground" name="external-link" size={10} />
+            <Icon className="ms-auto text-muted-foreground" name="external-link" size={10} />
           </a>
         ) : null}
 
@@ -193,7 +193,7 @@ export function UserMenu() {
               return (
                 <button
                   className={cn(
-                    "group grid w-full grid-cols-[auto_1fr_auto] items-center gap-x-3 rounded-md px-2 py-2 text-left transition-colors duration-[var(--duration)]",
+                    "group grid w-full grid-cols-[auto_1fr_auto] items-center gap-x-3 rounded-md px-2 py-2 text-start transition-colors duration-[var(--duration)]",
                     active
                       ? "bg-selected text-foreground"
                       : "text-foreground hover:bg-hover"

@@ -322,7 +322,10 @@ export default function EvalsPage() {
         }
       }
     } catch (error) {
-      console.warn("Eval run failed:", error);
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("Eval run failed:", error);
+      }
+      toast.error("Eval run failed", { description: error instanceof Error ? error.message : undefined });
     } finally {
       setRunning(false);
     }
@@ -433,7 +436,7 @@ export default function EvalsPage() {
                   {draft.status === "active" ? "Enabled" : "Disabled"}
                 </Pill>
               </div>
-              <div className="ml-auto flex items-center gap-1.5">
+              <div className="ms-auto flex items-center gap-1.5">
                 <Tooltip content="Export as JSON" side="bottom">
                   <Button
                     aria-label="Export"
@@ -519,7 +522,7 @@ export default function EvalsPage() {
                     <div className="overflow-hidden rounded-md border border-border bg-input transition-colors focus-within:border-[var(--focus-border)] focus-within:ring-2 focus-within:ring-[var(--focus-ring)]">
                       <div className="flex h-8 items-center gap-2 border-b border-border bg-panel-raised px-2">
                         <span className="text-2xs text-muted-foreground">Paste an output here to test the criteria before using the eval in a workflow.</span>
-                        <span className="ml-auto text-3xs text-muted-foreground select-none">@ to mention</span>
+                        <span className="ms-auto text-3xs text-muted-foreground select-none">@ to mention</span>
                       </div>
                       <MentionTextarea
                         className="min-h-28"
@@ -536,8 +539,8 @@ export default function EvalsPage() {
                   <div className="flex h-10 items-center gap-2 border-b border-border px-4">
                     <Icon className="text-muted-foreground" name="list" size={14} />
                     <span className="text-xs font-medium text-foreground">Criteria</span>
-                    <Pill className="ml-auto">{draft.rules.length}</Pill>
-                    <Button className="ml-1 h-7" onClick={addRubric} size="sm" variant="outline">
+                    <Pill className="ms-auto">{draft.rules.length}</Pill>
+                    <Button className="ms-1 h-7" onClick={addRubric} size="sm" variant="outline">
                       <Icon name="plus" size={14} />
                       Criterion
                     </Button>
@@ -570,7 +573,7 @@ export default function EvalsPage() {
                     <Icon className="text-muted-foreground" name="repeat" size={14} />
                     <span className="text-xs font-medium text-foreground">Workflow Retry Policy</span>
                     <InfoTip content="When this eval is used as a workflow QA step, retry sends failed work back through the previous step to try again. Direct test runs on this page never retry." />
-                    <Pill tone={draft.loopConfig.enabled ? "success" : "default"} className="ml-auto">
+                    <Pill tone={draft.loopConfig.enabled ? "success" : "default"} className="ms-auto">
                       {draft.loopConfig.enabled ? "Retry enabled" : "No retry"}
                     </Pill>
                   </div>
@@ -959,7 +962,7 @@ function ResultInspector({
           <Tooltip content={`Weighted average of all criteria. Needs ${avgThreshold}% to pass.`} side="bottom">
             <Button aria-label="Score info" size="icon-xs" variant="ghost" icon="info" />
           </Tooltip>
-          <Pill tone={result.passed ? "success" : "destructive"} className="ml-auto">
+          <Pill tone={result.passed ? "success" : "destructive"} className="ms-auto">
             {result.overallScore}/100
           </Pill>
         </div>

@@ -325,7 +325,7 @@ export function FolderFileBrowser({
           <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             {folderSectionLabel}
           </span>
-          <div className="ml-auto flex items-center gap-1">
+          <div className="ms-auto flex items-center gap-1">
             <Tooltip content="New folder" side="bottom">
               <Button
                 aria-label="New folder"
@@ -396,7 +396,7 @@ export function FolderFileBrowser({
                       )}
                     >
                       <button
-                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+className="flex min-w-0 flex-1 items-center gap-2 text-start"
                         onClick={() => toggleFolder(folder)}
                         type="button"
                       >
@@ -432,7 +432,7 @@ export function FolderFileBrowser({
                     </div>
 
                     {expanded ? (
-                      <ul className="ml-5 mt-0.5 grid gap-0.5 border-l border-border pl-2">
+                      <ul className="ms-5 mt-0.5 grid gap-0.5 border-s border-border ps-2">
                         {files.length === 0 ? (
                           <li className="px-2 py-1 text-2xs text-muted-foreground">Empty</li>
                         ) : (
@@ -483,7 +483,7 @@ export function FolderFileBrowser({
             {dirty ? <Pill tone="warning">Unsaved</Pill> : null}
           </div>
 
-          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <div className="ms-auto flex shrink-0 items-center gap-1.5">
             {showStatusSelect ? (
               <StatusSelect
                 value={draft.status}
@@ -610,7 +610,7 @@ function FileTreeRow({
         selected ? "bg-selected text-foreground-strong" : "text-foreground-muted hover:bg-hover hover:text-foreground"
       )}
     >
-      <button className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={onSelect} type="button">
+      <button className="flex min-w-0 flex-1 items-center gap-2 text-start" onClick={onSelect} type="button">
         <Icon name={iconName} className="shrink-0" size={14} />
         {editing ? (
           <Input

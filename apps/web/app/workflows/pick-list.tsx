@@ -37,7 +37,7 @@ export function PickList({
     <div>
       <div className="mb-1 flex items-center gap-2 text-2xs font-medium text-muted-foreground">
         <span>{label}</span>
-        {activeIds.length > 0 ? <Pill className="ml-auto">{activeIds.length} selected</Pill> : null}
+        {activeIds.length > 0 ? <Pill className="ms-auto">{activeIds.length} selected</Pill> : null}
       </div>
       <SearchInput className="mb-1" onChange={setQuery} placeholder={searchPlaceholder} value={query} />
       <div className="grid max-h-48 gap-1 overflow-y-auto">

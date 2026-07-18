@@ -57,7 +57,7 @@ export const DialogContent = forwardRef<
         {!hideClose ? (
           <DialogPrimitive.Close
             aria-label="Close"
-            className="absolute right-3 top-3 rounded-sm text-muted-foreground transition-colors duration-[var(--duration)] hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+            className="absolute end-3 top-3 rounded-sm text-muted-foreground transition-colors duration-[var(--duration)] hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
           >
             <Icon name="x" size={16} />
           </DialogPrimitive.Close>

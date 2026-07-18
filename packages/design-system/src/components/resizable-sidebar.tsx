@@ -82,7 +82,7 @@ export function ResizableSidebar({
   return (
     <aside
       className={cn(
-        "relative flex min-w-0 max-w-[var(--sidebar-list-responsive-max)] shrink-0 flex-col overflow-hidden border-r border-border bg-panel lg:max-w-none",
+        "relative flex min-w-0 max-w-[var(--sidebar-list-responsive-max)] shrink-0 flex-col overflow-hidden border-e border-border bg-panel lg:max-w-none",
         className
       )}
       ref={panelRef}
@@ -97,7 +97,7 @@ export function ResizableSidebar({
           aria-valuemax={maxWidth}
           aria-valuemin={minWidth}
           aria-valuenow={panelWidth}
-          className="group absolute right-0 top-0 z-20 flex h-full w-1.5 cursor-col-resize items-center justify-center transition-colors hover:bg-border-strong/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+          className="group absolute end-0 top-0 z-20 flex h-full w-1.5 cursor-col-resize items-center justify-center transition-colors hover:bg-border-strong/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
           onDoubleClick={() => updateWidth(defaultWidth)}
           onKeyDown={(event) => {
             if (event.key === "ArrowLeft") updateWidth(panelWidth - 16);

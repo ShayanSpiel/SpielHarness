@@ -68,7 +68,7 @@ function ComposerAddContext({ count }: { count: number }) {
       variant="subtle"
     >
       Context
-      <Pill className="ml-0.5 h-4 text-3xs" tone={count > 0 ? "info" : "default"}>{count}</Pill>
+      <Pill className="ms-0.5 h-4 text-3xs" tone={count > 0 ? "info" : "default"}>{count}</Pill>
     </Button>
   );
 }
@@ -931,11 +931,11 @@ function MarkdownPart() {
         p: ({ children }) => <p className="my-2 text-sm leading-7 text-foreground">{children}</p>,
         strong: ({ children }) => <strong className="font-semibold text-foreground-strong">{children}</strong>,
         em: ({ children }) => <em className="italic text-foreground">{children}</em>,
-        ul: ({ children }) => <ul className="my-2 ml-5 list-disc space-y-1 text-sm leading-6">{children}</ul>,
-        ol: ({ children }) => <ol className="my-2 ml-5 list-decimal space-y-1 text-sm leading-6">{children}</ol>,
-        li: ({ children }) => <li className="pl-1 text-foreground">{children}</li>,
+        ul: ({ children }) => <ul className="my-2 ms-5 list-disc space-y-1 text-sm leading-6">{children}</ul>,
+        ol: ({ children }) => <ol className="my-2 ms-5 list-decimal space-y-1 text-sm leading-6">{children}</ol>,
+        li: ({ children }) => <li className="ps-1 text-foreground">{children}</li>,
         blockquote: ({ children }) => (
-          <blockquote className="my-3 border-l-2 border-border pl-3 text-sm text-muted-foreground">{children}</blockquote>
+          <blockquote className="my-3 border-s-2 border-border ps-3 text-sm text-muted-foreground">{children}</blockquote>
         ),
         a: ({ children, href }) => (
           <a className="font-medium text-foreground-strong underline underline-offset-4" href={href} rel="noreferrer" target="_blank">
@@ -944,7 +944,7 @@ function MarkdownPart() {
         ),
         table: ({ children }) => (
           <div className="my-3 max-w-full overflow-x-auto">
-            <table className="w-full border-collapse text-left text-sm">{children}</table>
+            <table className="w-full border-collapse text-start text-sm">{children}</table>
           </div>
         ),
         th: ({ children }) => <th className="border border-border bg-panel-raised px-2 py-1.5 font-semibold text-foreground-strong">{children}</th>,
@@ -1046,7 +1046,7 @@ function RunActivityTimeline({ snapshot }: { snapshot?: RunActivitySnapshot } = 
           tone={current.status === "failed" ? "destructive" : current.status === "waiting_human" ? "warning" : current.running ? "info" : "success"}
           size={12}
         />
-        <span className="min-w-0 flex-1 truncate text-left font-medium">{message}</span>
+        <span className="min-w-0 flex-1 truncate text-start font-medium">{message}</span>
         {current.events.length > 0 ? <span className="text-3xs opacity-0 transition-opacity group-hover:opacity-60 group-focus-visible:opacity-60">{current.events.length}</span> : null}
         <Icon className="opacity-0 transition-all group-hover:translate-x-0.5 group-hover:opacity-100 group-focus-visible:opacity-100" name={ui.inspectorOpen && ui.inspectorSection === "events" ? "chevron-down" : "chevron-right"} size={11} />
       </button>
@@ -1085,7 +1085,7 @@ function InlineRunArtifacts({ artifacts }: { artifacts: Artifact[] }) {
             <div className="flex items-center transition-colors hover:bg-hover">
               <button
                 aria-expanded={expanded}
-                className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left"
+                className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-start"
                 onClick={() => setExpandedId(expanded ? null : artifact.id)}
                 type="button"
               >
@@ -1098,7 +1098,7 @@ function InlineRunArtifacts({ artifacts }: { artifacts: Artifact[] }) {
                 </span>
                 <Icon className={cn("text-muted-foreground transition-transform", expanded && "rotate-180")} name="chevron-down" size={12} />
               </button>
-              <div className="mr-2 shrink-0">
+              <div className="me-2 shrink-0">
                 <ArtifactFullscreenButton artifact={artifact} />
               </div>
             </div>
@@ -1405,12 +1405,13 @@ function ChatThreadInner() {
       currentRun.clearArtifacts();
     }
 
+    const isRoot = pathname === "/";
     const urlRunId = isDedicatedRunPage ? pathname.split("/runs/")[1]?.split("/")[0] : null;
-    const metadataRunId = typeof active?.metadata?.activeRunId === "string"
+    const metadataRunId = isRoot ? null : (typeof active?.metadata?.activeRunId === "string"
       ? active.metadata.activeRunId
       : typeof active?.metadata?.lastRunId === "string"
         ? active.metadata.lastRunId
-        : null;
+        : null);
     const restorableRunId = urlRunId ?? metadataRunId;
     if (!restorableRunId) {
       currentRun.reset();

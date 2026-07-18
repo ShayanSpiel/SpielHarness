@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss";
+import tailwindCssRtl from "tailwindcss-rtl";
 
 const config: Config = {
   darkMode: [
@@ -43,7 +44,8 @@ const config: Config = {
         accent: "var(--accent)",
         "accent-soft": "var(--accent-soft)",
         purple: "var(--purple)",
-        "purple-soft": "var(--purple-soft)"
+        "purple-soft": "var(--purple-soft)",
+        overlay: "var(--overlay-bg)"
       },
       borderRadius: {
         sm: "var(--radius-sm)",
@@ -66,7 +68,7 @@ const config: Config = {
       }
     }
   },
-  plugins: []
+  plugins: [tailwindCssRtl]
 };
 
 export default config;

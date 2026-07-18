@@ -57,8 +57,9 @@ export {
   DropdownMenuTrigger
 } from "./dropdown-menu";
 export { EmptyState } from "./empty-state";
+export { InfoTip, InfoLabel } from "./info-tip";
 export { Notice, type NoticeProps } from "./notice";
-export { Divider, Field, Kbd, VisuallyHidden } from "./field";
+export { Divider, Field, FocusableField, Kbd, VisuallyHidden } from "./field";
 export { Input, Textarea, type TextareaProps } from "./input";
 export {
   Inspector,

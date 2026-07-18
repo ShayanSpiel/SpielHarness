@@ -20,6 +20,8 @@ function getSql(): Sql | null {
   return getCached("__sql_pool", () => createSql(url));
 }
 
+export { getSql };
+
 export type OrgContext = {
   sql: Sql;
   orgId: string;

@@ -187,7 +187,7 @@ export function MemoryWorkspace() {
       <ResizableSidebar sidebarId="strategy-memory" title="Memory">
         <div className="flex h-10 items-center border-b border-border px-3">
           <span className="text-xs font-semibold text-foreground">Memory state</span>
-          <Button className="ml-auto" icon="plus" onClick={() => setSelected({ type: "new" })} size="sm" variant="ghost">New</Button>
+          <Button className="ms-auto" icon="plus" onClick={() => setSelected({ type: "new" })} size="sm" variant="ghost">New</Button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           <div className="grid gap-1.5 px-1 pb-2">
@@ -259,14 +259,14 @@ export function MemoryWorkspace() {
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-6 py-6">
             <div className="flex items-start gap-2">
               <div><h2 className="text-sm font-semibold text-foreground">{selected.type === "new" ? "New learned memory" : "Learned memory"}</h2><p className="mt-1 text-xs text-muted-foreground">Only approved memories are eligible for retrieval. Every record keeps its reason and source.</p></div>
-              {activeMemory ? <Pill className="ml-auto" tone={activeMemory.status === "approved" ? "success" : "default"}>{activeMemory.status}</Pill> : null}
+              {activeMemory ? <Pill className="ms-auto" tone={activeMemory.status === "approved" ? "success" : "default"}>{activeMemory.status}</Pill> : null}
             </div>
             {activeMemory?.status === "superseded" ? <Notice tone="warning" title="Superseded memory">This record remains for provenance but is excluded from retrieval.</Notice> : null}
             {activeMemory && activeMemory.conflictIds.length > 0 && activeMemory.status === "proposed" ? <Notice tone="warning" title="Possible contradiction">A current memory covers the same subject. Select the record this proposal supersedes before approving it.</Notice> : null}
             <div className="rounded-md border border-border bg-panel p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-2xs font-semibold text-foreground">Retrieval path</span>
-                <Pill className="ml-auto" tone={memoryDraft.approved ? "success" : "default"}>{memoryDraft.approved ? "Eligible" : "Review required"}</Pill>
+                <Pill className="ms-auto" tone={memoryDraft.approved ? "success" : "default"}>{memoryDraft.approved ? "Eligible" : "Review required"}</Pill>
               </div>
               <div className="mt-3 grid grid-cols-3 gap-2 text-center">
                 <div className="rounded bg-panel-raised px-2 py-2"><div className="text-xs font-semibold tabular-nums text-foreground">{Math.round(memoryDraft.confidence * 100)}%</div><div className="text-3xs text-muted-foreground">Confidence</div></div>
@@ -291,7 +291,7 @@ export function MemoryWorkspace() {
             {activeMemory ? <div className="rounded-md bg-panel-raised p-3 text-xs text-muted-foreground"><div>Source: {activeMemory.provenance.sourceType}{activeMemory.provenance.sourceId ? ` · ${activeMemory.provenance.sourceId}` : ""}</div><div className="mt-1">Authority: {activeMemory.authority}</div><div className="mt-1">Updated: {new Date(activeMemory.updatedAt).toLocaleString()}</div></div> : null}
             <div className="flex items-center gap-2">
               <Button disabled={!memoryDraft.title.trim() || !memoryDraft.body.trim()} icon="save" loading={saving} onClick={() => void saveMemory()}>Save memory</Button>
-              {activeMemory ? <Button className="ml-auto" onClick={() => void forget("forget")} variant="outline">Forget</Button> : null}
+              {activeMemory ? <Button className="ms-auto" onClick={() => void forget("forget")} variant="outline">Forget</Button> : null}
               {activeMemory ? <Button icon="trash" onClick={() => setRemoveOpen(true)} variant="danger">Remove</Button> : null}
             </div>
           </div>

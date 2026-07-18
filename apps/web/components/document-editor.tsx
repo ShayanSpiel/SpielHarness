@@ -249,14 +249,14 @@ export function DocumentEditor({
         >
           <Icon name="quote" size={14} />
         </EditorButton>
-        <span className="ml-auto shrink-0 text-3xs text-muted-foreground select-none">
+        <span className="ms-auto shrink-0 text-3xs text-muted-foreground select-none">
           @ to mention
         </span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <EditorContent
           aria-label="Document body"
-          className="min-h-full [&_.ProseMirror]:min-h-[calc(100vh-210px)] [&_.ProseMirror_h1]:mb-3 [&_.ProseMirror_h1]:text-2xl [&_.ProseMirror_h1]:font-semibold [&_.ProseMirror_h2]:mb-2 [&_.ProseMirror_h2]:text-lg [&_.ProseMirror_h2]:font-semibold [&_.ProseMirror_p]:mb-4 [&_.ProseMirror_ul]:mb-4 [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:pl-6 [&_.ProseMirror_blockquote]:border-l-2 [&_.ProseMirror_blockquote]:border-border-strong [&_.ProseMirror_blockquote]:pl-4 [&_.ProseMirror_blockquote]:text-muted-foreground [&_.ProseMirror_.mention]:rounded-sm [&_.ProseMirror_.mention]:bg-selected [&_.ProseMirror_.mention]:px-1 [&_.ProseMirror_.mention]:py-0.5 [&_.ProseMirror_.mention]:text-foreground-strong [&_.ProseMirror_.mention]:font-medium"
+          className="min-h-full [&_.ProseMirror]:min-h-[calc(100vh-210px)] [&_.ProseMirror_h1]:mb-3 [&_.ProseMirror_h1]:text-2xl [&_.ProseMirror_h1]:font-semibold [&_.ProseMirror_h2]:mb-2 [&_.ProseMirror_h2]:text-lg [&_.ProseMirror_h2]:font-semibold [&_.ProseMirror_p]:mb-4 [&_.ProseMirror_ul]:mb-4 [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:ps-6 [&_.ProseMirror_blockquote]:border-s-2 [&_.ProseMirror_blockquote]:border-border-strong [&_.ProseMirror_blockquote]:ps-4 [&_.ProseMirror_blockquote]:text-muted-foreground [&_.ProseMirror_.mention]:rounded-sm [&_.ProseMirror_.mention]:bg-selected [&_.ProseMirror_.mention]:px-1 [&_.ProseMirror_.mention]:py-0.5 [&_.ProseMirror_.mention]:text-foreground-strong [&_.ProseMirror_.mention]:font-medium"
           editor={editor}
         />
       </div>

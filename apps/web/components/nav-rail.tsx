@@ -28,7 +28,7 @@ const sections: Array<{
     markerClass: "bg-info",
     activeClass: "bg-selected text-info",
     items: [
-      { href: "/", label: "Chats", icon: ENTITY_ICONS.run, match: (p) => p === "/" },
+      { href: "/", label: "New Run", icon: ENTITY_ICONS.run, match: (p) => p === "/" },
     ],
   },
   {
@@ -59,7 +59,7 @@ export function NavRail({ onOpenSearch }: { onOpenSearch: () => void }) {
   const pathname = usePathname();
 
   return (
-    <aside className={`flex h-full ${SIDEBAR.NAV_RAIL_WIDTH} shrink-0 flex-col items-center gap-1 border-r border-border bg-panel py-2`}>
+    <aside className={cn("flex h-full shrink-0 flex-col items-center gap-1 border-e border-border bg-panel py-2", SIDEBAR.NAV_RAIL_WIDTH)}>
       <Tooltip content="SpielOS" side="right">
         <div className="mb-1 flex h-8 w-8 items-center justify-center rounded-md text-foreground-strong">
           <Icon name="box" size={16} />

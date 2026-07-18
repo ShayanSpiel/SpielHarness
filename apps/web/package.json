@@ -8,6 +8,7 @@
     "dev:webpack": "next dev",
     "dev:turbopack": "next dev --turbopack",
     "build": "next build --experimental-app-only",
+    "start": "next start",
     "lint": "eslint . --max-warnings=0",
     "check:colors": "bash ../../scripts/check-no-raw-colors.sh"
   },
@@ -26,6 +27,7 @@
     "@tiptap/suggestion": "^3.27.3",
     "@xyflow/react": "^12.11.2",
     "next": "^15.1.0",
+    "next-intl": "^4.13.2",
     "postgres": "^3.4.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

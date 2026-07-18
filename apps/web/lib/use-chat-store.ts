@@ -76,12 +76,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   useRealtimeSubscription(orgCookie ? `org:${orgCookie}` : null, orgCookie, realtimeListener);
 
   const reload = useCallback(async () => {
-    // Phase 4: expose the latest reload so the realtime listener can
-    // trigger a refresh on run status changes.
     reloadRef.current = reload;
-    // HttpOnly session cookies are deliberately invisible to client code.
-    // Protected routes should load through the authenticated API instead of
-    // guessing authentication state from document.cookie.
     if (typeof window !== "undefined" && window.location.pathname === "/login") {
       setReady(true);
       return;
@@ -129,8 +124,10 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       }
       setChats(newChats);
       setMessages(newMessages);
+      const isRoot = typeof window !== "undefined" && window.location.pathname === "/";
       const storedActiveChatId = typeof window !== "undefined" ? window.localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY) : null;
       setActiveChatId((current) => {
+        if (isRoot) return null;
         const candidate = current ?? storedActiveChatId;
         return candidate && newChats.some((chat) => chat.id === candidate) ? candidate : null;
       });
@@ -138,7 +135,9 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       loadErrorShown.current = false;
       setReady(true);
     } catch (err) {
-      console.error("Failed to load chats:", err);
+      if (process.env.NODE_ENV !== "production") {
+        console.error("Failed to load chats:", err);
+      }
       if (!loadErrorShown.current) {
         toast.error("Chat history could not be loaded", { description: "SpielOS will retry when the workspace refreshes." });
         loadErrorShown.current = true;

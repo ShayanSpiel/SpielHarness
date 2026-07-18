@@ -121,7 +121,7 @@ export function MentionDropdown({
               <button
                 aria-selected={currentIndex === highlightedIndex}
                 className={cn(
-                  "flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors",
+                  "flex w-full items-center gap-2.5 px-3 py-2 text-start text-sm transition-colors",
                   currentIndex === highlightedIndex ? "bg-selected text-foreground-strong" : "text-foreground hover:bg-hover"
                 )}
                 key={`${ref.kind}:${ref.id}`}

@@ -16,13 +16,13 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(
     return (
       <div className={cn("relative", className)}>
         <Icon
-          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
+          className="pointer-events-none absolute start-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
           name="search"
           size={14}
         />
         <Input
           ref={ref}
-          className="h-8 pl-7 text-sm"
+          className="h-8 ps-7 text-sm"
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
           value={value}

@@ -54,7 +54,7 @@
   width: var(--reasoning-fill);
   border-radius: inherit;
   background: var(--primary);
-  transform-origin: left center;
+  transform-origin: inline-start center;
 }
 
 .reasoning-slider[data-max="true"] .reasoning-slider__fill,
@@ -146,7 +146,7 @@
 .reasoning-slider__electricity {
   position: absolute;
   z-index: 3;
-  left: var(--reasoning-fill);
+  inset-inline-start: var(--reasoning-fill);
   top: 50%;
   width: 0;
   height: 0;
@@ -155,14 +155,14 @@
 }
 
 .reasoning-slider[data-max="true"] .reasoning-slider__electricity {
-  left: auto;
-  right: 0.55rem;
+  inset-inline-start: auto;
+  inset-inline-end: 0.55rem;
 }
 
 .reasoning-slider__electricity::before,
 .reasoning-slider__electricity::after {
   position: absolute;
-  left: 0;
+  inset-inline-start: 0;
   top: 0;
   width: 1rem;
   height: 1rem;
@@ -178,7 +178,7 @@
 
 .reasoning-slider__spark {
   position: absolute;
-  left: 0;
+  inset-inline-start: 0;
   top: 0;
 }
 

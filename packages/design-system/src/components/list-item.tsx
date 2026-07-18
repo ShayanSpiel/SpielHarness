@@ -6,7 +6,7 @@ import { cn } from "../index";
 import { Icon } from "./icons";
 
 const listItemStyles = cva(
-  "group flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors duration-[var(--duration)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]",
+  "group flex w-full items-start gap-2 rounded-md px-2 py-2 text-start transition-colors duration-[var(--duration)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]",
   {
     variants: {
       active: {
@@ -65,7 +65,7 @@ export function ListItem({
               </span>
             ) : null}
             {metadata ? (
-              <span className="ml-auto shrink-0">{metadata}</span>
+              <span className="ms-auto shrink-0">{metadata}</span>
             ) : null}
           </div>
           {description ? (

@@ -76,4 +76,5 @@
   --font-mono: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
 
   --skeleton-bg: color-mix(in oklab, var(--panel-raised) 60%, var(--panel) 40%);
+  --overlay-bg: color-mix(in oklab, var(--background) 70%, transparent);
 }

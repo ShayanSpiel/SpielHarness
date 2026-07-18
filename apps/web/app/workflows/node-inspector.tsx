@@ -195,7 +195,7 @@ export function NodeInspector({
             <div className="overflow-hidden rounded-md border border-border bg-input transition-colors focus-within:border-[var(--focus-border)] focus-within:ring-2 focus-within:ring-[var(--focus-ring)]">
               <div className="flex h-8 items-center gap-2 border-b border-border bg-panel-raised px-2">
                 <span className="text-2xs text-muted-foreground">Optional role prompt override</span>
-                <span className="ml-auto text-3xs text-muted-foreground select-none">@ to mention</span>
+                <span className="ms-auto text-3xs text-muted-foreground select-none">@ to mention</span>
               </div>
               <MentionTextarea
                 className="min-h-36"

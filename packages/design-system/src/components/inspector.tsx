@@ -21,7 +21,7 @@ export function InspectorHeader({
   className?: string;
 }) {
   return (
-    <header className={cn("flex h-10 shrink-0 items-center gap-2 border-b border-border px-3 pr-12", className)}>
+    <header className={cn("flex h-10 shrink-0 items-center gap-2 border-b border-border px-3 pe-12", className)}>
       <Icon aria-hidden className="shrink-0 text-muted-foreground" name={icon} size={14} />
       <span className="min-w-0 flex-1 truncate text-xs font-semibold text-foreground">{title}</span>
       {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}

@@ -95,7 +95,7 @@ export const authDatabasePool = getCached("__auth_pool", () => {
     max: positiveIntegerEnv("AUTH_POOL_MAX", 6),
     min: 0,
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: positiveIntegerEnv("AUTH_CONNECT_TIMEOUT_MS", 15_000),
+    connectionTimeoutMillis: positiveIntegerEnv("AUTH_CONNECT_TIMEOUT_MS", 30_000),
     ssl: { rejectUnauthorized: false },
     query_timeout: positiveIntegerEnv("PG_QUERY_TIMEOUT_MS", 30_000),
     // Keep idle connections alive so the server-side idle reaper
@@ -114,9 +114,12 @@ export const authDatabasePool = getCached("__auth_pool", () => {
     // the global cache would leave that live auth instance bound to a closed
     // pool and make every later session lookup fail after a transient socket.
   });
-  if (process.env.NODE_ENV !== "production") {
-    console.info(`[auth] pool mode=${mode} max=${p.options.max} keepAlive=true`);
+  // Warm up the pool so the first request doesn't pay the cold-start penalty.
+  // The promise is intentionally fire-and-forget.
+  if (config.connectionString) {
+    p.query("SELECT 1").catch(() => {});
   }
+  console.info(`[auth] pool mode=${mode} max=${p.options.max} keepAlive=true`);
   return p;
 });
 const pool = authDatabasePool;

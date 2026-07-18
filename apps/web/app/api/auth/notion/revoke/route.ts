@@ -1,7 +1,14 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { getOrg } from "../../../../../lib/server";
 
 export async function POST() {
+  try {
+    await getOrg();
+  } catch {
+    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  }
+
   const response = NextResponse.json({ success: true });
 
   const cookieStore = await cookies();

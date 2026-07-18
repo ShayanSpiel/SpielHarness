@@ -64,7 +64,7 @@ export function ToolCallCard({
           </span>
           {integrationName ? <span className="shrink-0 text-3xs text-muted-foreground">{integrationName}</span> : null}
           {event.skillName ? (
-            <span className="ml-auto shrink-0 rounded-full bg-selected px-2 py-0.5 text-3xs text-muted-foreground">
+            <span className="ms-auto shrink-0 rounded-full bg-selected px-2 py-0.5 text-3xs text-muted-foreground">
               {event.skillName}
             </span>
           ) : null}
