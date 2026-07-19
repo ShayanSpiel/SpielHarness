@@ -1,16 +1,16 @@
 "use client";
 
 import { useMemo, useRef } from "react";
-import { useRouter } from "next/navigation";
 import type { ChatModelAdapter, ChatModelRunResult, ThreadAssistantMessagePart } from "@assistant-ui/react";
 import { useRunContext } from "./run-context";
 import { useWorkspaceStore } from "./use-workspace-store";
-import { messageRowToChatMessage, executionModeSchema, DEFAULT_EXECUTION_MODE, type SseFrame, type ChatMessage, type Chat as CoreChat, type HumanInputRequest, type RunEvent, type Artifact, type RunStatus } from "@spielos/core";
+import { executionModeSchema, DEFAULT_EXECUTION_MODE, type SseFrame, type ChatMessage, type Chat as CoreChat, type HumanInputRequest, type RunEvent, type Artifact, type RunStatus } from "@spielos/core";
 
-// Module-level Set so the in-flight key list survives React re-mounts and
-// the entire app's component tree. Message keys are globally unique per
-// page, so a single Set is enough to de-duplicate in-flight runs.
 const inFlightMessages = new Set<string>();
+// Module-level set of run IDs with active SSE streams. The realtime
+// listener in ChatStoreProvider checks this before triggering reload()
+// to avoid racing with the streaming SSE frames.
+export const activeRunStreams = new Set<string>();
 
 function getMessageText(message: { content: readonly unknown[] }): string {
   return message.content
@@ -28,9 +28,6 @@ function getMessageText(message: { content: readonly unknown[] }): string {
 export function useSpielosChatAdapter(): ChatModelAdapter {
   const run = useRunContext();
   const store = useWorkspaceStore();
-  const router = useRouter();
-  const routerRef = useRef(router);
-  routerRef.current = router;
   const runRef = useRef(run);
   runRef.current = run;
   const storeRef = useRef(store);
@@ -47,6 +44,12 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
         const text = getMessageText(lastUser);
         const ctx = runRef.current;
         const ws = storeRef.current;
+
+        // Phase 1: beginRunAttempt sets status for immediate feedback but
+        // does NOT clear events/artifacts — those are deferred until the
+        // run SSE frame arrives.
+        const generationId = ctx.beginRunAttempt();
+
         const currentChat = ws.chats.find((entry) => entry.id === ws.activeChatId) ?? null;
         const executionMode = executionModeSchema.catch(DEFAULT_EXECUTION_MODE).parse(
           typeof currentChat?.metadata?.executionMode === "string"
@@ -63,22 +66,13 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
           targetId = explicit.id;
         }
 
-        // This must precede chat creation and all network work. The assistant
-        // turn is already visible at this point, so render genuine local
-        // submission activity immediately while the durable run is created.
-        ctx.startRun(type, "Thinking\u2026");
-
         let chatId = ws.activeChatId;
         let createdChatId: string | null = null;
         if (!chatId) {
-          // The execute route creates the chat and run together. Generating
-          // the id locally removes a blocking duplicate POST before the SSE
-          // request and keeps chat creation inside the durable run boundary.
           chatId = crypto.randomUUID();
           createdChatId = chatId;
         }
 
-        // Map context items to file ids.
         const contextFileIds = ctx.contextItems
           .filter((item) => item.kind === "file" || item.kind === "library" || item.kind === "knowledge" || item.kind === "prompt" || item.kind === "strategy")
           .map((item) => item.id);
@@ -172,9 +166,6 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
         let terminalStatus: RunStatus | null = null;
         let captureRunId: string | null = null;
 
-        // Pending side effects to flush on the next animation frame.
-        // The set-state calls and event appends are coalesced so a burst
-        // of frames produces a single React render.
         type PendingFrame =
           | { kind: "run"; runId: string }
           | { kind: "chat_created"; chatId: string; chat: CoreChat }
@@ -198,12 +189,16 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
         };
 
         const applyFrame = (item: PendingFrame) => {
+          // Phase 1: generation ownership guard — if a newer run started,
+          // drop all mutations from this stale generator.
+          if (generationId !== runRef.current.currentGeneration) return;
+
           if (item.kind === "chat_created") {
             ws.upsertChat(item.chat);
           } else if (item.kind === "message_persisted") {
             ws.upsertMessage(item.chatId, item.message);
           } else if (item.kind === "run") {
-                ctx.setActiveRunId(item.runId);
+            ctx.activateRunProjection(item.runId);
           } else if (item.kind === "status") {
             ctx.setActivity(item.message);
           } else if (item.kind === "run_state") {
@@ -254,9 +249,6 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
         const scheduleFlush = () => {
           if (rafScheduled) return;
           rafScheduled = true;
-          // requestAnimationFrame is browser-only; if it is missing (SSR or
-          // non-DOM environments), flush synchronously so the run is not
-          // blocked.
           const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
             ? window.requestAnimationFrame.bind(window)
             : (cb: (t: number) => void) => { cb(typeof performance !== "undefined" ? performance.now() : 0); return 0; };
@@ -271,8 +263,6 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
         const drainAndFinalize = () => {
           if (streamClosed) return;
           streamClosed = true;
-          // Apply any frames that the final rAF hadn't flushed yet so
-          // the terminal status / done event cannot be stranded.
           flushPending();
         };
 
@@ -300,12 +290,18 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
               } catch {
                 continue;
               }
+              // Phase 2: track checkpoint version for monotonic restoration
+              if (item.checkpointVersion !== undefined) {
+                ctx.recordCheckpointVersion(item.checkpointVersion);
+              }
               if (item.kind === "chat_created") {
                 enqueue({ kind: "chat_created", chatId: item.chatId, chat: item.chat });
               } else if (item.kind === "message_persisted") {
                 enqueue({ kind: "message_persisted", chatId: item.chatId, message: item.message });
               } else if (item.kind === "run") {
                 captureRunId = item.runId;
+                ctx.attachStream(item.runId);
+                activeRunStreams.add(item.runId);
                 enqueue({ kind: "run", runId: item.runId });
               } else if (item.kind === "status") {
                 enqueue({ kind: "status", message: item.message });
@@ -333,39 +329,20 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
           drainAndFinalize();
         } finally {
           drainAndFinalize();
+          if (captureRunId) {
+            ctx.detachStream(captureRunId);
+            activeRunStreams.delete(captureRunId);
+          }
           if (!terminalStatus) {
             const interruptedStatus: RunStatus = abortSignal.aborted ? "cancelled" : "failed";
             ctx.setRunStatus(interruptedStatus);
           }
           inFlightMessages.delete(messageKey);
-          // A component unmount or reload aborts the browser reader too, so it
-          // cannot be treated as user cancellation. The visible Stop control
-          // calls the durable /cancel endpoint explicitly.
-          if (createdChatId && !storeRef.current.activeChatId) {
-            const existing = storeRef.current.messages[createdChatId];
-            if (!existing?.length) {
-              // Fallback: fetch committed messages from API
-              try {
-                const res = await fetch(`/api/chats/${createdChatId}/messages`, { cache: "no-store" });
-                if (res.ok) {
-                  const data = await res.json() as { messages: Array<Record<string, unknown>> };
-                  if (Array.isArray(data.messages)) {
-                    for (const raw of data.messages) {
-                      const msg = messageRowToChatMessage(raw as Parameters<typeof messageRowToChatMessage>[0]);
-                      storeRef.current.upsertMessage(createdChatId, msg);
-                    }
-                  }
-                }
-              } catch {
-                // Fallback: messages arrive on next workspace reload
-              }
-            }
-            storeRef.current.setActiveChat(createdChatId);
-            // Navigate to the run URL so the page has a stable identity and
-            // reload() on / does not null out activeChatId (isRoot check).
-            if (captureRunId && typeof window !== "undefined") {
-              routerRef.current.replace(`/runs/${captureRunId}`);
-            }
+          // Phase 1: The adapter must NOT mutate navigation identity or
+          // chat selection. Instead, store a pending commit that a lifecycle
+          // coordinator in ChatThreadInner consumes after the runtime runEnd.
+          if (createdChatId && captureRunId) {
+            ctx.commitPendingChat({ chatId: createdChatId, runId: captureRunId });
           }
         }
 

@@ -9,25 +9,12 @@ export async function GET() {
   try {
     const org = await getOrg();
     const chats = await listChats(org.sql, org.orgId);
-    const ids = chats.map((c) => c.id);
-    const messages = ids.length
-      ? await org.sql<{ id: string; chat_id: string; org_id: string; role: string; body: string; metadata: Record<string, unknown>; created_at: string }[]>`
-          select id, chat_id, org_id, role, body, metadata, created_at
-          from chat_messages
-          where org_id = ${org.orgId} and chat_id = any(${ids})
-          order by created_at asc
-        `
-      : [];
-    const byChat = new Map<string, (typeof messages)[number][]>();
-    for (const m of messages) {
-      const list = byChat.get(m.chat_id) ?? [];
-      list.push(m);
-      byChat.set(m.chat_id, list);
-    }
+    // Phase 3: chat metadata only — messages are fetched separately
+    // via /api/chats/:id/messages with cursor pagination.
     return Response.json({
       chats: chats.map((c) => ({
         ...c,
-        chat_messages: byChat.get(c.id) ?? []
+        chat_messages: [] // kept for backward compat; always empty now
       }))
     });
   } catch (err) {

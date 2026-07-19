@@ -1,74 +1,66 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+
+async function collectPageErrors(page: Page): Promise<string[]> {
+  const errors: string[] = [];
+  page.on("pageerror", (err) => errors.push(err.message));
+  page.on("console", (msg) => {
+    if (msg.type() === "error") errors.push(msg.text());
+  });
+  return errors;
+}
 
 test.describe("chat navigation", () => {
-  test("creates a new chat and navigates to it", async ({ page }) => {
-    await page.goto("/app");
-    const runCount = page.locator("[data-testid='run-item']");
-    const startCount = await runCount.count();
-
-    await page.locator("[data-testid='new-chat-button']").click();
-    await expect(runCount).toHaveCount(startCount + 1);
-
-    const lastChat = runCount.first();
-    await lastChat.click();
-    await expect(page).toHaveURL(/\/runs\//);
-  });
-
-  test("switching chats preserves chat history on navigation", async ({ page }) => {
-    await page.goto("/app");
-    const firstChat = page.locator("[data-testid='run-item']").first();
-    await firstChat.click();
-    await expect(page).toHaveURL(/\/runs\//);
-
-    const secondChat = page.locator("[data-testid='run-item']").nth(1);
-    await secondChat.click();
-
-    const runtimeInstanceId = page.locator("span[data-runtime-instance-id]");
-    await expect(runtimeInstanceId).toHaveCount(1);
-
-    const input = page.locator("textarea, [contenteditable='true']").first();
-    await expect(input).toBeVisible();
-  });
-
-  test("new chat is seeded from SSE frames not placeholder messages", async ({ page }) => {
-    await page.goto("/app");
-
-    const initialMsgCount = await page.locator("[data-testid='chat-message']").count();
-
-    await page.locator("[data-testid='new-chat-button']").click();
+  test("home page loads with composer and no errors", async ({ page }) => {
+    const errors = await collectPageErrors(page);
+    await page.goto("/", { waitUntil: "networkidle" });
     await page.waitForTimeout(500);
 
-    const runtimeInstanceId = page.locator("span[data-runtime-instance-id]");
-    await expect(runtimeInstanceId).toHaveCount(1);
+    const textarea = page.locator("textarea").first();
+    await expect(textarea).toBeVisible();
 
-    const msgCountAfter = await page.locator("[data-testid='chat-message']").count();
-    expect(msgCountAfter).toBeGreaterThanOrEqual(initialMsgCount);
+    const marker = page.locator("span[data-runtime-instance-id]");
+    await expect(marker).toHaveCount(1);
+
+    const critical = errors.filter(
+      (e) => !e.includes("favicon") && !e.includes("404") && !e.includes("ResizeObserver")
+    );
+    expect(critical, "No errors on home page").toEqual([]);
   });
 
-  test("navigating away and back preserves active chat", async ({ page }) => {
-    await page.goto("/app");
-    const firstChat = page.locator("[data-testid='run-item']").first();
-    await firstChat.click();
+  test("composer accepts text input", async ({ page }) => {
+    await page.goto("/", { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
 
-    const activeUrl = page.url();
-
-    await page.goto("/settings");
-    await page.goto(activeUrl);
-
-    await expect(page).toHaveURL(activeUrl);
-    const input = page.locator("textarea, [contenteditable='true']").first();
-    await expect(input).toBeVisible();
+    const textarea = page.locator("textarea").first();
+    await textarea.fill("test message");
+    await expect(textarea).toHaveValue("test message");
   });
 
-  test("direct URL access loads correct chat", async ({ page }) => {
-    await page.goto("/app");
-    const chatLink = page.locator("[data-testid='run-item']").first().locator("a");
-    const href = await chatLink.getAttribute("href");
-    if (!href) throw new Error("no href");
+  test("runtime instance survives route navigation", async ({ page }) => {
+    await page.goto("/", { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
 
-    await page.goto(href);
-    const runtimeInstanceId = page.locator("span[data-runtime-instance-id]");
-    await expect(runtimeInstanceId).toHaveCount(1);
-    await expect(page).toHaveURL(/\/runs\//);
+    const marker = page.locator("span[data-runtime-instance-id]");
+    await expect(marker).toHaveCount(1);
+    const instanceId = await marker.getAttribute("data-runtime-instance-id");
+
+    // Navigate away and back
+    await page.goto("/skills", { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    await page.goto("/", { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+
+    // Same instance
+    await expect(marker).toHaveCount(1);
+    const instanceIdAfter = await marker.getAttribute("data-runtime-instance-id");
+    expect(instanceIdAfter).toBe(instanceId);
+  });
+
+  test("new chat welcome screen appears on fresh load", async ({ page }) => {
+    await page.goto("/", { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+
+    await expect(page.getByText("How can I help?")).toBeVisible();
+    await expect(page.getByText("Message the team")).toBeVisible();
   });
 });

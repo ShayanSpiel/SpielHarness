@@ -1,6 +1,7 @@
 import { cookies, headers } from "next/headers";
 import { createSql, getUserOrgs, type OrgWithMembership, type Sql } from "@spielos/db";
 import { auth } from "./auth";
+import { makeReqLogger } from "./logger";
 
 export class HttpError extends Error {
   constructor(public status: number, message: string) {
@@ -64,21 +65,32 @@ function extractSessionToken(cookieHeader: string): string | null {
   return match?.[1] ?? null;
 }
 
+const RETRYABLE_SESSION_PATTERNS = /terminat|closed|reset|write|connection|timeout|ETIMEDOUT|ECONNRESET|EPIPE|pool|EADDRNOTAVAIL|EADDRINUSE|ENETUNREACH|EHOSTUNREACH|ECONNREFUSED|ENOTFOUND/i;
+
 function isRetriableSessionError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const message = err.message ?? "";
-  return /terminat|closed|reset|connection|timeout|ETIMEDOUT|ECONNRESET|EPIPE|pool/i.test(message);
+  return RETRYABLE_SESSION_PATTERNS.test(message);
 }
 
-async function getSessionWithRetry(cookieHeader: string, attempts = 2): Promise<Awaited<ReturnType<typeof auth.api.getSession>>> {
+async function getSessionWithRetry(
+  cookieHeader: string,
+  attempts = 3,
+  log = makeReqLogger("auth")
+): Promise<Awaited<ReturnType<typeof auth.api.getSession>>> {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      return await auth.api.getSession({ headers: new Headers({ cookie: cookieHeader }) });
+      const result = await auth.api.getSession({ headers: new Headers({ cookie: cookieHeader }) });
+      if (attempt > 0) log.info("session lookup recovered after retries", { attempt });
+      return result;
     } catch (err) {
       lastError = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn(`session lookup attempt ${attempt + 1}/${attempts} failed`, { error: msg });
       if (!isRetriableSessionError(err) || attempt === attempts - 1) throw err;
-      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+      const delay = Math.min(200 * (attempt + 1), 1000);
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
   throw lastError;

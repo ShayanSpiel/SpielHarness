@@ -1,6 +1,15 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
-async function expectSignInRedirect(page: import("@playwright/test").Page): Promise<boolean> {
+async function collectPageErrors(page: Page): Promise<string[]> {
+  const errors: string[] = [];
+  page.on("pageerror", (err) => errors.push(err.message));
+  page.on("console", (msg) => {
+    if (msg.type() === "error") errors.push(msg.text());
+  });
+  return errors;
+}
+
+async function expectSignInRedirect(page: Page): Promise<boolean> {
   if (!page.url().includes("/login")) return false;
   await expect(page.getByRole("button", { name: "Continue with Google" })).toBeVisible();
   return true;
@@ -19,19 +28,13 @@ const ROUTES = [
 
 for (const route of ROUTES) {
   test.describe(route.name, () => {
-    test("loads without console errors", async ({ page }) => {
-      const errors: string[] = [];
-      page.on("console", (msg) => {
-        if (msg.type() === "error") errors.push(msg.text());
-      });
-      page.on("pageerror", (err) => errors.push(err.message));
+    test("loads without console or page errors", async ({ page }) => {
+      const errors = await collectPageErrors(page);
 
       await page.goto(route.path, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
 
-      const critical = errors.filter(
-        (e) => !e.includes("favicon") && !e.includes("404"),
-      );
-      expect(critical, `Console errors on ${route.path}`).toEqual([]);
+      expect(errors, `Page errors on ${route.path}`).toEqual([]);
     });
 
     test("screenshot", async ({ page }) => {
@@ -50,5 +53,19 @@ test.describe("Navigation", () => {
     if (await expectSignInRedirect(page)) return;
     const sidebar = page.locator("nav, [role='navigation'], aside").first();
     await expect(sidebar).toBeVisible();
+  });
+
+  test("no page errors across route transitions", async ({ page }) => {
+    const errors = await collectPageErrors(page);
+
+    await page.goto("/", { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+
+    for (const route of ROUTES) {
+      await page.goto(route.path, { waitUntil: "networkidle" });
+      await page.waitForTimeout(300);
+    }
+
+    expect(errors, "No page errors across all route transitions").toEqual([]);
   });
 });

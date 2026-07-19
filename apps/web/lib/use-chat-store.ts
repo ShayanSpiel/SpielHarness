@@ -12,6 +12,7 @@ import {
   type ReactNode
 } from "react";
 import { messageRowToChatMessage, upsertMessage as mergeMessage, mergeMessages, reconcileChats, type ChatMessage as DbChatMessage, type Chat as CoreChat } from "@spielos/core";
+import { activeRunStreams } from "./chat-adapter";
 import { toast } from "@spielos/design-system";
 import { fetchJsonWithRetry } from "./fetch-json";
 import { useRealtimeSubscription } from "./use-realtime";
@@ -40,6 +41,7 @@ export type ChatStore = {
   appendMessage: (chatId: string, message: { role: "user" | "assistant" | "system"; body: string }) => Promise<DbChatMessage>;
   hydrateChat: (chatId: string, value: { messages: DbChatMessage[]; metadata?: Record<string, unknown> }) => void;
   reload: () => Promise<void>;
+  fetchChatMessages: (chatId: string) => Promise<void>;
   upsertMessage: (chatId: string, msg: DbChatMessage) => void;
   upsertChat: (chat: CoreChat) => void;
 };
@@ -75,10 +77,39 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       window.dispatchEvent(new CustomEvent("spielos:run-update", { detail: event }));
     }
     if (event.type === "run.status.changed" || event.type === "context.invalidated") {
+      // Phase 2: suppress reload while SSE stream owns the run
+      // to avoid racing with streaming SSE frames.
+      if (event.type === "run.status.changed") {
+        const detail = (event as unknown as { detail?: { runId?: string } }).detail;
+        const runId = detail?.runId;
+        if (typeof runId === "string" && activeRunStreams.has(runId)) return;
+      }
       void reloadRef.current?.();
     }
   }, []);
   useRealtimeSubscription(orgCookie ? `org:${orgCookie}` : null, orgCookie, realtimeListener);
+
+  // Phase 3: lazy-load messages for a specific chat with cursor pagination
+  const fetchChatMessages = useCallback(async (chatId: string) => {
+    try {
+      const res = await fetch(`/api/chats/${chatId}/messages?limit=200`, { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json() as { messages: Array<Record<string, unknown>> };
+      if (!Array.isArray(data.messages)) return;
+      const incoming = data.messages
+        .filter((m) => {
+          const role = String(m.role ?? "");
+          return role === "user" || role === "assistant" || role === "system";
+        })
+        .map((m) => messageRowToChatMessage(m as Parameters<typeof messageRowToChatMessage>[0]));
+      setMessages((prev) => ({
+        ...prev,
+        [chatId]: mergeMessages(prev[chatId] ?? [], incoming)
+      }));
+    } catch {
+      // Messages arrive on next reload or when the user opens the chat
+    }
+  }, []);
 
   const reload = useCallback(async () => {
     reloadRef.current = reload;
@@ -97,15 +128,6 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
           updated_at: string;
           archived_at: string | null;
           metadata: Record<string, unknown>;
-          chat_messages: Array<{
-            id: string;
-            chat_id: string;
-            org_id: string;
-            role: string;
-            body: string;
-            metadata: Record<string, unknown>;
-            created_at: string;
-          }>;
         }>;
       }>("/api/chats", { cache: "no-store" });
       if (seq !== reloadSeqRef.current) return;
@@ -133,28 +155,22 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
         const latest = chatsRef.current;
         return latest.some((c) => c.id === current && !c.archivedAt) ? current : null;
       });
-      const newMessages: Record<string, DbChatMessage[]> = {};
-      for (const c of data.chats) {
-        const incoming = (c.chat_messages ?? [])
-          .filter((m) => m.role === "user" || m.role === "assistant" || m.role === "system")
-          .map((m) => messageRowToChatMessage(m));
-        newMessages[c.id] = incoming;
-      }
-      setMessages((prev) => {
-        const next = { ...prev };
-        for (const [cid, incoming] of Object.entries(newMessages)) {
-          next[cid] = mergeMessages(prev[cid] ?? [], incoming);
-        }
-        return next;
-      });
+      // Phase 3: chat metadata loaded — messages are fetched lazily for
+      // the selected chat only. No more bulk message loading.
+      // After a metadata reload, refetch the active chat's messages too.
       const isRoot = typeof window !== "undefined" && window.location.pathname === "/";
       const storedActiveChatId = typeof window !== "undefined" ? window.localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY) : null;
+      let newActiveChatId: string | null = null;
       setActiveChatId((current) => {
         if (isRoot) return null;
         const candidate = current ?? storedActiveChatId;
         const latest = chatsRef.current;
-        return candidate && latest.some((chat) => chat.id === candidate) ? candidate : null;
+        newActiveChatId = candidate && latest.some((chat) => chat.id === candidate) ? candidate : null;
+        return newActiveChatId;
       });
+      if (newActiveChatId) {
+        fetchChatMessages(newActiveChatId).catch(() => {});
+      }
       initialLoaded.current = true;
       loadErrorShown.current = false;
       setReady(true);
@@ -168,7 +184,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       }
       setReady(true);
     }
-  }, []);
+  }, [fetchChatMessages]);
 
   useEffect(() => {
     void reload();
@@ -324,10 +340,11 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       appendMessage,
       hydrateChat,
       reload,
+      fetchChatMessages,
       upsertMessage,
       upsertChat
     }),
-    [chats, activeChatId, messages, ready, createChat, renameChat, archiveChat, updateChatMetadata, appendMessage, hydrateChat, reload, upsertMessage, upsertChat]
+    [chats, activeChatId, messages, ready, createChat, renameChat, archiveChat, updateChatMetadata, appendMessage, hydrateChat, reload, fetchChatMessages, upsertMessage, upsertChat]
   );
 
   return createElement(ChatStoreContext.Provider, { value: store }, children);

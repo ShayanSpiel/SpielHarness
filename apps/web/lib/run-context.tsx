@@ -6,6 +6,7 @@ import {
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
   type ReactNode
 } from "react";
@@ -33,6 +34,11 @@ export type LiveRunUsage = {
   outputTokens: number;
   toolCalls: number;
 };
+
+export type PendingCommit = {
+  chatId: string;
+  runId: string;
+} | null;
 
 export type RunContextValue = {
   contextItems: ContextItem[];
@@ -76,6 +82,20 @@ export type RunContextValue = {
   appendContinuationText: (text: string) => void;
   clearContinuationText: () => void;
   reset: () => void;
+  // Phase 1 additions:
+  currentGeneration: string | null;
+  beginRunAttempt: () => string;
+  isGenerationCurrent: (gid: string) => boolean;
+  activateRunProjection: (runId: string) => void;
+  pendingCommit: PendingCommit;
+  commitPendingChat: (commit: PendingCommit) => void;
+  consumePendingCommit: () => PendingCommit;
+  hasActiveStream: (runId: string) => boolean;
+  attachStream: (runId: string) => void;
+  detachStream: (runId: string) => void;
+  // Phase 2: checkpoint version for monotonic restoration
+  highestCheckpointVersion: number;
+  recordCheckpointVersion: (version: number) => void;
 };
 
 const RunContext = createContext<RunContextValue | null>(null);
@@ -96,6 +116,11 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<RunLifecycleStatus>("idle");
   const [runType, setRunType] = useState<RunType | null>(null);
   const [continuationText, setContinuationText] = useState("");
+  const [currentGeneration, setCurrentGeneration] = useState<string | null>(null);
+  const generationRef = useRef<string | null>(null);
+  const [pendingCommit, setPendingCommit] = useState<PendingCommit>(null);
+  const [streamOwnership, setStreamOwnership] = useState<Record<string, string>>({});
+  const [highestCheckpointVersion, setHighestCheckpointVersion] = useState(0);
 
   const addContext = useCallback((item: ContextItem) => {
     setContextItems((current) => {
@@ -118,6 +143,7 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Phase 1: split startRun into non-destructive attempt + deferred activation
   const startRun = useCallback((type: RunType, initialActivity: string | null = null) => {
     setEvents([]);
     setArtifacts([]);
@@ -129,6 +155,59 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
     setRunType(type);
     setContinuationText("");
     setStatus("running");
+  }, []);
+
+  const beginRunAttempt = useCallback(() => {
+    const generation = crypto.randomUUID();
+    generationRef.current = generation;
+    setCurrentGeneration(generation);
+    // Status is set for immediate UI feedback but events/artifacts
+    // are NOT cleared — that happens in activateRunProjection.
+    setStatus("running");
+    setActivity("Thinking\u2026");
+    return generation;
+  }, []);
+
+  const activateRunProjection = useCallback((runId: string) => {
+    setEvents([]);
+    setArtifacts([]);
+    setActiveRunId(runId);
+    setDurableState(null);
+    setLiveUsage(null);
+  }, []);
+
+  const commitPendingChat = useCallback((commit: PendingCommit) => {
+    if (commit) setPendingCommit(commit);
+  }, []);
+
+  const consumePendingCommit = useCallback(() => {
+    let commit: PendingCommit = null;
+    setPendingCommit((current) => {
+      commit = current;
+      return null;
+    });
+    return commit;
+  }, []);
+
+  const attachStream = useCallback((runId: string) => {
+    const gen = crypto.randomUUID();
+    setStreamOwnership((prev) => ({ ...prev, [runId]: gen }));
+  }, []);
+
+  const detachStream = useCallback((runId: string) => {
+    setStreamOwnership((prev) => {
+      const next = { ...prev };
+      delete next[runId];
+      return next;
+    });
+  }, []);
+
+  const hasActiveStream = useCallback((runId: string): boolean => {
+    return runId in streamOwnership;
+  }, [streamOwnership]);
+
+  const recordCheckpointVersion = useCallback((version: number) => {
+    setHighestCheckpointVersion((prev) => Math.max(prev, version));
   }, []);
 
   const appendEvent = useCallback((event: RunEvent) => {
@@ -255,7 +334,19 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
       continuationText,
       appendContinuationText,
       clearContinuationText,
-      reset
+      reset,
+      currentGeneration,
+      isGenerationCurrent: (gid: string) => gid === generationRef.current,
+      beginRunAttempt,
+      activateRunProjection,
+      pendingCommit,
+      commitPendingChat,
+      consumePendingCommit,
+      hasActiveStream,
+      attachStream,
+      detachStream,
+      highestCheckpointVersion,
+      recordCheckpointVersion
     }),
     [
       contextItems,
@@ -292,7 +383,18 @@ export function RunContextProvider({ children }: { children: ReactNode }) {
       continuationText,
       appendContinuationText,
       clearContinuationText,
-      reset
+      reset,
+      currentGeneration,
+      beginRunAttempt,
+      activateRunProjection,
+      pendingCommit,
+      commitPendingChat,
+      consumePendingCommit,
+      hasActiveStream,
+      attachStream,
+      detachStream,
+      highestCheckpointVersion,
+      recordCheckpointVersion
     ]
   );
 

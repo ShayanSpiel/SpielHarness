@@ -34,6 +34,7 @@ import { buildDirectorToolContext, workflowsForDirector } from "../../../../lib/
 import { authDatabasePool } from "../../../../lib/auth";
 import { chatRowToChat, messageRowToChatMessage } from "@spielos/core";
 import type { ModelUsageUpdate, RunEvent, RunStatus, ExecutionMode } from "@spielos/core";
+import { makeReqLogger, generateRequestId } from "../../../../lib/logger";
 
 function frame(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -41,7 +42,10 @@ function frame(data: unknown): string {
 
 export async function POST(request: Request) {
   const reqStart = performance.now();
+  const rid = generateRequestId();
+  const log = makeReqLogger("runs/execute", rid);
   try {
+    log.info("POST /api/runs/execute starting");
     const org = await getOrg();
     requireWrite(org);
     const authMs = performance.now() - reqStart;
@@ -402,6 +406,16 @@ export async function POST(request: Request) {
         // RunYield shape; the route does not maintain a second
         // parser.
         try {
+          const providerName = resolved.runRequest.provider?.name ?? "unknown";
+          const modelName = resolved.runRequest.model?.model ?? "unknown";
+          log.info("starting provider stream", {
+            provider: providerName,
+            model: modelName,
+            mode: resolvedExecutionMode,
+            type: resolved.type,
+            singleNode: resolved.runRequest.singleNode,
+            runId: run.id
+          });
           const gen: AsyncGenerator<RunYield, void, void> = isDirectorChat
             ? streamDirectorRun({
               ...resolved.runRequest,
@@ -465,6 +479,7 @@ export async function POST(request: Request) {
             if (!firstByteSent) {
               firstByteSent = true;
               if (firstProviderByteAt === null) firstProviderByteAt = performance.now();
+              log.timing("first_byte_to_client", performance.now() - reqStart);
             }
             if (item.kind === "text") {
               if (firstProviderByteAt === null) firstProviderByteAt = performance.now();
@@ -533,8 +548,11 @@ export async function POST(request: Request) {
             } else if (item.kind === "done") {
               const allowed: RunStatus[] = ["running", "waiting_human", "completed", "failed", "cancelled"];
               terminalStatus = (allowed.includes(item.status as RunStatus) ? item.status : "completed") as RunStatus;
+              log.info("provider stream done", { terminalStatus, runId: run.id });
             }
           }
+          const streamDuration = performance.now() - providerStart;
+          log.info("provider stream completed", { terminalStatus, durationMs: Math.round(streamDuration), runId: run.id });
         } catch (err) {
           errorMessage = err instanceof Error ? err.message : "Run failed";
           const durable = await getRun(sql, org.orgId, run.id);
@@ -703,6 +721,24 @@ export async function POST(request: Request) {
         }
 
         // ── Run metrics (best-effort) ─────────────────────────────────────
+        log.info("request complete", {
+          status: terminalStatus,
+          totalMs: Math.round(timings.totalMs),
+          authMs: Math.round(authMs),
+          harnessMs: Math.round(harnessResolutionMs),
+          runCreationMs: Math.round(runCreationMs),
+          providerTtftMs: Math.round(providerTtftMs),
+          firstByteToClientMs: Math.round(firstByteToClientMs),
+          eventPersistMs: Math.round(eventPersistMs),
+          compactionMs: Math.round(compactionMs),
+          dbQueries: counter?.count ?? 0,
+          dbMs: Math.round(counter?.totalMs ?? 0),
+          llmInputTokens: billableUsage.input,
+          llmOutputTokens: billableUsage.output,
+          runId: run.id,
+          provider: resolved.runRequest.provider?.name,
+          model: resolved.runRequest.model?.model
+        });
         try {
           await upsertRunMetrics(sql, {
             run_id: run.id,
@@ -781,6 +817,12 @@ export async function POST(request: Request) {
       }
     });
   } catch (err) {
+    const ms = Math.round(performance.now() - reqStart);
+    if (err instanceof HttpError) {
+      log.warn(`${err.status} ${err.message}`, { ms });
+    } else {
+      log.error(`POST failed: ${err instanceof Error ? err.message : String(err)}`, { ms });
+    }
     return errorResponse(err);
   }
 }

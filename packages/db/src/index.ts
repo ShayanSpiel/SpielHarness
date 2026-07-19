@@ -156,23 +156,28 @@ export function createSql(connectionString: string): Sql {
   }
   const mode = resolveConnectionMode(effective);
   const prepare = shouldUsePreparedStatements(mode);
+  const poolMax = Math.max(4, Number(process.env.DB_POOL_MAX) || 15);
+  const poolMin = Math.max(1, Number(process.env.DB_POOL_MIN) || 2);
   const opts: Record<string, unknown> = {
     // Workspace reads and durable run checkpoints happen concurrently.
     // One connection makes checkpoints queue behind unrelated UI reads.
-    max: Math.max(1, Number(process.env.DB_POOL_MAX) || 4),
-    min: 0,
-    idle_timeout: 30,
+    max: poolMax,
+    min: poolMin,
+    idle_timeout: 60,
     // Remote transaction poolers can take several seconds to establish a
     // fresh TLS socket after an idle period. Five seconds produced false
     // CONNECT_TIMEOUT failures during otherwise healthy first run creation.
-    connect_timeout: Math.max(1, Number(process.env.DB_CONNECT_TIMEOUT_SECONDS) || 30),
+    connect_timeout: Math.max(1, Number(process.env.DB_CONNECT_TIMEOUT_SECONDS) || 10),
     prepare,
     ssl,
     connection,
     // TCP keep-alive prevents Supabase's server-side idle reaper from
     // silently closing connections that the postgres-js client still
     // believes are healthy.
-    keep_alive: 30,
+    keep_alive: 15,
+    // Allow postgres.js to retry dead connections instead of surfacing
+    // transient network failures as CONNECT_TIMEOUT to callers.
+    max_lifetime: 300,
     onnotice: () => undefined,
     transform: { undefined: null },
   };
@@ -1041,12 +1046,25 @@ export async function listChats(sql: Sql, orgId: string): Promise<ChatRow[]> {
 export async function listChatMessages(
   sql: Sql,
   orgId: string,
-  chatId: string
+  chatId: string,
+  opts?: { after?: string; limit?: number }
 ): Promise<ChatMessageRow[]> {
+  const limit = opts?.limit ?? 200;
+  if (opts?.after) {
+    // Cursor-based pagination: fetch messages after the given sequence_number
+    return sql<ChatMessageRow[]>`
+      select * from chat_messages
+      where org_id = ${orgId} and chat_id = ${chatId}
+        and sequence_number > (select sequence_number from chat_messages where id = ${opts.after} and org_id = ${orgId})
+      order by sequence_number asc
+      limit ${limit}
+    `;
+  }
   return sql<ChatMessageRow[]>`
     select * from chat_messages
     where org_id = ${orgId} and chat_id = ${chatId}
-    order by created_at asc
+    order by sequence_number asc
+    limit ${limit}
   `;
 }
 
@@ -1084,12 +1102,20 @@ export async function appendChatMessage(
   body: string,
   metadata: Record<string, unknown> = {}
 ): Promise<ChatMessageRow> {
+  // Phase 3: atomic sequence number from chats.next_message_sequence
+  const [seq] = await sql<{ sequence: number }[]>`
+    update chats
+    set next_message_sequence = next_message_sequence + 1,
+        updated_at = now()
+    where org_id = ${orgId} and id = ${chatId}
+    returning (next_message_sequence - 1) as sequence
+  `;
+  const sequence = seq?.sequence ?? 0;
   const rows = await sql<ChatMessageRow[]>`
-    insert into chat_messages (org_id, chat_id, role, body, metadata)
-    values (${orgId}, ${chatId}, ${role}, ${body}, ${toJsonb(sql, metadata)})
+    insert into chat_messages (org_id, chat_id, role, body, metadata, sequence_number)
+    values (${orgId}, ${chatId}, ${role}, ${body}, ${toJsonb(sql, metadata)}, ${sequence})
     returning *
   `;
-  await sql`update chats set updated_at = now() where org_id = ${orgId} and id = ${chatId}`;
   return rows[0];
 }
 
@@ -1100,16 +1126,25 @@ export async function appendChatMessages(
   messages: Array<{ role: string; body: string; metadata?: Record<string, unknown> }>
 ): Promise<ChatMessageRow[]> {
   if (messages.length === 0) return [];
+  // Reserve the entire batch of sequences atomically
+  const [seq] = await sql<{ base: number }[]>`
+    update chats
+    set next_message_sequence = next_message_sequence + ${messages.length},
+        updated_at = now()
+    where org_id = ${orgId} and id = ${chatId}
+    returning (next_message_sequence - ${messages.length}) as base
+  `;
+  const base = seq?.base ?? 0;
   const out: ChatMessageRow[] = [];
-  for (const m of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
     const rows = await sql<ChatMessageRow[]>`
-      insert into chat_messages (org_id, chat_id, role, body, metadata)
-      values (${orgId}, ${chatId}, ${m.role}, ${m.body}, ${toJsonb(sql, m.metadata ?? {})})
+      insert into chat_messages (org_id, chat_id, role, body, metadata, sequence_number)
+      values (${orgId}, ${chatId}, ${m.role}, ${m.body}, ${toJsonb(sql, m.metadata ?? {})}, ${base + i})
       returning *
     `;
     if (rows[0]) out.push(rows[0]);
   }
-  await sql`update chats set updated_at = now() where org_id = ${orgId} and id = ${chatId}`;
   return out;
 }
 
@@ -2461,11 +2496,18 @@ export async function finalizeRunTurn(
           ...(opts.isDirectorChat ? { executionMode: "director" } : {}),
           ...(opts.resumedFrom ? { resumedFrom: opts.resumedFrom } : {})
         };
+        const [seqRes] = await tx<{ sequence: number }[]>`
+          update chats
+          set next_message_sequence = next_message_sequence + 1
+          where org_id = ${orgId} and id = ${chatId}
+          returning (next_message_sequence - 1) as sequence
+        `;
+        const seq = seqRes?.sequence ?? 0;
         messages = await tx<ChatMessageRow[]>`
-          insert into chat_messages (org_id, chat_id, role, body, metadata, created_at)
+          insert into chat_messages (org_id, chat_id, role, body, metadata, created_at, sequence_number)
           values (
             ${orgId}, ${chatId}, 'assistant', ${opts.outputText},
-            ${tx.json(insertMeta as any)}, ${new Date().toISOString()}
+            ${tx.json(insertMeta as any)}, ${new Date().toISOString()}, ${seq}
           )
           returning *
         `;

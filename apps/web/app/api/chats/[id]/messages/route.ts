@@ -1,11 +1,14 @@
 import { listChatMessages, appendChatMessage, touchChat } from "@spielos/db";
 import { errorResponse, getOrg, HttpError, requireWrite } from "../../../../../lib/server";
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const org = await getOrg();
     const { id } = await params;
-    const messages = await listChatMessages(org.sql, org.orgId, id);
+    const url = new URL(request.url);
+    const after = url.searchParams.get("after") ?? undefined;
+    const limit = url.searchParams.get("limit") ? Number(url.searchParams.get("limit")) : undefined;
+    const messages = await listChatMessages(org.sql, org.orgId, id, { after, limit });
     return Response.json({ messages });
   } catch (err) {
     return errorResponse(err);

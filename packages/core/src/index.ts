@@ -460,7 +460,8 @@ export const chatSchema = z.object({
   metadata: z.record(z.unknown()).default({}),
   archivedAt: z.string().nullable().default(null),
   createdAt: z.string(),
-  updatedAt: z.string()
+  updatedAt: z.string(),
+  nextMessageSequence: z.number().optional()
 });
 export type Chat = z.infer<typeof chatSchema>;
 
@@ -470,6 +471,7 @@ export const chatMessageSchema = z.object({
   chatId: z.string(),
   role: chatRoleSchema,
   body: z.string(),
+  sequenceNumber: z.number().optional(),
   metadata: z.record(z.unknown()).default({}),
   createdAt: z.string()
 });
@@ -491,12 +493,13 @@ export function chatRowToChat(row: {
 export function messageRowToChatMessage(row: {
   id: string; org_id: string; chat_id: string;
   role: string; body: string; metadata: Record<string, unknown>;
-  created_at: string;
+  created_at: string; sequence_number?: number | null;
 }): ChatMessage {
   return {
     id: row.id, orgId: row.org_id, chatId: row.chat_id,
     role: row.role as "user" | "assistant" | "system" | "tool",
-    body: row.body, metadata: row.metadata ?? {},
+    body: row.body, sequenceNumber: row.sequence_number ?? undefined,
+    metadata: row.metadata ?? {},
     createdAt: row.created_at
   };
 }
@@ -514,7 +517,7 @@ export function upsertMessage<T extends { id: string }>(
   return [...msgs, msg];
 }
 
-export function mergeMessages<T extends { id: string; createdAt: string }>(
+export function mergeMessages<T extends { id: string; createdAt: string; sequenceNumber?: number | null }>(
   existing: T[],
   incoming: T[]
 ): T[] {
@@ -524,6 +527,11 @@ export function mergeMessages<T extends { id: string; createdAt: string }>(
     ...incoming.filter((m) => !existingIds.has(m.id))
   ];
   merged.sort((a, b) => {
+    // Prefer sequenceNumber (durable, no collisions), fall back to createdAt + id
+    if (a.sequenceNumber != null && b.sequenceNumber != null) {
+      const c = a.sequenceNumber - b.sequenceNumber;
+      if (c !== 0) return c;
+    }
     const c = a.createdAt.localeCompare(b.createdAt);
     return c !== 0 ? c : a.id.localeCompare(b.id);
   });
@@ -1163,21 +1171,33 @@ export const fileRecordSchema = z.object({
 export type FileRecord = z.infer<typeof fileRecordSchema>;
 
 // ── SSE frame shapes (the streaming protocol) ─────────────────
+
+const cpvField = { checkpointVersion: z.number().optional() };
+
 export const sseFrameSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("run"), runId: z.string(), type: z.string() }),
-  z.object({ kind: z.literal("chat_created"), chatId: z.string(), chat: chatSchema }),
-  z.object({ kind: z.literal("message_persisted"), chatId: z.string(), message: chatMessageSchema, runId: z.string() }),
-  z.object({ kind: z.literal("event"), event: runEventSchema }),
-  z.object({ kind: z.literal("artifact"), artifact: artifactSchema }),
-  z.object({ kind: z.literal("text"), text: z.string() }),
-  z.object({ kind: z.literal("status"), message: z.string() }),
-  z.object({ kind: z.literal("run_state"), state: runStateFrameSchema }),
-  z.object({ kind: z.literal("usage"), usage: usageFrameSchema }),
-  z.object({ kind: z.literal("human_input"), request: humanInputRequestSchema }),
-  z.object({ kind: z.literal("error"), message: z.string() }),
-  z.object({ kind: z.literal("done"), runId: z.string(), status: runStatusSchema })
+  z.object({ kind: z.literal("run"), runId: z.string(), type: z.string(), ...cpvField }),
+  z.object({ kind: z.literal("chat_created"), chatId: z.string(), chat: chatSchema, ...cpvField }),
+  z.object({ kind: z.literal("message_persisted"), chatId: z.string(), message: chatMessageSchema, runId: z.string(), ...cpvField }),
+  z.object({ kind: z.literal("event"), event: runEventSchema, ...cpvField }),
+  z.object({ kind: z.literal("artifact"), artifact: artifactSchema, ...cpvField }),
+  z.object({ kind: z.literal("text"), text: z.string(), ...cpvField }),
+  z.object({ kind: z.literal("status"), message: z.string(), ...cpvField }),
+  z.object({ kind: z.literal("run_state"), state: runStateFrameSchema, ...cpvField }),
+  z.object({ kind: z.literal("usage"), usage: usageFrameSchema, ...cpvField }),
+  z.object({ kind: z.literal("human_input"), request: humanInputRequestSchema, ...cpvField }),
+  z.object({ kind: z.literal("error"), message: z.string(), ...cpvField }),
+  z.object({ kind: z.literal("done"), runId: z.string(), status: runStatusSchema, ...cpvField })
 ]);
 export type SseFrame = z.infer<typeof sseFrameSchema>;
+
+// Envelope wraps every SSE data line. Clients validate the protocol
+// version and use checkpointVersion for monotonic restoration.
+export const sseEnvelopeSchema = z.object({
+  protocol: z.string().default("spielos-sse-v1"),
+  checkpointVersion: z.number().optional(),
+  body: sseFrameSchema
+});
+export type SseEnvelope = z.infer<typeof sseEnvelopeSchema>;
 
 // ── Parse a file row into a typed object based on file_type ────
 export function parseRoleFile(row: FileRecord): Role {

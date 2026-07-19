@@ -9,7 +9,7 @@ import {
   MessagePrimitive,
   ThreadPrimitive,
   useAuiState,
-  useLocalRuntime,
+  useExternalStoreRuntime,
   useMessagePartText
 } from "@assistant-ui/react";
 import { usePathname } from "next/navigation";
@@ -24,7 +24,6 @@ import {
   useState
 } from "react";
 import { createPortal } from "react-dom";
-import type { ThreadMessageLike } from "@assistant-ui/react";
 import ReactMarkdown from "react-markdown";
 import { ArtifactFullscreenButton, ArtifactWorkbench } from "./artifact-workbench";
 import {
@@ -39,7 +38,7 @@ import {
   toast
 } from "@spielos/design-system";
 import remarkGfm from "remark-gfm";
-import { useSpielosChatAdapter } from "../../lib/chat-adapter";
+import { buildExternalStoreAdapter } from "../../lib/external-store-adapter";
 import { useRunContext } from "../../lib/run-context";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
 import { useUiStore } from "../../lib/use-ui-store";
@@ -1321,41 +1320,49 @@ function WelcomeScreen() {
 }
 
 export function ChatRuntimeProvider({ children }: { children: ReactNode }) {
-  const adapter = useSpielosChatAdapter();
   const store = useWorkspaceStore();
+  const run = useRunContext();
   const instanceIdRef = useRef<string | null>(null);
   if (instanceIdRef.current === null) {
     instanceIdRef.current = crypto.randomUUID();
   }
-  const initialMessages = useMemo<ThreadMessageLike[]>(() => {
-    if (!store.activeChatId) return [];
-    return (store.messages[store.activeChatId] ?? [])
-      .filter((message) => {
-        if (message.role !== "assistant" || typeof message.metadata?.resumedFrom !== "string") return true;
-        try {
-          const parsed = JSON.parse(message.body) as unknown;
-          return !(parsed && typeof parsed === "object" && !Array.isArray(parsed));
-        } catch {
-          return true;
-        }
-      })
-      .map((message) => ({
-      id: message.id,
-      role: message.role === "tool" ? "assistant" : message.role,
-      content: message.metadata?.kind === "execution_anchor" ? "[execution_anchor]" : message.body,
-      createdAt: new Date(message.createdAt)
-      }));
-  }, [store.activeChatId, store.messages]);
-  const runtime = useLocalRuntime(adapter, { initialMessages });
-  const loadedChatRef = useRef<string | null | undefined>(undefined);
-  const initialMessagesRef = useRef(initialMessages);
-  initialMessagesRef.current = initialMessages;
 
+  // Phase 4: ExternalStoreRuntime — the external adapter is the source of
+  // truth for messages. No runtime.reset(), no generation workarounds,
+  // no pending-commit lifecycle needed.
+  const adapter = useMemo(
+    () => buildExternalStoreAdapter(store, run),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [store, run, store.activeChatId, run.status]
+  );
+
+  const runtime = useExternalStoreRuntime(adapter);
+  const prevIsRunning = useRef(run.status === "running");
+
+  // Phase 3: lazy-load messages for the activated chat if not yet fetched
+  const messagesFetchedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (!store.ready || loadedChatRef.current === store.activeChatId) return;
-    loadedChatRef.current = store.activeChatId;
-    runtime.thread.reset(initialMessagesRef.current);
-  }, [runtime, store.activeChatId, store.ready]);
+    const chatId = store.activeChatId;
+    if (chatId && !messagesFetchedRef.current.has(chatId)) {
+      messagesFetchedRef.current.add(chatId);
+      void store.fetchChatMessages(chatId);
+    }
+    // Phase 4: When the run transitions running → not-running and no active
+    // chat is set yet (new chat created by the run), navigate to it.
+    const isNowRunning = run.status === "running";
+    const wasRunning = prevIsRunning.current;
+    prevIsRunning.current = isNowRunning;
+    if (wasRunning && !isNowRunning) {
+      const commit = run.consumePendingCommit();
+      if (commit && !store.activeChatId) {
+        store.setActiveChat(commit.chatId);
+        if (typeof window !== "undefined") {
+          window.history.replaceState(null, "", `/runs/${commit.runId}`);
+        }
+      }
+    }
+  });
+
   return (
     <>
       <span data-runtime-instance-id={instanceIdRef.current} style={{ display: 'none' }} />
@@ -1423,15 +1430,23 @@ function ChatThreadInner() {
     const restorationController = new AbortController();
     let timer: number | null = null;
     const restore = () => {
+      // Phase 2: monotonic restoration — use highest checkpoint version
+      // known to the client to discard stale server responses.
+      const sinceVersion = restoreRunRef.current.highestCheckpointVersion;
       currentRun.setActiveRunId(restorableRunId);
-      fetch(`/api/runs/${restorableRunId}`, { cache: "no-store", signal: restorationController.signal })
-        .then((response) => response.ok ? response.json() : null)
-        .then((payload: null | { run: { type: string; status: RunStatus; state: Record<string, unknown>; inputs: Record<string, unknown> }; usage: { inputTokens: number; outputTokens: number; toolCalls: number }; events: Array<{ id: string; org_id: string; run_id: string; event_type: string; sequence: number; node_id: string | null; node_title: string | null; skill_id: string | null; skill_name: string | null; message: string; payload: Record<string, unknown>; event_key: string | null; created_at: string }>; artifacts: import("@spielos/core").Artifact[] }) => {
+      fetch(`/api/runs/${restorableRunId}?since=${sinceVersion}`, { cache: "no-store", signal: restorationController.signal })
+        .then((response) => {
+          if (response.status === 304) return null; // Not modified
+          return response.ok ? response.json() : null;
+        })
+        .then((payload: null | { checkpointVersion?: number; run: { type: string; status: RunStatus; state: Record<string, unknown>; inputs: Record<string, unknown> }; usage: { inputTokens: number; outputTokens: number; toolCalls: number }; events: Array<{ id: string; org_id: string; run_id: string; event_type: string; sequence: number; node_id: string | null; node_title: string | null; skill_id: string | null; skill_name: string | null; message: string; payload: Record<string, unknown>; event_key: string | null; created_at: string }>; artifacts: import("@spielos/core").Artifact[] }) => {
           if (!payload) return;
           const latestStore = restoreStoreRef.current;
           const latestRun = restoreRunRef.current;
           if (latestStore.activeChatId !== activeChatId) return;
           if (latestRun.activeRunId && latestRun.activeRunId !== restorableRunId) return;
+          // Discard if server checkpoint is not newer than what we have
+          if (typeof payload.checkpointVersion === "number" && payload.checkpointVersion <= latestRun.highestCheckpointVersion) return;
           latestRun.setRunType(payload.run.type as import("@spielos/core").RunType);
           const restoredState = payload.run.state as import("../../lib/run-context").DurableRunState;
           const inputBudget = payload.run.inputs?.budget;
@@ -1459,6 +1474,9 @@ function ChatThreadInner() {
           }
           for (const artifact of payload.artifacts) latestRun.appendArtifact(artifact);
           latestRun.setRunStatus(payload.run.status);
+          if (typeof payload.checkpointVersion === "number") {
+            latestRun.recordCheckpointVersion(payload.checkpointVersion);
+          }
         })
         .catch((err: unknown) => {
           if (err instanceof DOMException && err.name === "AbortError") return;
@@ -1468,6 +1486,8 @@ function ChatThreadInner() {
     const handleRunUpdate = (event: Event) => {
       const detail = (event as CustomEvent<{ runId?: string }>).detail;
       if (detail?.runId !== restorableRunId) return;
+      // Phase 1: suppress same-run restore while SSE stream owns it
+      if (currentRun.hasActiveStream(restorableRunId)) return;
       if (realtimeRefreshTimer !== null) window.clearTimeout(realtimeRefreshTimer);
       realtimeRefreshTimer = window.setTimeout(restore, 350);
     };

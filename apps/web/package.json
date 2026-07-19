@@ -7,7 +7,7 @@
     "dev": "next dev",
     "dev:webpack": "next dev",
     "dev:turbopack": "next dev --turbopack",
-    "build": "next build --experimental-app-only",
+    "build": "next build",
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
     "check:colors": "bash ../../scripts/check-no-raw-colors.sh"
@@ -33,6 +33,7 @@
     "react-dom": "^19.0.0",
     "resend": "^6.17.2",
     "sonner": "^1.7.0",
+    "tailwindcss-rtl": "^0.9.0",
     "zod": "^3.23.8",
     "zustand": "^5.0.14"
   },

@@ -92,28 +92,42 @@ export const authDatabasePool = getCached("__auth_pool", () => {
     // pool-acquisition timeouts seen under normal page fan-out. Keep this
     // independently tunable because the safe ceiling depends on the deployed
     // database/pooler plan.
-    max: positiveIntegerEnv("AUTH_POOL_MAX", 6),
-    min: 0,
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: positiveIntegerEnv("AUTH_CONNECT_TIMEOUT_MS", 30_000),
+    max: positiveIntegerEnv("AUTH_POOL_MAX", 15),
+    min: positiveIntegerEnv("AUTH_POOL_MIN", 1),
+    idleTimeoutMillis: 60_000,
+    connectionTimeoutMillis: positiveIntegerEnv("AUTH_CONNECT_TIMEOUT_MS", 10_000),
     ssl: { rejectUnauthorized: false },
-    query_timeout: positiveIntegerEnv("PG_QUERY_TIMEOUT_MS", 30_000),
+    query_timeout: positiveIntegerEnv("PG_QUERY_TIMEOUT_MS", 60_000),
     // Keep idle connections alive so the server-side idle reaper
     // (Supabase sets `idle_in_transaction_session_timeout` aggressively
     // on free tier) does not kill sockets the `pg` library still
     // believes are healthy.
     keepAlive: true,
-    keepAliveInitialDelayMillis: 10_000
+    keepAliveInitialDelayMillis: 5_000,
   });
   const id = `auth-${Date.now()}`;
   const mode = config.mode;
   p.on("error", (err: Error) => {
-    console.error(`[pool ${id}] error:`, err.message);
+    const msg = err.message ?? String(err);
+    console.error(`[pool ${id}] error: ${msg}`);
     // `pg` removes the failed client itself. Never drain the whole pool here:
     // Better Auth retains the Pool object passed at construction, so replacing
     // the global cache would leave that live auth instance bound to a closed
     // pool and make every later session lookup fail after a transient socket.
   });
+  // Periodic keepalive to prevent Supabase free tier from killing idle
+  // connections between requests. Fire-and-forget on a 30s interval;
+  // errors are expected for transient failures and are silently swallowed.
+  let keepaliveHandle: ReturnType<typeof setInterval> | null = null;
+  function scheduleKeepalive() {
+    keepaliveHandle = setInterval(() => {
+      p.query("SELECT 1").catch(() => {});
+    }, 30_000);
+    if (typeof keepaliveHandle === "object" && "unref" in keepaliveHandle) {
+      (keepaliveHandle as ReturnType<typeof setInterval>).unref();
+    }
+  }
+  scheduleKeepalive();
   // Warm up the pool so the first request doesn't pay the cold-start penalty.
   // The promise is intentionally fire-and-forget.
   if (config.connectionString) {

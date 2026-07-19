@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { makeReqLogger, generateRequestId } from "./lib/logger";
 
 const PUBLIC_PATHS = ["/login", "/api/auth", "/integrations/", "/fonts/"];
 const PUBLIC_API_PREFIXES = ["/api/auth", "/api/billing/webhook", "/api/invitations"];
@@ -7,6 +8,9 @@ const PUBLIC_API_PREFIXES = ["/api/auth", "/api/billing/webhook", "/api/invitati
 export function middleware(request: NextRequest) {
   const start = performance.now();
   const { pathname } = request.nextUrl;
+  const rid = generateRequestId();
+  const log = makeReqLogger("middleware", rid);
+  request.headers.set("x-request-id", rid);
 
   if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
     return NextResponse.next();
@@ -24,9 +28,12 @@ export function middleware(request: NextRequest) {
   if (isApiRoute) {
     const sessionToken = request.cookies.get("better-auth.session_token")?.value;
     if (!sessionToken) {
+      log.warn("missing session token", { status: 401 });
       return Response.json({ error: "Authentication required" }, { status: 401 });
     }
-    return NextResponse.next();
+    const response = NextResponse.next();
+    response.headers.set("x-request-id", rid);
+    return response;
   }
 
   const sessionToken = request.cookies.get("better-auth.session_token")?.value;
@@ -38,8 +45,9 @@ export function middleware(request: NextRequest) {
   }
 
   const response = NextResponse.next();
+  response.headers.set("x-request-id", rid);
   const ms = (performance.now() - start).toFixed(0);
-  console.log(`${request.method} ${pathname} 200 in ${ms}ms`);
+  log.info(`${request.method} ${pathname}`, { ms: parseInt(ms) });
   return response;
 }
 
