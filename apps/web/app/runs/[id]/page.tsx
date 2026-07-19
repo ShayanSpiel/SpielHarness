@@ -27,16 +27,11 @@ function RunLoader({ runId }: { runId: string }) {
     run.setActiveRunId(runId);
     fetch(`/api/runs/${runId}`, { cache: "no-store" })
       .then(async (res) => {
-        if (!res.ok) {
-          run.reset();
-          return null;
-        }
-        return res.json() as Promise<{ run: { chat_id: string | null } }>;
-      })
-      .then((payload) => {
+        if (!res.ok) return null;
+        const payload = await res.json() as { run: { chat_id: string | null } };
         if (payload?.run.chat_id) store.setActiveChat(payload.run.chat_id);
       })
-      .catch(() => run.reset());
+      .catch(() => { /* chat-thread.tsx restore() handles failures */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
 

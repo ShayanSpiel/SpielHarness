@@ -1,22 +1,11 @@
 "use client";
 
 import { useMemo, useRef } from "react";
+import { useRouter } from "next/navigation";
 import type { ChatModelAdapter, ChatModelRunResult, ThreadAssistantMessagePart } from "@assistant-ui/react";
 import { useRunContext } from "./run-context";
 import { useWorkspaceStore } from "./use-workspace-store";
-import { DEFAULT_EXECUTION_MODE, executionModeSchema, type HumanInputRequest, type RunEvent, type Artifact, type RunStatus } from "@spielos/core";
-
-type StreamFrame =
-  | { kind: "run"; runId: string; type: string }
-  | { kind: "event"; event: RunEvent }
-  | { kind: "artifact"; artifact: Artifact }
-  | { kind: "text"; text: string }
-  | { kind: "status"; message: string }
-  | { kind: "run_state"; state: import("./run-context").DurableRunState }
-  | { kind: "usage"; usage: import("./run-context").LiveRunUsage }
-  | { kind: "human_input"; request: HumanInputRequest }
-  | { kind: "error"; message: string }
-  | { kind: "done"; runId: string; status: string };
+import { messageRowToChatMessage, executionModeSchema, DEFAULT_EXECUTION_MODE, type SseFrame, type ChatMessage, type Chat as CoreChat, type HumanInputRequest, type RunEvent, type Artifact, type RunStatus } from "@spielos/core";
 
 // Module-level Set so the in-flight key list survives React re-mounts and
 // the entire app's component tree. Message keys are globally unique per
@@ -39,6 +28,9 @@ function getMessageText(message: { content: readonly unknown[] }): string {
 export function useSpielosChatAdapter(): ChatModelAdapter {
   const run = useRunContext();
   const store = useWorkspaceStore();
+  const router = useRouter();
+  const routerRef = useRef(router);
+  routerRef.current = router;
   const runRef = useRef(run);
   runRef.current = run;
   const storeRef = useRef(store);
@@ -178,11 +170,23 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
         let buffer = "";
         let narrative = "";
         let terminalStatus: RunStatus | null = null;
+        let captureRunId: string | null = null;
 
         // Pending side effects to flush on the next animation frame.
         // The set-state calls and event appends are coalesced so a burst
         // of frames produces a single React render.
-        type PendingFrame = { kind: "event"; event: RunEvent } | { kind: "artifact"; artifact: Artifact } | { kind: "status"; message: string } | { kind: "run_state"; state: import("./run-context").DurableRunState } | { kind: "usage"; usage: import("./run-context").LiveRunUsage } | { kind: "human_input"; request: HumanInputRequest } | { kind: "error"; message: string } | { kind: "done"; status: RunStatus } | { kind: "run"; runId: string };
+        type PendingFrame =
+          | { kind: "run"; runId: string }
+          | { kind: "chat_created"; chatId: string; chat: CoreChat }
+          | { kind: "message_persisted"; chatId: string; message: ChatMessage }
+          | { kind: "event"; event: RunEvent }
+          | { kind: "artifact"; artifact: Artifact }
+          | { kind: "status"; message: string }
+          | { kind: "run_state"; state: import("./run-context").DurableRunState }
+          | { kind: "usage"; usage: import("./run-context").LiveRunUsage }
+          | { kind: "human_input"; request: HumanInputRequest }
+          | { kind: "error"; message: string }
+          | { kind: "done"; status: RunStatus };
         let pending: PendingFrame[] = [];
         let rafScheduled = false;
         let streamClosed = false;
@@ -194,19 +198,16 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
         };
 
         const applyFrame = (item: PendingFrame) => {
-          if (item.kind === "run") {
+          if (item.kind === "chat_created") {
+            ws.upsertChat(item.chat);
+          } else if (item.kind === "message_persisted") {
+            ws.upsertMessage(item.chatId, item.message);
+          } else if (item.kind === "run") {
                 ctx.setActiveRunId(item.runId);
           } else if (item.kind === "status") {
             ctx.setActivity(item.message);
           } else if (item.kind === "run_state") {
             ctx.setDurableState(item.state);
-            if (item.state.budget) {
-              ctx.setLiveUsage({
-                inputTokens: item.state.budget.inputTokens,
-                outputTokens: item.state.budget.outputTokens,
-                toolCalls: item.state.budget.toolCalls
-              });
-            }
           } else if (item.kind === "usage") {
             ctx.setLiveUsage(item.usage);
           } else if (item.kind === "event") {
@@ -293,13 +294,18 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
             for (const part of parts) {
               const line = part.split("\n").find((entry) => entry.startsWith("data: "));
               if (!line) continue;
-              let item: StreamFrame;
+              let item: SseFrame;
               try {
-                item = JSON.parse(line.slice(6)) as StreamFrame;
+                item = JSON.parse(line.slice(6)) as SseFrame;
               } catch {
                 continue;
               }
-              if (item.kind === "run") {
+              if (item.kind === "chat_created") {
+                enqueue({ kind: "chat_created", chatId: item.chatId, chat: item.chat });
+              } else if (item.kind === "message_persisted") {
+                enqueue({ kind: "message_persisted", chatId: item.chatId, message: item.message });
+              } else if (item.kind === "run") {
+                captureRunId = item.runId;
                 enqueue({ kind: "run", runId: item.runId });
               } else if (item.kind === "status") {
                 enqueue({ kind: "status", message: item.message });
@@ -336,38 +342,30 @@ export function useSpielosChatAdapter(): ChatModelAdapter {
           // cannot be treated as user cancellation. The visible Stop control
           // calls the durable /cancel endpoint explicitly.
           if (createdChatId && !storeRef.current.activeChatId) {
-            const createdAt = new Date().toISOString();
-            const localMessages = messages
-              .map((message, index) => ({
-                id: `local-${message.id || index}`,
-                orgId: "",
-                chatId: createdChatId,
-                role: (message.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
-                body: getMessageText(message),
-                metadata: {},
-                createdAt
-              }))
-              .filter((message) => message.body.trim());
-            if (narrative.trim()) {
-              localMessages.push({
-                id: `local-assistant-${messageKey}`,
-                orgId: "",
-                chatId: createdChatId,
-                role: "assistant",
-                body: narrative,
-                metadata: {},
-                createdAt
-              });
-            }
-            const restoredRunId = runRef.current.activeRunId;
-            storeRef.current.hydrateChat(createdChatId, {
-              messages: localMessages,
-              metadata: {
-                lastRunId: restoredRunId,
-                activeRunId: terminalStatus === "completed" ? null : restoredRunId
+            const existing = storeRef.current.messages[createdChatId];
+            if (!existing?.length) {
+              // Fallback: fetch committed messages from API
+              try {
+                const res = await fetch(`/api/chats/${createdChatId}/messages`, { cache: "no-store" });
+                if (res.ok) {
+                  const data = await res.json() as { messages: Array<Record<string, unknown>> };
+                  if (Array.isArray(data.messages)) {
+                    for (const raw of data.messages) {
+                      const msg = messageRowToChatMessage(raw as Parameters<typeof messageRowToChatMessage>[0]);
+                      storeRef.current.upsertMessage(createdChatId, msg);
+                    }
+                  }
+                }
+              } catch {
+                // Fallback: messages arrive on next workspace reload
               }
-            });
+            }
             storeRef.current.setActiveChat(createdChatId);
+            // Navigate to the run URL so the page has a stable identity and
+            // reload() on / does not null out activeChatId (isRoot check).
+            if (captureRunId && typeof window !== "undefined") {
+              routerRef.current.replace(`/runs/${captureRunId}`);
+            }
           }
         }
 

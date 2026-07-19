@@ -39,10 +39,18 @@ Update `supabase/manual_harness_merge.sql` with migrations when schema drift is 
 - Terminal events and SSE `done.status` are authoritative. Do not infer liveness from events.
 - Plain chat works without a selected harness item. Do not present it as workflow execution.
 - Execution activity is inline and compact in chat. Complete history is in Events inspector.
+- SSE `message_persisted` frames are the authoritative source for committed chat messages. The store reconciles by primary key: `upsertMessage` replaces by ID, `reload()` merges by ID and sorts deterministically by `createdAt` + ID.
+- The `done` SSE frame is emitted exactly once after all durable persistence (checkpoint, metadata, chat message) and realtime publication succeed.
+- Assistant-message persistence is mandatory for successful finalization. If the append fails, the terminal status becomes `failed`.
 
 ## Director
 
 - The Director is the orchestrator role (`metadata.systemRole: "orchestrator"`). Seed: `supabase/seed/agents/orchestrator.md`.
 - Model priority: user-selected → orchestrator role's `modelId` → workflow model → workspace default.
 - `streamDirectorRun` uses `streamMode: ["values"]`. Track per-message content length (`yieldedTextLen` Map) for delta yielding.
-- `ChatRuntimeProvider key` must be pathname-based to prevent remount during runs.
+
+## Chat State
+
+- `ChatRuntimeProvider` is hoisted into `AppProviders` and survives all navigation. Chat switching uses `runtime.thread.reset()` driven by `activeChatId`. No pathname-derived key is used.
+- `store.messages` reconciles by primary key: `upsertMessage` replaces by ID, `reload()` merges by ID (never overwrites locally-upserted messages) and sorts deterministically.
+- New chats are seeded via `chat_created` + `message_persisted` SSE frames. The `finally` block in `chat-adapter.ts` only calls `setActiveChat`; local placeholder messages are never created.

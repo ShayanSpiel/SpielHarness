@@ -11,7 +11,7 @@ import {
   useState,
   type ReactNode
 } from "react";
-import type { ChatMessage as DbChatMessage } from "@spielos/core";
+import { messageRowToChatMessage, upsertMessage as mergeMessage, mergeMessages, reconcileChats, type ChatMessage as DbChatMessage, type Chat as CoreChat } from "@spielos/core";
 import { toast } from "@spielos/design-system";
 import { fetchJsonWithRetry } from "./fetch-json";
 import { useRealtimeSubscription } from "./use-realtime";
@@ -40,6 +40,8 @@ export type ChatStore = {
   appendMessage: (chatId: string, message: { role: "user" | "assistant" | "system"; body: string }) => Promise<DbChatMessage>;
   hydrateChat: (chatId: string, value: { messages: DbChatMessage[]; metadata?: Record<string, unknown> }) => void;
   reload: () => Promise<void>;
+  upsertMessage: (chatId: string, msg: DbChatMessage) => void;
+  upsertChat: (chat: CoreChat) => void;
 };
 
 const ChatStoreContext = createContext<ChatStore | null>(null);
@@ -57,6 +59,9 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   const initialLoaded = useRef(false);
   const loadErrorShown = useRef(false);
   const reloadRef = useRef<(() => Promise<void>) | null>(null);
+  const chatVersionsRef = useRef<Map<string, number>>(new Map());
+  const reloadSeqRef = useRef(0);
+  const chatsRef = useRef<Chat[]>([]);
 
   // Phase 4: org-scoped realtime. Any run status change fans out to
   // every chat in the workspace so the active-run pointer and the
@@ -77,6 +82,8 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
 
   const reload = useCallback(async () => {
     reloadRef.current = reload;
+    const seq = ++reloadSeqRef.current;
+    const preFetchVersions = new Map(chatVersionsRef.current);
     if (typeof window !== "undefined" && window.location.pathname === "/login") {
       setReady(true);
       return;
@@ -93,6 +100,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
           chat_messages: Array<{
             id: string;
             chat_id: string;
+            org_id: string;
             role: string;
             body: string;
             metadata: Record<string, unknown>;
@@ -100,36 +108,52 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
           }>;
         }>;
       }>("/api/chats", { cache: "no-store" });
+      if (seq !== reloadSeqRef.current) return;
       const newChats: Chat[] = data.chats.map((c) => ({
         id: c.id,
         title: c.title,
         createdAt: c.created_at,
         updatedAt: c.updated_at,
-        archivedAt: c.archived_at
-        ,metadata: c.metadata ?? {}
+        archivedAt: c.archived_at,
+        metadata: c.metadata ?? {}
       }));
+      const mutatedIds = new Set<string>();
+      for (const [id, version] of chatVersionsRef.current) {
+        if (version > (preFetchVersions.get(id) ?? 0)) {
+          mutatedIds.add(id);
+        }
+      }
+      setChats((current) => {
+        const reconciled = reconcileChats(current, newChats, mutatedIds);
+        chatsRef.current = reconciled;
+        return reconciled;
+      });
+      setActiveChatId((current) => {
+        if (!current) return null;
+        const latest = chatsRef.current;
+        return latest.some((c) => c.id === current && !c.archivedAt) ? current : null;
+      });
       const newMessages: Record<string, DbChatMessage[]> = {};
       for (const c of data.chats) {
-        newMessages[c.id] = (c.chat_messages ?? [])
+        const incoming = (c.chat_messages ?? [])
           .filter((m) => m.role === "user" || m.role === "assistant" || m.role === "system")
-          .map((m) => ({
-            id: m.id,
-            orgId: "",
-            chatId: m.chat_id,
-            role: m.role as "user" | "assistant" | "system",
-            body: m.body,
-            metadata: m.metadata ?? {},
-            createdAt: m.created_at
-          }));
+          .map((m) => messageRowToChatMessage(m));
+        newMessages[c.id] = incoming;
       }
-      setChats(newChats);
-      setMessages(newMessages);
+      setMessages((prev) => {
+        const next = { ...prev };
+        for (const [cid, incoming] of Object.entries(newMessages)) {
+          next[cid] = mergeMessages(prev[cid] ?? [], incoming);
+        }
+        return next;
+      });
       const isRoot = typeof window !== "undefined" && window.location.pathname === "/";
       const storedActiveChatId = typeof window !== "undefined" ? window.localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY) : null;
       setActiveChatId((current) => {
         if (isRoot) return null;
         const candidate = current ?? storedActiveChatId;
-        return candidate && newChats.some((chat) => chat.id === candidate) ? candidate : null;
+        const latest = chatsRef.current;
+        return candidate && latest.some((chat) => chat.id === candidate) ? candidate : null;
       });
       initialLoaded.current = true;
       loadErrorShown.current = false;
@@ -173,6 +197,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
         archivedAt: data.chat.archived_at
         ,metadata: data.chat.metadata ?? {}
       };
+      chatVersionsRef.current.set(chat.id, (chatVersionsRef.current.get(chat.id) ?? 0) + 1);
       setChats((current) => [chat, ...current]);
       setMessages((current) => ({ ...current, [chat.id]: [] }));
       if (activate) {
@@ -191,6 +216,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       body: JSON.stringify({ id, title })
     });
     if (!res.ok) return;
+    chatVersionsRef.current.set(id, (chatVersionsRef.current.get(id) ?? 0) + 1);
     setChats((current) =>
       current.map((c) => (c.id === id ? { ...c, title, updatedAt: nowIso() } : c))
     );
@@ -203,6 +229,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       body: JSON.stringify({ id, archived: true })
     });
     if (!res.ok) return;
+    chatVersionsRef.current.set(id, (chatVersionsRef.current.get(id) ?? 0) + 1);
     setChats((current) => current.filter((c) => c.id !== id));
     setMessages((current) => {
       const next = { ...current };
@@ -217,6 +244,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const updateChatMetadata = useCallback(async (id: string, patch: Record<string, unknown>) => {
+    chatVersionsRef.current.set(id, (chatVersionsRef.current.get(id) ?? 0) + 1);
     setChats((current) => current.map((chat) => chat.id === id
       ? { ...chat, metadata: { ...chat.metadata, ...patch }, updatedAt: nowIso() }
       : chat));
@@ -258,6 +286,26 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const upsertMessage = useCallback((chatId: string, msg: DbChatMessage) => {
+    setMessages((prev) => ({
+      ...prev,
+      [chatId]: mergeMessage(prev[chatId] ?? [], msg)
+    }));
+  }, []);
+
+  const upsertChat = useCallback((chat: CoreChat) => {
+    chatVersionsRef.current.set(chat.id, (chatVersionsRef.current.get(chat.id) ?? 0) + 1);
+    setChats((current) => {
+      const idx = current.findIndex((c) => c.id === chat.id);
+      if (idx >= 0) {
+        const copy = [...current];
+        copy[idx] = { ...copy[idx], ...chat } as Chat;
+        return copy;
+      }
+      return [{ ...chat, archivedAt: chat.archivedAt ?? null } as Chat, ...current];
+    });
+  }, []);
+
   const store = useMemo<ChatStore>(
     () => ({
       chats,
@@ -275,9 +323,11 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
       updateChatMetadata,
       appendMessage,
       hydrateChat,
-      reload
+      reload,
+      upsertMessage,
+      upsertChat
     }),
-    [chats, activeChatId, messages, ready, createChat, renameChat, archiveChat, updateChatMetadata, appendMessage, hydrateChat, reload]
+    [chats, activeChatId, messages, ready, createChat, renameChat, archiveChat, updateChatMetadata, appendMessage, hydrateChat, reload, upsertMessage, upsertChat]
   );
 
   return createElement(ChatStoreContext.Provider, { value: store }, children);

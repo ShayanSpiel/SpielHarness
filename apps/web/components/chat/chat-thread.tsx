@@ -1320,9 +1320,13 @@ function WelcomeScreen() {
   );
 }
 
-function ChatRuntimeProvider({ children }: { children: ReactNode }) {
+export function ChatRuntimeProvider({ children }: { children: ReactNode }) {
   const adapter = useSpielosChatAdapter();
   const store = useWorkspaceStore();
+  const instanceIdRef = useRef<string | null>(null);
+  if (instanceIdRef.current === null) {
+    instanceIdRef.current = crypto.randomUUID();
+  }
   const initialMessages = useMemo<ThreadMessageLike[]>(() => {
     if (!store.activeChatId) return [];
     return (store.messages[store.activeChatId] ?? [])
@@ -1338,9 +1342,6 @@ function ChatRuntimeProvider({ children }: { children: ReactNode }) {
       .map((message) => ({
       id: message.id,
       role: message.role === "tool" ? "assistant" : message.role,
-      // Older execution anchors were stored with an empty body. assistant-ui
-      // quite reasonably omits empty history messages, so normalize both old
-      // and new anchors into the renderer-owned sentinel during hydration.
       content: message.metadata?.kind === "execution_anchor" ? "[execution_anchor]" : message.body,
       createdAt: new Date(message.createdAt)
       }));
@@ -1350,16 +1351,17 @@ function ChatRuntimeProvider({ children }: { children: ReactNode }) {
   const initialMessagesRef = useRef(initialMessages);
   initialMessagesRef.current = initialMessages;
 
-  // assistant-ui consumes `initialMessages` only when the runtime is created.
-  // The provider is intentionally pathname-keyed so an in-flight stream is not
-  // remounted, therefore chat selection and "New Run" must reset the existing
-  // thread explicitly. Message updates inside the same chat do not reset it.
   useEffect(() => {
     if (!store.ready || loadedChatRef.current === store.activeChatId) return;
     loadedChatRef.current = store.activeChatId;
     runtime.thread.reset(initialMessagesRef.current);
   }, [runtime, store.activeChatId, store.ready]);
-  return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
+  return (
+    <>
+      <span data-runtime-instance-id={instanceIdRef.current} style={{ display: 'none' }} />
+      <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+    </>
+  );
 }
 
 function ChatThreadInner() {
@@ -1536,16 +1538,5 @@ function ChatThreadInner() {
 }
 
 export function ChatThread() {
-  const pathname = usePathname();
-  const [runtimeKey, setRuntimeKey] = useState(() => pathname.startsWith("/runs/") ? pathname : "new-chat");
-
-  useEffect(() => {
-    setRuntimeKey(pathname.startsWith("/runs/") ? pathname : "new-chat");
-  }, [pathname]);
-
-  return (
-    <ChatRuntimeProvider key={runtimeKey}>
-      <ChatThreadInner />
-    </ChatRuntimeProvider>
-  );
+  return <ChatThreadInner />;
 }

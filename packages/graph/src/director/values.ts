@@ -1,5 +1,5 @@
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
-import type { Artifact, ArtifactFile, ArtifactProject, RunEvent } from "@spielos/core";
+import type { Artifact, ArtifactFile, ArtifactProject, ModelUsageUpdate, RunEvent } from "@spielos/core";
 import { textFromProviderContent } from "@spielos/providers";
 import type { FileData } from "deepagents";
 import type { RunYield } from "../index.ts";
@@ -114,7 +114,8 @@ export async function* mapDirectorValues(
   checkControl: () => "cancel" | "pause" | null,
   skipRootMessages = 0,
   toolPresentation: Record<string, DirectorToolPresentation> = {},
-  tokenBudget?: { maxInputTokens?: number | null; maxOutputTokens?: number | null }
+  onModelUsage?: (update: ModelUsageUpdate) => void,
+  tokenBudget?: { maxInputTokens?: number | null; maxOutputTokens?: number | null },
 ): AsyncGenerator<RunYield, DirectorValueState, void> {
   const yieldedTextLen = new Map<string, number>();
   const yieldedToolCalls = new Set<string>();
@@ -194,13 +195,20 @@ export async function* mapDirectorValues(
         if (metadata && !yieldedUsage.has(identity)) {
           yieldedUsage.add(identity);
           usage.record(metadata);
-          const snapshot = usage.snapshot();
-          if (tokenBudget?.maxInputTokens && snapshot.input > tokenBudget.maxInputTokens) {
+          if (tokenBudget?.maxInputTokens && usage.snapshot().input > tokenBudget.maxInputTokens) {
             throw new Error(`Director input-token budget exceeded (${tokenBudget.maxInputTokens}).`);
           }
-          if (tokenBudget?.maxOutputTokens && snapshot.output > tokenBudget.maxOutputTokens) {
+          if (tokenBudget?.maxOutputTokens && usage.snapshot().output > tokenBudget.maxOutputTokens) {
             throw new Error(`Director output-token budget exceeded (${tokenBudget.maxOutputTokens}).`);
           }
+          const scope = decoded.namespace.length === 0 ? "root" : "subagent";
+          onModelUsage?.({
+            inputTokens: metadata.input_tokens ?? 0,
+            outputTokens: metadata.output_tokens ?? 0,
+            modelId: "unknown",
+            scope,
+            updatesContext: scope === "root",
+          });
         }
         for (const [callIndex, call] of nativeToolCalls(message).entries()) {
           const callId = call.id ?? `${identity}:call-${callIndex}`;
@@ -280,7 +288,7 @@ export function artifactsFromDirectorFiles(
   if (!files) return [];
   const artifacts: Artifact[] = [];
   const changed = Object.entries(files).flatMap(([path, file]) => {
-    if (!path.startsWith("/artifacts/")) return [];
+    if (!path.startsWith("/artifacts/") && !path.startsWith("/workspace/")) return [];
     const content = Array.isArray(file.content) ? file.content.join("\n") : file.content;
     if (typeof content !== "string") return [];
     const initial = initialFiles[path];
@@ -305,6 +313,7 @@ export function artifactsFromDirectorFiles(
 
   const grouped = new Map<string, typeof changed>();
   for (const file of changed) {
+    if (!file.path.startsWith("/artifacts/")) continue;
     const relative = file.path.slice("/artifacts/".length);
     const directory = relative.includes("/") ? relative.split("/")[0] : null;
     if (!directory) continue;

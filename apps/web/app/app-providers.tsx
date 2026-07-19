@@ -6,6 +6,7 @@ import { AppToaster, DEFAULT_THEME, IconRegistryProvider, Spinner, THEME_REGISTR
 import { useSession } from "../lib/auth-client";
 import { RunContextProvider } from "../lib/run-context";
 import { WorkspaceStoreProvider } from "../lib/use-workspace-store";
+import { ChatRuntimeProvider } from "../components/chat/chat-thread";
 import "../components/chat/chat-markdown.css";
 
 const outfit = Outfit({
@@ -105,13 +106,15 @@ export default function AppProviders({ children }: { children: React.ReactNode }
       <body>
         <RunContextProvider>
           <WorkspaceStoreProvider>
-            <IconRegistryProvider>
-              <TooltipProvider delayDuration={200} skipDelayDuration={300}>
-                {children}
-              </TooltipProvider>
-            </IconRegistryProvider>
+            <ChatRuntimeProvider>
+              <IconRegistryProvider>
+                <TooltipProvider delayDuration={200} skipDelayDuration={300}>
+                  {children}
+                </TooltipProvider>
+              </IconRegistryProvider>
+            </ChatRuntimeProvider>
+            <AppToaster />
           </WorkspaceStoreProvider>
-          <AppToaster />
         </RunContextProvider>
       </body>
     </html>

@@ -1,15 +1,18 @@
 import {
-  appendChatMessages,
   appendProjectRevision,
   atomicCheckpoint,
   createFile,
+  finalizeRunTurn,
   getProjectSession,
   getRun,
   instrumentSql,
   linkRunOutputFile,
   recordUsage,
   updateChatMetadata,
-  type RunEventInput
+  type ChatMessageRow,
+  type ChatRow,
+  type RunEventInput,
+  type RunRow
 } from "@spielos/db";
 import { errorResponse, getOrg, HttpError, requireWrite } from "../../../../../lib/server";
 import { resolveExecution, type ExecuteBody } from "../../../../../lib/execution-service";
@@ -19,6 +22,8 @@ import { buildPostgresSaver } from "@spielos/graph/director/checkpointer";
 import { buildDirectorToolContext, workflowsForDirector } from "../../../../../lib/director-tools";
 import { authDatabasePool } from "../../../../../lib/auth";
 import { onRunSignal, registerRun } from "../../../../../lib/run-registry";
+import { messageRowToChatMessage, chatRowToChat, type ModelUsageUpdate, type RunStatus } from "@spielos/core";
+import { publishDomainEvent } from "../../../../../lib/realtime";
 
 function frame(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -186,9 +191,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         const disconnectClient = () => { clientConnected = false; };
         request.signal.addEventListener("abort", disconnectClient, { once: true });
         send({ kind: "run", runId, type: target.type });
+        // Send accumulated budget from prior turns so the client
+        // doesn't show zero usage on resume.
+        if (checkpoint.budget) {
+          send({ kind: "run_state", state: { budget: checkpoint.budget } });
+        }
         let outputText = "";
         const outputFiles: Array<{ id: string; isProject: boolean }> = [];
-        let terminalStatus: "completed" | "failed" | "cancelled" | "waiting_human" = "completed";
+        let terminalStatus: RunStatus = "completed";
         let errorMessage: string | null = null;
         let latestCheckpoint: RunCheckpoint = checkpoint;
         const priorUsage = {
@@ -212,9 +222,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           event.type === "artifact_created" ||
           event.type === "eval_score_updated" ||
           (event.type === "status" && ["context_assembly", "model_generation", "structured_output_repair"].includes(String(event.payload?.category ?? "")));
-        const onUsage = (next: { input: number; output: number }) => {
-          usage.input += next.input;
-          usage.output += next.output;
+        const publishBudgetState = () => {
           send({
             kind: "usage",
             usage: {
@@ -223,6 +231,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               toolCalls: priorUsage.tools + usage.tools
             }
           });
+        };
+        const onModelUsage = (update: ModelUsageUpdate) => {
+          usage.input += update.inputTokens;
+          usage.output += update.outputTokens;
+          publishBudgetState();
         };
         const onToolUsage = (count: number) => {
           const next = priorUsage.tools + usage.tools + count;
@@ -286,7 +299,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 chatMetadata: {},
                 goal: executeBody.goal,
                 budget: resolved.runRequest.budget,
-                onUsage,
+                onModelUsage,
                 onToolUsage,
                 signal: executionController.signal,
                 checkControl,
@@ -327,7 +340,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
                 checkpoint,
                 goal: executeBody.goal,
                 budget: resolved.runRequest.budget,
-                onUsage,
+                onModelUsage,
                 onToolUsage,
                 signal: executionController.signal,
                 checkControl
@@ -355,9 +368,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               }
               send({ kind: "event", event: item.event });
             } else if (item.kind === "artifact") {
-              const file = await createFile(org.sql, org.orgId, {
-                title: item.artifact.title,
-                body: item.artifact.body,
+                const artifactPath = typeof item.artifact.metadata?.path === "string" ? item.artifact.metadata.path : null;
+                const file = await createFile(org.sql, org.orgId, {
+                  title: artifactPath ? artifactPath.split("/").pop() ?? item.artifact.title : item.artifact.title,
+                  body: item.artifact.body,
                 fileType: item.artifact.type === "artifact" ? "artifact" : item.artifact.type,
                 status: "active",
                 metadata: {
@@ -417,7 +431,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           try { await flushAtomicCheckpoint(); } catch { /* logged by final persistence */ }
         }
 
-        let completedAt =
+        const completedAt =
           terminalStatus === "completed" || terminalStatus === "failed" || terminalStatus === "cancelled"
             ? new Date().toISOString()
             : null;
@@ -434,59 +448,39 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           };
         }
 
-        // Preserve a concurrent durable cancel/pause and finalize through the
-        // same atomic persistence authority used by the initial execution.
-        const finalRun = await getRun(sql, org.orgId, runId);
-        if (finalRun?.cancel_requested_at || finalRun?.status === "cancelled") {
-          terminalStatus = "cancelled";
-          errorMessage = null;
-          if (finalRun.state) latestCheckpoint = finalRun.state as RunCheckpoint;
-        } else if (finalRun?.pause_requested_at || finalRun?.status === "waiting_human") {
-          terminalStatus = "waiting_human";
-          errorMessage = null;
-          completedAt = null;
-          if (finalRun.state) latestCheckpoint = finalRun.state as RunCheckpoint;
-        }
-        const finalCheckpointVersion = Number(finalRun?.checkpoint_version ?? checkpointVersion);
-        const finalEvents = queuedEvents.splice(0, queuedEvents.length);
-        try {
-          const finalResult = await atomicCheckpoint(org.sql, org.orgId, runId, {
-            events: finalEvents,
-            state: latestCheckpoint,
-            outputs: { text: outputText },
-            status: terminalStatus,
-            error: errorMessage,
-            completedAt,
-            expectedCheckpointVersion: finalCheckpointVersion
-          });
-          checkpointVersion = finalResult.checkpointVersion;
-        } catch (finalError) {
-          const latest = await getRun(sql, org.orgId, runId);
-          if (latest?.cancel_requested_at || latest?.status === "cancelled") {
-            terminalStatus = "cancelled";
-            errorMessage = null;
-          } else if (latest?.pause_requested_at || latest?.status === "waiting_human") {
-            terminalStatus = "waiting_human";
-            errorMessage = null;
-            completedAt = null;
-          }
+        // ── Atomic finalization ───────────────────────────────────────────
+        let finalTurnResult: {
+          run: RunRow;
+          messages: ChatMessageRow[];
+          chat: ChatRow | null;
+        } | null = null;
+
+        if (run.chat_id) {
           try {
-            const retryResult = await atomicCheckpoint(org.sql, org.orgId, runId, {
-              events: finalEvents,
-              state: latestCheckpoint,
-              outputs: { text: outputText },
-              status: terminalStatus,
-              error: errorMessage,
-              completedAt,
-              expectedCheckpointVersion: Number(latest?.checkpoint_version ?? finalCheckpointVersion)
-            });
-            checkpointVersion = retryResult.checkpointVersion;
-          } catch (retryError) {
-            console.error("[runs/reply] final atomic checkpoint failed:", finalError, retryError);
+            finalTurnResult = await finalizeRunTurn(
+              org.sql, org.orgId, runId, run.chat_id, run.turn_id, checkpointVersion,
+              {
+                outputText: outputText ?? "",
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                events: queuedEvents.splice(0, queuedEvents.length) as any,
+                state: latestCheckpoint,
+                status: terminalStatus,
+                error: errorMessage,
+                completedAt: terminalStatus === "waiting_human" ? null : completedAt,
+                isDirectorChat: false,
+                resumedFrom: body.requestId
+              }
+            );
+            checkpointVersion = Number(finalTurnResult.run.checkpoint_version ?? checkpointVersion);
+            terminalStatus = finalTurnResult.run.status as RunStatus;
+          } catch (finalizeErr) {
+            console.error("[runs/reply] finalizeRunTurn failed:", finalizeErr);
+            throw finalizeErr;
           }
         }
 
-        if (resolved.runRequest.provider && resolved.runRequest.model && outputText) {
+        // ── Usage ledger (best-effort) ─────────────────────────────────────
+        if (resolved.runRequest.provider && resolved.runRequest.model) {
           try {
             await recordUsage(org.sql, org.orgId, {
               runId,
@@ -501,28 +495,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }
         }
 
-        if (run.chat_id && outputText) {
-          try {
-            await appendChatMessages(org.sql, org.orgId, run.chat_id, [
-              {
-                role: "assistant",
-                body: outputText,
-                metadata: {
-                  runId,
-                  turnId: run.turn_id ?? undefined,
-                  kind: "assistant_reply",
-                  resumedFrom: body.requestId
-                }
-              }
-            ]);
-          } catch (err) {
-            console.warn("[runs/reply] chat persist failed:", err);
-          }
-        }
-
-        // A workflow commonly creates its first project artifact after the
-        // human brief is answered. Treat that resumed execution as a normal
-        // revision so later chat edits retain the project lineage.
+        // ── Project revision (best-effort, after terminal consistency) ────
         if (run.chat_id && project && outputFiles.length > 0) {
           try {
             const projectArtifact = outputFiles.find((file) => file.isProject) ?? outputFiles[0];
@@ -557,11 +530,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }
         }
 
-        if (run.chat_id) {
-          await updateChatMetadata(org.sql, org.orgId, run.chat_id, {
-            activeRunId: terminalStatus === "waiting_human" ? runId : null,
-            lastRunId: runId
-          });
+        // ── SSE frames ────────────────────────────────────────────────────
+        const finalMsgs = finalTurnResult?.messages ?? [];
+        for (const msg of finalMsgs) {
+          send({ kind: "message_persisted", chatId: run.chat_id!, message: messageRowToChatMessage(msg), runId });
+        }
+
+        if (finalTurnResult?.chat && run.chat_id) {
+          send({ kind: "chat_created", chatId: run.chat_id, chat: chatRowToChat(finalTurnResult.chat) });
         }
 
         send({
@@ -572,6 +548,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             progress: latestCheckpoint.progress,
             verification: latestCheckpoint.verification
           }
+        });
+
+        publishDomainEvent(`run:${runId}`, {
+          type: "run.status.changed",
+          orgId: org.orgId,
+          runId,
+          status: terminalStatus,
+          checkpointVersion,
+          ts: new Date().toISOString()
         });
 
         send({ kind: "done", runId, status: terminalStatus });

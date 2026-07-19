@@ -22,7 +22,7 @@ import {
 } from "@spielos/design-system";
 import { useRunContext, type ContextItem } from "../../lib/run-context";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
-import { capabilitiesForModel } from "@spielos/core";
+import { capabilitiesForModel, type SseFrame } from "@spielos/core";
 import { reasoningLabel, type ReasoningEffort } from "../reasoning-effort-control";
 import { ToolCallCard } from "./tool-call";
 import { ArtifactFullscreenButton, ArtifactWorkbench } from "./artifact-workbench";
@@ -175,14 +175,15 @@ function CapacityMeter({ label, value, maximum, icon }: { label: string; value: 
   const ratio = maximum > 0 ? Math.min(1, value / maximum) : 0;
   const filled = Math.ceil(ratio * 12);
   const tone = ratio >= 0.9 ? "bg-destructive" : ratio >= 0.75 ? "bg-warning" : "bg-info";
+  const pct = Math.round(ratio * 100);
   return (
     <div className="grid gap-1.5">
       <div className="flex items-center gap-1.5 text-2xs">
         <Icon className="text-muted-foreground" name={icon} size={10} />
         <span className="font-medium text-foreground">{label}</span>
-        <span className="ms-auto tabular-nums text-muted-foreground">{compactTokens(value)} / {compactTokens(maximum)}</span>
+        <span className="ms-auto tabular-nums text-muted-foreground">{compactTokens(value)} / {compactTokens(maximum)} tokens · {pct}% used</span>
       </div>
-      <div aria-label={`${label} ${Math.round(ratio * 100)} percent used`} className="grid grid-cols-12 gap-0.5">
+      <div aria-label={`${label} ${pct} percent used`} className="grid grid-cols-12 gap-0.5">
         {Array.from({ length: 12 }, (_, index) => (
           <span className={cn("h-1 rounded-full", index < filled ? tone : "bg-input")} key={index} />
         ))}
@@ -198,9 +199,12 @@ function RuntimeCapacity({ run }: { run: ReturnType<typeof useRunContext> }) {
   const model = store.models.find((entry) => entry.id === configuredModelId && entry.enabled) ?? store.models.find((entry) => entry.enabled) ?? null;
   const capabilities = model ? capabilitiesForModel(model) : null;
   const effort = (typeof activeChat?.metadata?.reasoningEffort === "string" ? activeChat.metadata.reasoningEffort : run.pendingReasoningEffort) as ReasoningEffort;
-  const budget = run.durableState?.budget;
   const usage = run.liveUsage;
-  const contextMaximum = budget?.maxInputTokens ?? capabilities?.contextWindow ?? 0;
+  const budget = run.durableState?.budget;
+  const inputTokens = usage?.inputTokens ?? budget?.inputTokens ?? 0;
+  const outputTokens = usage?.outputTokens ?? budget?.outputTokens ?? 0;
+  const contextTotal = inputTokens + outputTokens;
+  const contextWindow = capabilities?.contextWindow ?? 0;
   const compaction = activeChat?.metadata?.compaction && typeof activeChat.metadata.compaction === "object"
     ? activeChat.metadata.compaction as Record<string, unknown>
     : null;
@@ -223,7 +227,7 @@ function RuntimeCapacity({ run }: { run: ReturnType<typeof useRunContext> }) {
       </div>
       {capabilities ? (
         <>
-          <CapacityMeter icon={CONTEXT_ICON} label="Context window" maximum={contextMaximum} value={usage?.inputTokens ?? budget?.inputTokens ?? 0} />
+          <CapacityMeter icon={CONTEXT_ICON} label="Context" maximum={contextWindow} value={contextTotal} />
           <div className="grid grid-cols-3 gap-1.5">
             <div className="rounded-md bg-panel px-2 py-1.5">
               <div className="text-3xs text-muted-foreground">Tools</div>
@@ -231,7 +235,7 @@ function RuntimeCapacity({ run }: { run: ReturnType<typeof useRunContext> }) {
             </div>
             <div className="rounded-md bg-panel px-2 py-1.5">
               <div className="text-3xs text-muted-foreground">Compaction</div>
-              <div className="mt-0.5 text-xs font-medium tabular-nums text-foreground">{compactedMessages > 0 ? `${compactedMessages} msgs` : `at ${compactTokens(Math.floor(contextMaximum * capabilities.compactionThreshold))}`}</div>
+              <div className="mt-0.5 text-xs font-medium tabular-nums text-foreground">{compactedMessages > 0 ? `${compactedMessages} msgs` : `at ${compactTokens(Math.floor(contextWindow * capabilities.compactionThreshold))}`}</div>
             </div>
             <div className="rounded-md bg-panel px-2 py-1.5">
               <div className="text-3xs text-muted-foreground">Counter</div>
@@ -406,6 +410,7 @@ function OutputSection({ run }: { run: ReturnType<typeof useRunContext> }) {
 
 export function RunDrawer() {
   const run = useRunContext();
+  const workspaceStore = useWorkspaceStore();
   const ui = useUiStore();
   const section: Section = ui.inspectorSection;
   const [controlBusy, setControlBusy] = useState(false);
@@ -448,8 +453,12 @@ export function RunDrawer() {
         for (const frame of frames) {
           const line = frame.split("\n").find((entry) => entry.startsWith("data: "));
           if (!line) continue;
-          const item = JSON.parse(line.slice(6)) as { kind: string; event?: import("@spielos/core").RunEvent; artifact?: import("@spielos/core").Artifact; request?: import("@spielos/core").HumanInputRequest; state?: import("../../lib/run-context").DurableRunState; usage?: import("../../lib/run-context").LiveRunUsage; text?: string; status?: string; message?: string };
-          if (item.kind === "event" && item.event) run.appendEvent(item.event);
+          const item = JSON.parse(line.slice(6)) as SseFrame;
+          if (item.kind === "message_persisted") {
+            workspaceStore.upsertMessage(item.chatId, item.message);
+          } else if (item.kind === "chat_created") {
+            workspaceStore.upsertChat(item.chat);
+          } else if (item.kind === "event" && item.event) run.appendEvent(item.event);
           if (item.kind === "artifact" && item.artifact) run.appendArtifact(item.artifact);
           if (item.kind === "human_input" && item.request) run.setHumanInputRequest(item.request);
           if (item.kind === "text" && item.text) run.appendContinuationText(item.text);

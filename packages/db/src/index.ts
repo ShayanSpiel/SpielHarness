@@ -2322,3 +2322,179 @@ export async function listRecentRunMetrics(sql: Sql, orgId: string, limit = 50):
     limit ${limit}
   `;
 }
+
+export interface FinalizeTurnOptions {
+  outputText: string;
+  events: import("@spielos/core").RunEvent[];
+  state: Record<string, unknown>;
+  status: string;
+  error: string | null;
+  completedAt: string | null;
+  isDirectorChat: boolean;
+  longHorizon?: { pinnedState: unknown; milestones: unknown } | null;
+  resumedFrom?: string;
+}
+
+export interface FinalizeTurnResult {
+  run: RunRow;
+  messages: ChatMessageRow[];
+  chat: ChatRow | null;
+}
+
+export async function finalizeRunTurn(
+  sql: Sql,
+  orgId: string,
+  runId: string,
+  chatId: string,
+  turnId: string | null,
+  currentCheckpointVersion: number,
+  opts: FinalizeTurnOptions
+): Promise<FinalizeTurnResult> {
+  return sql.begin(async (tx) => {
+    const [run] = await tx<RunRow[]>`
+      select * from runs
+      where org_id = ${orgId} and id = ${runId}
+      for update
+    `;
+    if (!run) throw new Error(`Run ${runId} not found`);
+
+    let terminalStatus = opts.status;
+    let errorMessage = opts.error;
+    let finalCompletedAt = opts.completedAt;
+    if (run.cancel_requested_at || run.status === "cancelled") {
+      terminalStatus = "cancelled";
+      errorMessage = null;
+      finalCompletedAt = new Date().toISOString();
+    } else if (run.pause_requested_at || run.status === "waiting_human") {
+      terminalStatus = "waiting_human";
+      errorMessage = null;
+      finalCompletedAt = null;
+    }
+
+    const storedVersion = Number(run.checkpoint_version ?? 0);
+    if (currentCheckpointVersion > 0 && storedVersion !== currentCheckpointVersion) {
+      throw new Error(`Checkpoint version mismatch: stored=${storedVersion} expected=${currentCheckpointVersion}`);
+    }
+
+    const finalCheckpointVersion = storedVersion + 1;
+    const stateJson = JSON.stringify(opts.state);
+
+    // Insert events into run_events (not runs — no events column exists)
+    if (opts.events.length > 0) {
+      const [reserve] = await tx<{ base: number }[]>`
+        update runs
+        set next_event_sequence = next_event_sequence + ${opts.events.length}::bigint
+        where org_id = ${orgId} and id = ${runId}
+        returning (next_event_sequence - ${opts.events.length}::bigint) as base
+      `;
+      const base = Number(reserve?.base ?? 0);
+      const values = opts.events.map((event) => ({
+        org_id: orgId,
+        run_id: runId,
+        event_type: event.type,
+        node_id: event.nodeId ?? null,
+        node_title: event.nodeTitle ?? null,
+        skill_id: event.skillId ?? null,
+        skill_name: event.skillName ?? null,
+        message: event.message,
+        payload: event.payload,
+        event_key: null,
+        sequence: base
+      }));
+      await tx<RunEventRow[]>`
+        with batch as (
+          select row_number() over () as rn, record.*
+          from jsonb_to_recordset(${toJsonb(tx, values as unknown as never)}) as record(
+            org_id text, run_id text, event_type text,
+            node_id text, node_title text, skill_id text, skill_name text,
+            message text, payload jsonb, event_key text, sequence bigint
+          )
+        )
+        insert into run_events (org_id, run_id, event_type, sequence, node_id, node_title, skill_id, skill_name, message, payload, event_key)
+        select
+          batch.org_id::uuid,
+          batch.run_id::uuid,
+          batch.event_type::event_type,
+          batch.sequence + batch.rn - 1,
+          batch.node_id,
+          batch.node_title,
+          batch.skill_id,
+          batch.skill_name,
+          batch.message,
+          batch.payload,
+          batch.event_key
+        from batch
+      `;
+    }
+
+    await tx`
+      update runs set
+        state = ${stateJson}::jsonb,
+        outputs = ${tx.json({ text: opts.outputText })},
+        status = ${terminalStatus},
+        error = ${errorMessage},
+        checkpoint_version = ${finalCheckpointVersion},
+        completed_at = ${finalCompletedAt}
+      where org_id = ${orgId} and id = ${runId}
+    `;
+
+    const idempotencyKey = turnId
+      ? `run:${runId}:turn:${turnId}:final`
+      : opts.resumedFrom
+        ? `run:${runId}:resume:${opts.resumedFrom}`
+        : null;
+
+    let messages: ChatMessageRow[] = [];
+    if (opts.outputText && idempotencyKey) {
+      const existing = await tx<ChatMessageRow[]>`
+        select * from chat_messages
+        where org_id = ${orgId} and chat_id = ${chatId}
+          and metadata->>'idempotencyKey' = ${idempotencyKey}
+        limit 1
+      `;
+      if (existing.length === 0) {
+        const insertMeta: Record<string, unknown> = {
+          runId,
+          turnId: turnId ?? undefined,
+          kind: "assistant_reply",
+          idempotencyKey,
+          ...(opts.isDirectorChat ? { executionMode: "director" } : {}),
+          ...(opts.resumedFrom ? { resumedFrom: opts.resumedFrom } : {})
+        };
+        messages = await tx<ChatMessageRow[]>`
+          insert into chat_messages (org_id, chat_id, role, body, metadata, created_at)
+          values (
+            ${orgId}, ${chatId}, 'assistant', ${opts.outputText},
+            ${tx.json(insertMeta as any)}, ${new Date().toISOString()}
+          )
+          returning *
+        `;
+      } else {
+        messages = existing;
+      }
+    }
+
+    const chatMetaUpdate: Record<string, unknown> = {
+      activeRunId: terminalStatus === "waiting_human" ? runId : null,
+      lastRunId: runId
+    };
+    if (opts.longHorizon) {
+      chatMetaUpdate.pinnedState = opts.longHorizon.pinnedState;
+      chatMetaUpdate.milestones = opts.longHorizon.milestones;
+    }
+
+    const [chat] = await tx<ChatRow[]>`
+      update chats set
+        metadata = metadata || ${tx.json(chatMetaUpdate as any)},
+        updated_at = ${new Date().toISOString()}
+      where org_id = ${orgId} and id = ${chatId}
+      returning *
+    `;
+
+    const [finalRun] = await tx<RunRow[]>`
+      select * from runs where org_id = ${orgId} and id = ${runId}
+    `;
+
+    return { run: finalRun!, messages, chat: chat ?? null };
+  });
+}

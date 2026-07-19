@@ -98,9 +98,9 @@ async function runChildStream(
   const eventIds = new Set<string>();
   let checkpoint: RunCheckpoint | null = null;
   try {
-    const onUsage = (next: { input: number; output: number }) => {
-      billableUsage.input += next.input;
-      billableUsage.output += next.output;
+    const onModelUsage = (update: import("@spielos/core").ModelUsageUpdate) => {
+      billableUsage.input += update.inputTokens;
+      billableUsage.output += update.outputTokens;
     };
     for await (const yield_ of streamRun({
       orgId: args.orgId,
@@ -116,7 +116,7 @@ async function runChildStream(
       connections: args.connections,
       provider: args.provider,
       model: args.model,
-      onUsage,
+      onModelUsage,
       signal: controller.signal,
       harnessFileAction: args.harnessFileAction,
       memoryProposalAction: args.memoryProposalAction,

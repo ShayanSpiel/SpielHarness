@@ -40,6 +40,7 @@ import {
   type ChatUsage,
   type ConversationCompaction,
 } from "@spielos/providers";
+import type { ModelUsageUpdate } from "@spielos/core";
 import { evaluateRules, type EvalResult } from "@spielos/evals";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
@@ -205,6 +206,7 @@ export type RunRequest = {
   previousCompaction?: ConversationCompaction | null;
   chatMetadata?: Record<string, unknown>;
   onUsage?: (usage: ChatUsage) => void;
+  onModelUsage?: (update: ModelUsageUpdate) => void;
   onToolUsage?: (count: number) => void;
   onEvent?: (event: RunEvent) => void;
   harnessFileAction?: HarnessFileAction;
@@ -283,6 +285,7 @@ const RunStateAnnotation = Annotation.Root({
   goal: Annotation<RunGoal>(),
   budget: Annotation<RunBudget>(),
   onUsage: Annotation<((usage: ChatUsage) => void) | undefined>(),
+  onModelUsage: Annotation<((update: ModelUsageUpdate) => void) | undefined>(),
   onToolUsage: Annotation<((count: number) => void) | undefined>(),
   onEvent: Annotation<((event: RunEvent) => void) | undefined>(),
   harnessFileAction: Annotation<HarnessFileAction | undefined>(),
@@ -440,6 +443,24 @@ function mergeLongHorizonCheckpoints(
   return { pinnedState, milestones };
 }
 
+function modelUsageBridge(
+  onModelUsage: ((update: ModelUsageUpdate) => void) | undefined,
+  scope: ModelUsageUpdate["scope"],
+  updatesContext: boolean,
+  modelId: string | null,
+): ((usage: ChatUsage) => void) | undefined {
+  if (!onModelUsage) return undefined;
+  return (usage: ChatUsage) => {
+    onModelUsage({
+      inputTokens: usage.input,
+      outputTokens: usage.output,
+      modelId: modelId ?? "unknown",
+      scope,
+      updatesContext,
+    });
+  };
+}
+
 async function assembleNodeLongHorizon(args: {
   state: typeof RunStateAnnotation.State;
   system: string;
@@ -478,7 +499,7 @@ async function assembleNodeLongHorizon(args: {
     currentUserMessage,
     inputLimit: Math.max(1024, capabilitiesForModel(args.state.model!).contextWindow - capabilitiesForModel(args.state.model!).maxOutputTokens),
     signal: args.signal,
-    onUsage: args.state.onUsage
+    onUsage: modelUsageBridge(args.state.onModelUsage, "internal", false, args.state.model?.model ?? null)
   });
   const checkpoint = mergeLongHorizonCheckpoints(current, {
     pinnedState: longHorizon.state,
@@ -578,7 +599,7 @@ async function executeLLMCall(
     {
       signal,
       maxTokens: state.budget.maxOutputTokens ?? capabilitiesForModel(state.model).maxOutputTokens,
-      onUsage: state.onUsage
+      onUsage: modelUsageBridge(state.onModelUsage, "root", true, state.model?.model ?? null)
     }
   );
   for await (const delta of stream) {
@@ -625,7 +646,7 @@ async function repairArtifactProjectOutput(
   const stream = streamChat(state.provider, state.model, messages, {
     signal,
     maxTokens: Math.min(16_384, state.budget.maxOutputTokens ?? capabilitiesForModel(state.model).maxOutputTokens),
-    onUsage: state.onUsage
+    onUsage: modelUsageBridge(state.onModelUsage, "internal", false, state.model?.model ?? null)
   });
   for await (const delta of stream) repaired += delta;
   return repaired;
@@ -1312,7 +1333,7 @@ async function reactLoop(
     const stream = streamChat(state.provider, state.model, messages, {
       signal,
       maxTokens: state.budget.maxOutputTokens ?? capabilitiesForModel(state.model).maxOutputTokens,
-      onUsage: state.onUsage,
+      onUsage: modelUsageBridge(state.onModelUsage, "root", true, state.model?.model ?? null),
     });
     for await (const delta of stream) {
       response += delta;
@@ -2305,6 +2326,7 @@ function buildInitialState(req: RunRequest) {
       deadlineAt: maxDurationMs ? new Date(Date.parse(startedAt) + maxDurationMs).toISOString() : null
     },
     onUsage: req.onUsage,
+    onModelUsage: req.onModelUsage,
     onToolUsage: req.onToolUsage,
     onEvent: req.onEvent,
     harnessFileAction: req.harnessFileAction,
@@ -2709,7 +2731,7 @@ export async function* streamChatRun(
       currentUserMessage,
       inputLimit: Math.max(1024, capabilitiesForModel(req.model).contextWindow - capabilitiesForModel(req.model).maxOutputTokens),
       signal: executionSignal,
-      onUsage: req.onUsage
+      onUsage: modelUsageBridge(req.onModelUsage, "internal", false, req.model?.model ?? null)
     });
     longHorizonCheckpoint = mergeLongHorizonCheckpoints(longHorizonCheckpoint, {
       pinnedState: longHorizon.state,
@@ -2748,7 +2770,7 @@ export async function* streamChatRun(
     const stream = streamChat(req.provider, req.model, assembly.messages, {
       signal: executionSignal,
       maxTokens: req.budget?.maxOutputTokens ?? capabilities.maxOutputTokens,
-      onUsage: req.onUsage
+      onUsage: modelUsageBridge(req.onModelUsage, "root", true, req.model?.model ?? null)
     });
     for await (const delta of stream) {
       content += delta;
@@ -2968,7 +2990,7 @@ export async function* streamDirectorRun(
     messages.unshift(new SystemMessage(`Workspace files available through the native filesystem:\n${availablePaths.map((path) => `- ${path}`).join("\n")}`));
   }
 
-  const usage = new DirectorUsageTracker((snapshot) => req.onUsage?.(snapshot));
+  const usage = new DirectorUsageTracker();
   const emitted = new Set<string>();
 
   let toolCalls = 0;
@@ -3052,7 +3074,6 @@ export async function* streamDirectorRun(
           { streamMode: ["values"], subgraphs: true, signal: req.signal, configurable: { thread_id: threadId } }
         );
   } catch (err) {
-    usage.foldOnce();
     const message = err instanceof Error ? err.message : "Director failed.";
     yield { kind: "event", event: makeEvent(req.orgId, req.runId, "run_failed", message) };
     yield {
@@ -3095,6 +3116,7 @@ export async function* streamDirectorRun(
       checkControl,
       skipRootMessages,
       toolPresentation,
+      req.onModelUsage,
       req.budget
     );
     while (true) {
@@ -3108,7 +3130,6 @@ export async function* streamDirectorRun(
       yield next.value;
     }
   } catch (err) {
-    usage.foldOnce();
     if (err instanceof Error && err.name === "SpielOSPause") {
       const paused = target.buildCheckpoint({
         longHorizon: directorLongHorizon,
@@ -3167,7 +3188,6 @@ export async function* streamDirectorRun(
     return;
   }
 
-  usage.foldOnce();
   const humanRequest = mapDirectorInterrupts(target, interrupts);
   if (humanRequest) {
     yield {

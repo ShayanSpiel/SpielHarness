@@ -11,8 +11,8 @@ export async function GET() {
     const chats = await listChats(org.sql, org.orgId);
     const ids = chats.map((c) => c.id);
     const messages = ids.length
-      ? await org.sql<{ id: string; chat_id: string; role: string; body: string; metadata: Record<string, unknown>; created_at: string }[]>`
-          select id, chat_id, role, body, metadata, created_at
+      ? await org.sql<{ id: string; chat_id: string; org_id: string; role: string; body: string; metadata: Record<string, unknown>; created_at: string }[]>`
+          select id, chat_id, org_id, role, body, metadata, created_at
           from chat_messages
           where org_id = ${org.orgId} and chat_id = any(${ids})
           order by created_at asc

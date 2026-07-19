@@ -349,14 +349,18 @@ export function compileDirector(input: DirectorCompileInput): DirectorCompileOut
   }
   const tools = availableTools.filter((candidate) => directorToolNames.has(candidate.name));
   const boundToolNames = new Set(tools.map((candidate) => candidate.name));
-  const interruptOn: Record<string, { allowedDecisions: ("approve" | "reject")[] }> = {};
+  const interruptOn: Record<string, { allowedDecisions: ("approve" | "reject")[]; description: (toolCall: { name: string; args: Record<string, unknown> }) => string }> = {};
   for (const skill of Object.values(input.skills)) {
     if (
       skill.status === "active" &&
       boundToolNames.has(directorSkillToolName(skill)) &&
       (skill.sideEffect === "write" || skill.sideEffect === "external")
     ) {
-      interruptOn[directorSkillToolName(skill)] = { allowedDecisions: ["approve", "reject"] };
+      const skillName = skill.name;
+      interruptOn[directorSkillToolName(skill)] = {
+        allowedDecisions: ["approve", "reject"],
+        description: () => `Allow "${skillName}"?`
+      };
     }
   }
   for (const workflow of Object.values(input.workflows)) {
@@ -365,7 +369,10 @@ export function compileDirector(input: DirectorCompileInput): DirectorCompileOut
       return skill?.sideEffect === "write" || skill?.sideEffect === "external";
     }));
     if (needsApproval && boundToolNames.has("execute_workflow")) {
-      interruptOn.execute_workflow = { allowedDecisions: ["approve", "reject"] };
+      interruptOn.execute_workflow = {
+        allowedDecisions: ["approve", "reject"],
+        description: () => "Allow running this workflow?"
+      };
     }
   }
   const agent = createDeepAgent({
@@ -376,6 +383,7 @@ export function compileDirector(input: DirectorCompileInput): DirectorCompileOut
     ...(Object.keys(interruptOn).length > 0 ? { interruptOn } : {}),
     permissions: [
       { operations: ["write"], paths: ["/artifacts/**"], mode: "allow" },
+      { operations: ["write"], paths: ["/workspace/**"], mode: "allow" },
       { operations: ["write"], paths: ["/**"], mode: "deny" }
     ],
     checkpointer: input.checkpointer ?? undefined,

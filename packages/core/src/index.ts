@@ -458,6 +458,7 @@ export const chatSchema = z.object({
   orgId: z.string(),
   title: z.string(),
   metadata: z.record(z.unknown()).default({}),
+  archivedAt: z.string().nullable().default(null),
   createdAt: z.string(),
   updatedAt: z.string()
 });
@@ -473,6 +474,92 @@ export const chatMessageSchema = z.object({
   createdAt: z.string()
 });
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
+
+export function chatRowToChat(row: {
+  id: string; org_id: string; title: string;
+  metadata: Record<string, unknown>;
+  created_at: string; updated_at: string; archived_at: string | null;
+}): Chat {
+  return {
+    id: row.id, orgId: row.org_id, title: row.title,
+    metadata: row.metadata ?? {},
+    archivedAt: row.archived_at ?? null,
+    createdAt: row.created_at, updatedAt: row.updated_at
+  };
+}
+
+export function messageRowToChatMessage(row: {
+  id: string; org_id: string; chat_id: string;
+  role: string; body: string; metadata: Record<string, unknown>;
+  created_at: string;
+}): ChatMessage {
+  return {
+    id: row.id, orgId: row.org_id, chatId: row.chat_id,
+    role: row.role as "user" | "assistant" | "system" | "tool",
+    body: row.body, metadata: row.metadata ?? {},
+    createdAt: row.created_at
+  };
+}
+
+export function upsertMessage<T extends { id: string }>(
+  msgs: T[],
+  msg: T
+): T[] {
+  const idx = msgs.findIndex((m) => m.id === msg.id);
+  if (idx >= 0) {
+    const copy = [...msgs];
+    copy[idx] = msg;
+    return copy;
+  }
+  return [...msgs, msg];
+}
+
+export function mergeMessages<T extends { id: string; createdAt: string }>(
+  existing: T[],
+  incoming: T[]
+): T[] {
+  const existingIds = new Set(existing.map((m) => m.id));
+  const merged = [
+    ...existing,
+    ...incoming.filter((m) => !existingIds.has(m.id))
+  ];
+  merged.sort((a, b) => {
+    const c = a.createdAt.localeCompare(b.createdAt);
+    return c !== 0 ? c : a.id.localeCompare(b.id);
+  });
+  return merged;
+}
+
+export function reconcileChats<T extends { id: string; archivedAt: string | null }>(
+  current: T[],
+  incoming: T[],
+  mutatedIds: Set<string>
+): T[] {
+  const incomingMap = new Map(incoming.map((c) => [c.id, c]));
+  const seen = new Set<string>();
+  const result: T[] = [];
+
+  for (const c of current) {
+    seen.add(c.id);
+    if (mutatedIds.has(c.id)) {
+      result.push(c);
+    } else if (incomingMap.has(c.id)) {
+      const inc = incomingMap.get(c.id)!;
+      if (!inc.archivedAt) {
+        result.push(inc);
+      }
+    }
+  }
+
+  for (const c of incoming) {
+    if (!seen.has(c.id) && !mutatedIds.has(c.id) && !c.archivedAt) {
+      result.push(c);
+      seen.add(c.id);
+    }
+  }
+
+  return result;
+}
 
 // ── Project sessions and orchestration ─────────────────────────
 //
@@ -909,9 +996,68 @@ export const runBudgetSchema = z.object({
   outputTokens: z.number().int().nonnegative().default(0),
   toolCalls: z.number().int().nonnegative().default(0),
   startedAt: z.string(),
-  deadlineAt: z.string().nullable().default(null)
+  deadlineAt: z.string().nullable().default(null),
+  // Additive new fields — legacy inputTokens/outputTokens kept for backward compat
+  contextInputTokens: z.number().int().nonnegative().optional(),
+  contextOutputTokens: z.number().int().nonnegative().optional(),
+  totalInputTokens: z.number().int().nonnegative().optional(),
+  totalOutputTokens: z.number().int().nonnegative().optional(),
+  contextModelId: z.string().nullable().optional()
 });
 export type RunBudget = z.infer<typeof runBudgetSchema>;
+
+export type ModelUsageUpdate = {
+  inputTokens: number;
+  outputTokens: number;
+  modelId: string;
+  scope: "root" | "subagent" | "internal";
+  updatesContext: boolean;
+};
+
+export type NormalizedBudget = {
+  contextInputTokens: number;
+  contextOutputTokens: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  toolCalls: number;
+  maxInputTokens: number | null;
+  maxOutputTokens: number | null;
+  maxToolCalls: number | null;
+  maxDurationMs: number | null;
+  startedAt: string;
+  deadlineAt: string | null;
+  contextModelId: string | null;
+};
+
+function toInt(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.floor(value);
+  const parsed = typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(parsed) ? Math.floor(parsed) : null;
+}
+
+function str(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+export function normalizeBudget(raw: unknown): NormalizedBudget {
+  const b = (raw ?? {}) as Record<string, unknown>;
+  const legacyInput = toInt(b.inputTokens) ?? 0;
+  const legacyOutput = toInt(b.outputTokens) ?? 0;
+  return {
+    contextInputTokens: toInt(b.contextInputTokens) ?? legacyInput,
+    contextOutputTokens: toInt(b.contextOutputTokens) ?? legacyOutput,
+    totalInputTokens: toInt(b.totalInputTokens) ?? legacyInput,
+    totalOutputTokens: toInt(b.totalOutputTokens) ?? legacyOutput,
+    toolCalls: toInt(b.toolCalls) ?? 0,
+    maxInputTokens: toInt(b.maxInputTokens) ?? null,
+    maxOutputTokens: toInt(b.maxOutputTokens) ?? null,
+    maxToolCalls: toInt(b.maxToolCalls) ?? null,
+    maxDurationMs: toInt(b.maxDurationMs) ?? null,
+    startedAt: str(b.startedAt) ?? "",
+    deadlineAt: str(b.deadlineAt) ?? null,
+    contextModelId: str(b.contextModelId) ?? null,
+  };
+}
 
 /**
  * Workspace-owned safety envelope for autonomous Director runs. The values
@@ -953,6 +1099,21 @@ export const runVerificationSchema = z.object({
   checkedAt: z.string().nullable().default(null)
 });
 export type RunVerification = z.infer<typeof runVerificationSchema>;
+
+export const runStateFrameSchema = z.object({
+  goal: runGoalSchema.optional(),
+  budget: runBudgetSchema.optional(),
+  progress: runProgressSchema.optional(),
+  verification: runVerificationSchema.optional()
+});
+export type RunStateFrame = z.infer<typeof runStateFrameSchema>;
+
+export const usageFrameSchema = z.object({
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  toolCalls: z.number()
+});
+export type UsageFrame = z.infer<typeof usageFrameSchema>;
 
 // ── Controlled, file-backed learned memory ───────────────────
 export const memoryKindSchema = z.enum(["semantic", "episodic"]);
@@ -1004,10 +1165,14 @@ export type FileRecord = z.infer<typeof fileRecordSchema>;
 // ── SSE frame shapes (the streaming protocol) ─────────────────
 export const sseFrameSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("run"), runId: z.string(), type: z.string() }),
+  z.object({ kind: z.literal("chat_created"), chatId: z.string(), chat: chatSchema }),
+  z.object({ kind: z.literal("message_persisted"), chatId: z.string(), message: chatMessageSchema, runId: z.string() }),
   z.object({ kind: z.literal("event"), event: runEventSchema }),
   z.object({ kind: z.literal("artifact"), artifact: artifactSchema }),
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({ kind: z.literal("status"), message: z.string() }),
+  z.object({ kind: z.literal("run_state"), state: runStateFrameSchema }),
+  z.object({ kind: z.literal("usage"), usage: usageFrameSchema }),
   z.object({ kind: z.literal("human_input"), request: humanInputRequestSchema }),
   z.object({ kind: z.literal("error"), message: z.string() }),
   z.object({ kind: z.literal("done"), runId: z.string(), status: runStatusSchema })

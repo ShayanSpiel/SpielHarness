@@ -71,6 +71,21 @@ export async function buildPostgresSaver(
     const checkpointer = new PostgresSaver(pool, undefined, { schema });
     try {
       await checkpointer.setup();
+      // Strip _summarizationEvent from loaded checkpoints. The JsonPlus
+      // serializer serializes HumanMessage (nested inside the event) as a
+      // plain object since fast-safe-stringify doesn't call toJSON(), so
+      // deserialization produces a plain object that fails
+      // z.instanceof(HumanMessage) in deepagents' SummarizationStateSchema.
+      // The event is only needed on the turn it was emitted; on subsequent
+      // turns the summary message is already in the messages array.
+      const originalGetTuple = checkpointer.getTuple.bind(checkpointer);
+      checkpointer.getTuple = async (config) => {
+        const tuple = await originalGetTuple(config);
+        if (tuple?.checkpoint?.channel_values) {
+          delete tuple.checkpoint.channel_values._summarizationEvent;
+        }
+        return tuple;
+      };
       return checkpointer;
     } catch (error) {
       if (ownedPool) await ownedPool.end().catch(() => undefined);

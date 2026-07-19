@@ -113,6 +113,26 @@ export function ArtifactWorkbench({ artifact, compact = false, fullscreen = fals
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
   if (!project) {
+    const trimmed = artifact.body.trim();
+    const isHtml = artifact.title.endsWith(".html") || trimmed.startsWith("<!DOCTYPE html") || trimmed.startsWith("<html");
+    if (isHtml) {
+      const policy = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; form-action 'none'; base-uri 'none'">`;
+      const html = /<head[\s>]/i.test(artifact.body)
+        ? artifact.body.replace(/<head([^>]*)>/i, `<head$1>${policy}`)
+        : `${policy}${artifact.body}`;
+      const frame = (
+        <iframe
+          className={cn("w-full border-0 bg-surface", fullscreen ? "min-h-0 flex-1" : "h-[28rem]")}
+          sandbox="allow-scripts"
+          srcDoc={html}
+          title={artifact.title}
+        />
+      );
+      if (fullscreen) {
+        return <div className="flex min-h-0 flex-1 flex-col">{frame}</div>;
+      }
+      return frame;
+    }
     return <pre className={cn("overflow-auto whitespace-pre-wrap p-3 text-xs leading-5 text-foreground", fullscreen ? "min-h-0 flex-1" : compact ? "max-h-72" : "max-h-[28rem]")}>{artifact.body}</pre>;
   }
 

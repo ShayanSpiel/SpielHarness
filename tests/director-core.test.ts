@@ -306,24 +306,16 @@ test("mapDirectorInterrupts returns null when the payload is empty or malformed"
   assert.equal(mapDirectorInterrupts(target, [{ value: "not a question" }]), null);
 });
 
-test("DirectorUsageTracker folds once and ignores later folds", () => {
-  let calls = 0;
-  const tracker = new DirectorUsageTracker(() => { calls += 1; });
+test("DirectorUsageTracker is a pure accumulator (no callback, no foldOnce)", () => {
+  const tracker = new DirectorUsageTracker();
   tracker.record({ input_tokens: 5, output_tokens: 3 });
   tracker.record({ input_tokens: 4, output_tokens: 9 });
-  const first = tracker.foldOnce();
-  const second = tracker.foldOnce();
-  assert.deepEqual(first, { input: 9, output: 12 });
-  assert.deepEqual(second, { input: 9, output: 12 });
-  assert.equal(calls, 1);
+  assert.deepEqual(tracker.snapshot(), { input: 9, output: 12 });
 });
 
 test("DirectorUsageTracker.mergeFromSubagent is a billing no-op", () => {
-  let calls = 0;
-  const tracker = new DirectorUsageTracker(() => { calls += 1; });
+  const tracker = new DirectorUsageTracker();
   tracker.mergeFromSubagent({ input_tokens: 7, output_tokens: 2 });
-  tracker.foldOnce();
-  assert.equal(calls, 1);
   assert.deepEqual(tracker.snapshot(), { input: 0, output: 0 });
 });
 

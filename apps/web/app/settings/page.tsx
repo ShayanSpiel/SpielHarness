@@ -537,7 +537,7 @@ export default function SettingsPage() {
                               </div>
                             </div>
                           </Field>
-                          <Field label="Maximum output">
+                          <Field label="Maximum output per response">
                             <Input min={1} onChange={(event) => setDraft({ ...draft, capabilities: { ...draft.capabilities, maxOutputTokens: Math.max(1, Number(event.target.value) || 1) } })} type="number" value={draft.capabilities.maxOutputTokens} />
                           </Field>
                           <Field label="Compaction threshold">
