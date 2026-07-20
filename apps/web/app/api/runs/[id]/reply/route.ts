@@ -20,14 +20,9 @@ import { generatedFileFolder } from "../../../../../lib/workspace-data";
 import { streamRun, streamDirectorRun, type RunCheckpoint } from "@spielos/graph";
 import { buildPostgresSaver } from "@spielos/graph/director/checkpointer";
 import { buildDirectorToolContext, workflowsForDirector } from "../../../../../lib/director-tools";
-import { authDatabasePool } from "../../../../../lib/auth";
 import { onRunSignal, registerRun } from "../../../../../lib/run-registry";
-import { messageRowToChatMessage, chatRowToChat, type ModelUsageUpdate, type RunStatus } from "@spielos/core";
+import { messageRowToChatMessage, chatRowToChat, encodeSseFrame, type ModelUsageUpdate, type RunStatus, type SseFrame } from "@spielos/core";
 import { publishDomainEvent } from "../../../../../lib/realtime";
-
-function frame(data: unknown): string {
-  return `data: ${JSON.stringify(data)}\n\n`;
-}
 
 type ReplyBody = {
   requestId: string;
@@ -174,23 +169,22 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     });
     let checkpointVersion = initialCheckpoint.checkpointVersion;
 
-    const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
         // Resumed executions are durable too: a reload detaches this reader,
         // while an explicit /cancel request remains the cancellation authority.
         let clientConnected = !request.signal.aborted;
-        const send = (value: unknown) => {
+        const send = (frame: SseFrame) => {
           if (!clientConnected) return;
           try {
-            controller.enqueue(encoder.encode(frame(value)));
+            controller.enqueue(encodeSseFrame(frame, checkpointVersion));
           } catch {
             clientConnected = false;
           }
         };
         const disconnectClient = () => { clientConnected = false; };
         request.signal.addEventListener("abort", disconnectClient, { once: true });
-        send({ kind: "run", runId, type: target.type });
+        send({ kind: "run", runId, type: target.type ?? "chat" });
         // Send accumulated budget from prior turns so the client
         // doesn't show zero usage on resume.
         if (checkpoint.budget) {
@@ -288,7 +282,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             ? definitionSnapshot.evals as typeof resolved.evals
             : resolved.evals;
           const directorCheckpointer = isDirector
-            ? await buildPostgresSaver(process.env.DATABASE_URL?.trim() || null, "public", authDatabasePool)
+            ? await buildPostgresSaver(process.env.DATABASE_URL?.trim() || null, "public")
             : null;
           const iterator = isDirector
             ? streamDirectorRun({

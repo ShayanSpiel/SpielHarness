@@ -186,6 +186,7 @@ export function buildExternalStoreAdapter(
 
       // Phase 4: consume SSE stream — upserts directly to our store.
       // No generator/yield needed; store reactivity drives the runtime.
+      run.clearContinuationText();
       const sseResult = await consumeSseStream(response, {
         upsertChat: (chat) => store.upsertChat(chat),
         upsertMessage: (cid, msg) => store.upsertMessage(cid, msg),
@@ -203,7 +204,7 @@ export function buildExternalStoreAdapter(
         beginRunAttempt: () => run.beginRunAttempt(),
         activateRunProjection: (rid) => run.activateRunProjection(rid),
         isGenerationCurrent: (gid: string) => run.isGenerationCurrent(gid)
-      }, generationId);
+      }, generationId, (text) => run.appendContinuationText(text));
 
       // If this created a new chat (no activeChatId at start), commit
       // the pending navigation so ChatRuntimeProvider handles the redirect.
@@ -237,6 +238,7 @@ export function buildExternalStoreAdapter(
         return;
       }
       if (!response.ok || !response.body) return;
+      run.clearContinuationText();
       await consumeSseStream(response, {
         upsertChat: (chat) => store.upsertChat(chat),
         upsertMessage: (cid, msg) => store.upsertMessage(cid, msg),
@@ -254,13 +256,28 @@ export function buildExternalStoreAdapter(
         beginRunAttempt: () => run.beginRunAttempt(),
         activateRunProjection: (rid) => run.activateRunProjection(rid),
         isGenerationCurrent: (gid: string) => run.isGenerationCurrent(gid)
-      }, generationId);
+      }, generationId, (text) => run.appendContinuationText(text));
     },
     async onCancel() {
-      // Cancel is handled by the existing run lifecycle; the SSE abort
-      // signal flows through the fetch request. The server detects the
-      // aborted connection and marks the run as cancelled.
-      run.setRunStatus("cancelled");
+      // All user-facing stop actions call the durable cancel endpoint.
+      // Local state changes only happen after the server confirms.
+      const currentRunId = run.activeRunId;
+      if (!currentRunId) {
+        run.setRunStatus("cancelled");
+        return;
+      }
+      try {
+        const res = await fetch(`/api/runs/${currentRunId}/cancel`, {
+          method: "POST",
+          keepalive: true
+        });
+        if (res.ok) {
+          run.setRunStatus("cancelled");
+        }
+      } catch {
+        // Failed cancellation must not falsely show final cancellation.
+        // The run remains in its current status.
+      }
     }
   };
 }

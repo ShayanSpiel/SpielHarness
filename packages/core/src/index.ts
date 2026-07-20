@@ -1123,6 +1123,66 @@ export const usageFrameSchema = z.object({
 });
 export type UsageFrame = z.infer<typeof usageFrameSchema>;
 
+// ── SSE frame shapes (the streaming protocol) ─────────────────
+
+const _cpvField = { checkpointVersion: z.number().optional() };
+
+export const sseFrameSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("run"), runId: z.string(), type: z.string(), ..._cpvField }),
+  z.object({ kind: z.literal("chat_created"), chatId: z.string(), chat: chatSchema, ..._cpvField }),
+  z.object({ kind: z.literal("message_persisted"), chatId: z.string(), message: chatMessageSchema, runId: z.string(), ..._cpvField }),
+  z.object({ kind: z.literal("event"), event: runEventSchema, ..._cpvField }),
+  z.object({ kind: z.literal("artifact"), artifact: artifactSchema, ..._cpvField }),
+  z.object({ kind: z.literal("text"), text: z.string(), ..._cpvField }),
+  z.object({ kind: z.literal("status"), message: z.string(), ..._cpvField }),
+  z.object({ kind: z.literal("run_state"), state: runStateFrameSchema, ..._cpvField }),
+  z.object({ kind: z.literal("usage"), usage: usageFrameSchema, ..._cpvField }),
+  z.object({ kind: z.literal("human_input"), request: humanInputRequestSchema, ..._cpvField }),
+  z.object({ kind: z.literal("error"), message: z.string(), ..._cpvField }),
+  z.object({ kind: z.literal("done"), runId: z.string(), status: runStatusSchema, ..._cpvField })
+]);
+export type SseFrame = z.infer<typeof sseFrameSchema>;
+
+// Envelope wraps every SSE data line. Clients validate the protocol
+// version and use checkpointVersion for monotonic restoration.
+export const sseEnvelopeSchema = z.object({
+  protocol: z.string().default("spielos-sse-v1"),
+  checkpointVersion: z.number().optional(),
+  body: sseFrameSchema
+});
+export type SseEnvelope = z.infer<typeof sseEnvelopeSchema>;
+
+// ── SSE encoder ───────────────────────────────────────────────
+
+const _sseEncoder = new TextEncoder();
+
+export function encodeSseFrame(
+  frame: SseFrame,
+  checkpointVersion?: number
+): Uint8Array {
+  const parsed = sseEnvelopeSchema.safeParse({
+    protocol: "spielos-sse-v1",
+    checkpointVersion,
+    body: frame,
+  });
+  if (!parsed.success) {
+    throw new Error(
+      `SSE frame validation failed: ${parsed.error.message}`
+    );
+  }
+  return _sseEncoder.encode(`data: ${JSON.stringify(parsed.data)}\n\n`);
+}
+
+export function encodeSseEnvelope(envelope: SseEnvelope): Uint8Array {
+  const parsed = sseEnvelopeSchema.safeParse(envelope);
+  if (!parsed.success) {
+    throw new Error(
+      `SSE envelope validation failed: ${parsed.error.message}`
+    );
+  }
+  return _sseEncoder.encode(`data: ${JSON.stringify(parsed.data)}\n\n`);
+}
+
 // ── Controlled, file-backed learned memory ───────────────────
 export const memoryKindSchema = z.enum(["semantic", "episodic"]);
 export type MemoryKind = z.infer<typeof memoryKindSchema>;
@@ -1169,35 +1229,6 @@ export const fileRecordSchema = z.object({
   updatedAt: z.string()
 });
 export type FileRecord = z.infer<typeof fileRecordSchema>;
-
-// ── SSE frame shapes (the streaming protocol) ─────────────────
-
-const cpvField = { checkpointVersion: z.number().optional() };
-
-export const sseFrameSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("run"), runId: z.string(), type: z.string(), ...cpvField }),
-  z.object({ kind: z.literal("chat_created"), chatId: z.string(), chat: chatSchema, ...cpvField }),
-  z.object({ kind: z.literal("message_persisted"), chatId: z.string(), message: chatMessageSchema, runId: z.string(), ...cpvField }),
-  z.object({ kind: z.literal("event"), event: runEventSchema, ...cpvField }),
-  z.object({ kind: z.literal("artifact"), artifact: artifactSchema, ...cpvField }),
-  z.object({ kind: z.literal("text"), text: z.string(), ...cpvField }),
-  z.object({ kind: z.literal("status"), message: z.string(), ...cpvField }),
-  z.object({ kind: z.literal("run_state"), state: runStateFrameSchema, ...cpvField }),
-  z.object({ kind: z.literal("usage"), usage: usageFrameSchema, ...cpvField }),
-  z.object({ kind: z.literal("human_input"), request: humanInputRequestSchema, ...cpvField }),
-  z.object({ kind: z.literal("error"), message: z.string(), ...cpvField }),
-  z.object({ kind: z.literal("done"), runId: z.string(), status: runStatusSchema, ...cpvField })
-]);
-export type SseFrame = z.infer<typeof sseFrameSchema>;
-
-// Envelope wraps every SSE data line. Clients validate the protocol
-// version and use checkpointVersion for monotonic restoration.
-export const sseEnvelopeSchema = z.object({
-  protocol: z.string().default("spielos-sse-v1"),
-  checkpointVersion: z.number().optional(),
-  body: sseFrameSchema
-});
-export type SseEnvelope = z.infer<typeof sseEnvelopeSchema>;
 
 // ── Parse a file row into a typed object based on file_type ────
 export function parseRoleFile(row: FileRecord): Role {

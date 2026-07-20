@@ -39,6 +39,7 @@ import {
 } from "@spielos/design-system";
 import remarkGfm from "remark-gfm";
 import { buildExternalStoreAdapter } from "../../lib/external-store-adapter";
+import { consumeSseStream } from "../../lib/sse-stream-consumer";
 import { useRunContext } from "../../lib/run-context";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
 import { useUiStore } from "../../lib/use-ui-store";
@@ -276,82 +277,34 @@ function useHumanInputFlow(
       }
 
       responseStarted = true;
+      const generationId = run.beginRunAttempt();
       run.setActivity("Resuming from the durable checkpoint…");
       clearDraft();
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let terminalStatus: RunStatus | null = null;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split("\n\n");
-        buffer = frames.pop() ?? "";
-        for (const frame of frames) {
-          const line = frame.split("\n").find((entry) => entry.startsWith("data: "));
-          if (!line) continue;
-          const item = JSON.parse(line.slice(6)) as {
-            kind: string;
-            runId?: string;
-            event?: RunEvent;
-            artifact?: import("@spielos/core").Artifact;
-            request?: HumanInputRequest;
-            state?: import("../../lib/run-context").DurableRunState;
-            usage?: import("../../lib/run-context").LiveRunUsage;
-            text?: string;
-            message?: string;
-            status?: string;
-          };
-          if (item.kind === "run" && item.runId) run.setActiveRunId(item.runId);
-          if (item.kind === "event" && item.event) {
-            run.appendEvent(item.event);
-            if (item.event.payload?.category === "context_budget") {
-              const inputTokens = item.event.payload.inputTokens;
-              if (typeof inputTokens === "number") {
-                run.setLiveUsage({
-                  inputTokens,
-                  outputTokens: run.liveUsage?.outputTokens ?? 0,
-                  toolCalls: run.liveUsage?.toolCalls ?? 0
-                });
-              }
-            }
-            if (item.event.type === "run_completed") terminalStatus = "completed";
-            if (item.event.type === "run_failed") terminalStatus = "failed";
-            if (item.event.type === "run_cancelled") terminalStatus = "cancelled";
-          }
-          if (item.kind === "artifact" && item.artifact) run.appendArtifact(item.artifact);
-          if (item.kind === "run_state" && item.state) {
-            run.setDurableState(item.state);
-            if (item.state.budget) {
-              run.setLiveUsage({
-                inputTokens: item.state.budget.inputTokens,
-                outputTokens: item.state.budget.outputTokens,
-                toolCalls: item.state.budget.toolCalls
-              });
-            }
-          }
-          if (item.kind === "usage" && item.usage) run.setLiveUsage(item.usage);
-          if (item.kind === "human_input" && item.request) {
-            run.setHumanInputRequest(item.request);
-            run.setRunStatus("waiting_human");
-            terminalStatus = "waiting_human";
-          }
-          if (item.kind === "status" && item.message) run.setActivity(item.message);
-          if (item.kind === "text" && item.text) run.appendContinuationText(item.text);
-          if (
-            item.kind === "done" &&
-            item.status &&
-            ["running", "waiting_human", "completed", "failed", "cancelled"].includes(item.status)
-          ) {
-            terminalStatus = item.status as RunStatus;
-            run.setRunStatus(terminalStatus);
-          }
-          if (item.kind === "error") throw new Error(item.message ?? "Unable to resume the run.");
-        }
+      const sseResult = await consumeSseStream(response, {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        upsertChat: (_chat: unknown) => {},
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        upsertMessage: (_cid: unknown, _msg: unknown) => {},
+        setRunStatus: (s) => run.setRunStatus(s),
+        setRunType: (t) => run.setRunType(t as import("@spielos/core").RunType | null),
+        setActiveRunId: (rid) => run.setActiveRunId(rid),
+        appendEvent: (e) => run.appendEvent(e),
+        clearEvents: () => run.clearEvents(),
+        clearArtifacts: () => run.clearArtifacts(),
+        appendArtifact: (a) => run.appendArtifact(a),
+        setDurableState: (s) => run.setDurableState(s as import("../../lib/run-context").DurableRunState | null),
+        setLiveUsage: (u) => run.setLiveUsage(u),
+        setHumanInputRequest: (r) => run.setHumanInputRequest(r),
+        recordCheckpointVersion: (v) => run.recordCheckpointVersion(v),
+        beginRunAttempt: () => run.beginRunAttempt(),
+        activateRunProjection: (rid) => run.activateRunProjection(rid),
+        isGenerationCurrent: (gid: string) => run.isGenerationCurrent(gid)
+      }, generationId, (text) => run.appendContinuationText(text));
+
+      if (!sseResult.status || sseResult.status === "failed") {
+        run.setRunStatus("failed");
       }
-      if (!terminalStatus) run.setRunStatus("failed");
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Unable to resume the run.";
       setError(message);
@@ -1274,6 +1227,9 @@ function AssistantMessage() {
 function ContinuationResponse() {
   const run = useRunContext();
   if (!run.continuationText) return null;
+  // Only show live text while the run is active. Once the run completes,
+  // the persisted assistant message replaces this live projection.
+  if (run.status !== "running" && run.status !== "waiting_human") return null;
   return (
     <div className="grid w-full grid-cols-[auto_1fr] gap-x-3">
       <div className="flex h-7 w-7 items-center justify-center rounded-md bg-panel-raised text-foreground">

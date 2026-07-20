@@ -27,6 +27,7 @@ import {
   audit,
   createFile,
   getFile,
+  getOrchestratorPrompt,
   listConnections,
   listHarnessFiles,
   updateFileIfVersion
@@ -166,12 +167,28 @@ export async function resolveExecution(
   // Resolve the active harness for every chat turn so the default orchestrator
   // remains file-backed and capability-gated like selected workflows.
   let connections: Awaited<ReturnType<typeof listConnections>> = [];
-  const [files, modelRows] = await Promise.all([
-    listHarnessFiles(org.sql, org.orgId),
-    listModelsWithEnvironmentDefaults(org.sql, org.orgId)
-  ]);
-  if (!isChat || executionMode === "director") {
-    connections = await listConnections(org.sql, org.orgId);
+  const isPlainChat = isChat && executionMode !== "director";
+
+  let files: FileRow[] = [];
+  let modelRows: Awaited<ReturnType<typeof listModelsWithEnvironmentDefaults>> = [];
+
+  if (isPlainChat) {
+    // Fast path: plain chat loads only models and the orchestrator prompt.
+    // It skips the full harness index, role/skill/workflow/eval parsing, and
+    // connections resolution — those are never used for a plain chat turn.
+    modelRows = await listModelsWithEnvironmentDefaults(org.sql, org.orgId);
+    const orchestratorFile = await getOrchestratorPrompt(org.sql, org.orgId);
+    if (orchestratorFile) files = [orchestratorFile];
+  } else {
+    const [harnessFiles, modelRowsResult] = await Promise.all([
+      listHarnessFiles(org.sql, org.orgId),
+      listModelsWithEnvironmentDefaults(org.sql, org.orgId)
+    ]);
+    files = harnessFiles;
+    modelRows = modelRowsResult;
+    if (executionMode === "director") {
+      connections = await listConnections(org.sql, org.orgId);
+    }
   }
 
   let roles: Record<string, Role> = {};
@@ -182,7 +199,7 @@ export async function resolveExecution(
   const skillBySlug = new Map<string, string>();
   const fileReferenceIds = new Map<string, string>();
 
-  {
+  if (!isPlainChat) {
     roles = indexBy(
       files.filter((f) => f.file_type === "harness_role").map(toRecord).map(parseRoleFile),
       (r) => r.id
@@ -238,9 +255,6 @@ export async function resolveExecution(
           fileReferenceIds
         );
       } catch (error) {
-        // A malformed unrelated workflow must not take down plain Director
-        // chat. Explicit Direct workflow execution still validates and returns
-        // the configuration error through the target branch below.
         console.warn(`[execution-service] excluding invalid Director workflow "${candidate.name}":`, error);
       }
     }

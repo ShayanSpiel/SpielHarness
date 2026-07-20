@@ -67,6 +67,15 @@ function extractSessionToken(cookieHeader: string): string | null {
 
 const RETRYABLE_SESSION_PATTERNS = /terminat|closed|reset|write|connection|timeout|ETIMEDOUT|ECONNRESET|EPIPE|pool|EADDRNOTAVAIL|EADDRINUSE|ENETUNREACH|EHOSTUNREACH|ECONNREFUSED|ENOTFOUND/i;
 
+// Error uniquely identifying database-not-reachable state vs. standard auth failure.
+export class SessionDatabaseError extends Error {
+  constructor(cause: unknown) {
+    const msg = cause instanceof Error ? cause.message : String(cause);
+    super(`Session database unreachable: ${msg}`);
+    this.name = "SessionDatabaseError";
+  }
+}
+
 function isRetriableSessionError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const message = err.message ?? "";
@@ -88,12 +97,19 @@ async function getSessionWithRetry(
       lastError = err;
       const msg = err instanceof Error ? err.message : String(err);
       log.warn(`session lookup attempt ${attempt + 1}/${attempts} failed`, { error: msg });
-      if (!isRetriableSessionError(err) || attempt === attempts - 1) throw err;
+      if (!isRetriableSessionError(err) || attempt === attempts - 1) {
+        // Classify: if error is retriable-pattern but we exhausted retries,
+        // the database is unavailable (not a client auth problem).
+        if (attempt === attempts - 1 && isRetriableSessionError(err)) {
+          throw new SessionDatabaseError(err);
+        }
+        throw err;
+      }
       const delay = Math.min(200 * (attempt + 1), 1000);
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
-  throw lastError;
+  throw new SessionDatabaseError(lastError);
 }
 
 async function resolveUserId(cookieHeader: string): Promise<string | null> {
@@ -111,6 +127,7 @@ async function resolveUserId(cookieHeader: string): Promise<string | null> {
 
   const lookup = (async () => {
     const session = await getSessionWithRetry(cookieHeader).catch((err) => {
+      if (err instanceof SessionDatabaseError) throw err;
       console.warn("[auth] getSession failed after retries:", err instanceof Error ? err.message : err);
       return null;
     });
@@ -143,7 +160,17 @@ export async function getOrg(): Promise<OrgContext> {
 
   const reqHeaders = await headers();
   const cookieHeader = reqHeaders.get("cookie") ?? "";
-  const userId = await resolveUserId(cookieHeader);
+
+  let userId: string | null;
+  try {
+    userId = await resolveUserId(cookieHeader);
+  } catch (err) {
+    if (err instanceof SessionDatabaseError) {
+      throw new HttpError(503, "Authentication service is temporarily unavailable. Please retry.");
+    }
+    // For non-retriable errors (e.g. token validation failure), treat as unauthenticated
+    userId = null;
+  }
 
   if (!userId) {
     throw new HttpError(401, "Authentication required.");
@@ -231,8 +258,14 @@ export function errorResponse(err: unknown): Response {
     return Response.json({ error: err.message }, { status: err.status });
   }
   const message = err instanceof Error ? err.message : "Unknown error";
-  if (/CONNECT_TIMEOUT|ETIMEDOUT|connection timed out/i.test(message)) {
+  if (err instanceof SessionDatabaseError) {
+    return Response.json({ error: "Authentication service is temporarily unavailable. Please retry." }, { status: 503 });
+  }
+  if (/CONNECT_TIMEOUT|ETIMEDOUT|connection timed out|timeout/i.test(message)) {
     return Response.json({ error: "The database connection timed out. Please retry the request." }, { status: 503 });
+  }
+  if (/ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|ENOTFOUND/i.test(message)) {
+    return Response.json({ error: "The database could not be reached. Please check your connection configuration." }, { status: 503 });
   }
   return Response.json({ error: message }, { status: 500 });
 }

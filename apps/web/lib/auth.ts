@@ -1,5 +1,6 @@
 import { betterAuth } from "better-auth";
 import { Pool } from "pg";
+import { createPgPoolConfig, _positiveIntegerEnv as positiveIntegerEnv } from "@spielos/db";
 
 const getCached = <T>(key: string, init: () => T): T => {
   const g = globalThis as unknown as Record<string, T | undefined>;
@@ -7,133 +8,38 @@ const getCached = <T>(key: string, init: () => T): T => {
   return g[key]!;
 };
 
-function positiveIntegerEnv(name: string, fallback: number): number {
-  const value = Number(process.env[name]);
-  return Number.isInteger(value) && value > 0 ? value : fallback;
-}
-
-function isSupabasePoolerHost(host: string): boolean {
-  return /pooler\.supabase\.com$/i.test(host) || /supavisor/i.test(host);
-}
-
-function isSupabaseDirectHost(host: string): boolean {
-  return /^db\.[a-z0-9-]+\.supabase\.co$/i.test(host);
-}
-
-function rewriteSupabasePoolerUrl(connectionString: string): string {
-  try {
-    const url = new URL(connectionString);
-    if (process.env.DATABASE_URL_DIRECT?.trim()) {
-      return process.env.DATABASE_URL_DIRECT.trim();
-    }
-    if (process.env.DATABASE_DIRECT_FROM_POOLER === "0") return connectionString;
-    if (!isSupabasePoolerHost(url.hostname.toLowerCase())) return connectionString;
-    // Only rewrite the SESSION pooler (port 5432). The transaction pooler
-    // (port 6543) is already the right architecture and bypassing it
-    // would break the connection when the direct endpoint DNS is not
-    // yet propagated.
-    const port = url.port
-      || (url.protocol === "postgres:" || url.protocol === "postgresql:" ? "5432" : "");
-    if (port === "6543") return connectionString;
-    const userMatch = url.username.match(/^postgres\.([a-z0-9]+)$/i);
-    if (!userMatch) return connectionString;
-    const projectRef = userMatch[1];
-    url.username = "postgres";
-    url.host = `db.${projectRef}.supabase.co`;
-    url.port = "5432";
-    return url.toString();
-  } catch {
-    return connectionString;
-  }
-}
-
-function resolvePoolConfig(connectionString: string | undefined) {
-  if (!connectionString) {
-    return {
-      mode: "session" as const,
-      connectionString: undefined as string | undefined,
-    };
-  }
-  const effective = rewriteSupabasePoolerUrl(connectionString);
-  try {
-    const url = new URL(effective);
-    const host = url.hostname.toLowerCase();
-    const port = url.port
-      || (url.protocol === "postgres:" || url.protocol === "postgresql:" ? "5432" : "");
-    if (isSupabasePoolerHost(host)) {
-      // pgBouncer in front: server-side prepared statements do not survive
-      // connection rotation. We disable the per-client cache and cap
-      // server-side work so a stuck connection cannot wedge the request.
-      // The `statement_timeout` injection is harmless for the transaction
-      // pooler and helps the session pooler.
-      const next = new URL(effective);
-      next.searchParams.set("options", "-c statement_timeout=10000 -c idle_in_transaction_session_timeout=10000");
-      return {
-        mode: port === "6543" ? ("transaction" as const) : ("pooler-session" as const),
-        connectionString: next.toString(),
-      };
-    }
-    if (isSupabaseDirectHost(host)) {
-      return { mode: "direct" as const, connectionString: effective };
-    }
-    return { mode: "session" as const, connectionString: effective };
-  } catch {
-    return { mode: "session" as const, connectionString: effective };
-  }
-}
-
 export const authDatabasePool = getCached("__auth_pool", () => {
   const baseUrl = process.env.DATABASE_URL;
-  const config = resolvePoolConfig(baseUrl);
+  // When DATABASE_URL is unset, return a pool with no connection string so
+  // Better Auth still constructs cleanly — it won't be used for queries.
+  if (!baseUrl) {
+    return new Pool({ max: 1, min: 0 });
+  }
+  const poolConfig = createPgPoolConfig(baseUrl, {
+    poolMaxOverride: positiveIntegerEnv("AUTH_POOL_MAX", 10),
+    poolMinOverride: positiveIntegerEnv("AUTH_POOL_MIN", 1),
+    connectionTimeoutMsOverride: positiveIntegerEnv("AUTH_CONNECT_TIMEOUT_MS", 10_000),
+  });
   const p = new Pool({
-    connectionString: config.connectionString,
-    // Authentication is requested by several app surfaces during an initial
-    // workspace load. One connection serializes those reads and causes the
-    // pool-acquisition timeouts seen under normal page fan-out. Keep this
-    // independently tunable because the safe ceiling depends on the deployed
-    // database/pooler plan.
-    max: positiveIntegerEnv("AUTH_POOL_MAX", 15),
-    min: positiveIntegerEnv("AUTH_POOL_MIN", 1),
-    idleTimeoutMillis: 60_000,
-    connectionTimeoutMillis: positiveIntegerEnv("AUTH_CONNECT_TIMEOUT_MS", 10_000),
-    ssl: { rejectUnauthorized: false },
-    query_timeout: positiveIntegerEnv("PG_QUERY_TIMEOUT_MS", 60_000),
-    // Keep idle connections alive so the server-side idle reaper
-    // (Supabase sets `idle_in_transaction_session_timeout` aggressively
-    // on free tier) does not kill sockets the `pg` library still
-    // believes are healthy.
-    keepAlive: true,
-    keepAliveInitialDelayMillis: 5_000,
+    connectionString: poolConfig.connectionString,
+    max: poolConfig.max,
+    min: poolConfig.min,
+    idleTimeoutMillis: poolConfig.idleTimeoutMillis,
+    connectionTimeoutMillis: poolConfig.connectionTimeoutMillis,
+    ssl: Object.keys(poolConfig.ssl).length > 0 ? poolConfig.ssl : true,
+    query_timeout: poolConfig.query_timeout,
+    keepAlive: poolConfig.keepAlive,
+    keepAliveInitialDelayMillis: poolConfig.keepAliveInitialDelayMillis,
+    ...(poolConfig.options ? { options: poolConfig.options } : {}),
   });
   const id = `auth-${Date.now()}`;
-  const mode = config.mode;
   p.on("error", (err: Error) => {
     const msg = err.message ?? String(err);
     console.error(`[pool ${id}] error: ${msg}`);
-    // `pg` removes the failed client itself. Never drain the whole pool here:
-    // Better Auth retains the Pool object passed at construction, so replacing
-    // the global cache would leave that live auth instance bound to a closed
-    // pool and make every later session lookup fail after a transient socket.
   });
-  // Periodic keepalive to prevent Supabase free tier from killing idle
-  // connections between requests. Fire-and-forget on a 30s interval;
-  // errors are expected for transient failures and are silently swallowed.
-  let keepaliveHandle: ReturnType<typeof setInterval> | null = null;
-  function scheduleKeepalive() {
-    keepaliveHandle = setInterval(() => {
-      p.query("SELECT 1").catch(() => {});
-    }, 30_000);
-    if (typeof keepaliveHandle === "object" && "unref" in keepaliveHandle) {
-      (keepaliveHandle as ReturnType<typeof setInterval>).unref();
-    }
-  }
-  scheduleKeepalive();
   // Warm up the pool so the first request doesn't pay the cold-start penalty.
-  // The promise is intentionally fire-and-forget.
-  if (config.connectionString) {
-    p.query("SELECT 1").catch(() => {});
-  }
-  console.info(`[auth] pool mode=${mode} max=${p.options.max} keepAlive=true`);
+  p.query("SELECT 1").catch(() => {});
+  console.info(`[auth] pool max=${p.options.max} host=${new URL(baseUrl).hostname}`);
   return p;
 });
 const pool = authDatabasePool;

@@ -31,14 +31,9 @@ import { buildPostgresSaver } from "@spielos/graph/director/checkpointer";
 import { registerRun, onRunSignal } from "../../../../lib/run-registry";
 import { publishDomainEvent } from "../../../../lib/realtime";
 import { buildDirectorToolContext, workflowsForDirector } from "../../../../lib/director-tools";
-import { authDatabasePool } from "../../../../lib/auth";
-import { chatRowToChat, messageRowToChatMessage } from "@spielos/core";
-import type { ModelUsageUpdate, RunEvent, RunStatus, ExecutionMode } from "@spielos/core";
+import { chatRowToChat, messageRowToChatMessage, encodeSseFrame } from "@spielos/core";
+import type { ModelUsageUpdate, RunEvent, RunStatus, ExecutionMode, SseFrame } from "@spielos/core";
 import { makeReqLogger, generateRequestId } from "../../../../lib/logger";
-
-function frame(data: unknown): string {
-  return `data: ${JSON.stringify(data)}\n\n`;
-}
 
 export async function POST(request: Request) {
   const reqStart = performance.now();
@@ -121,20 +116,38 @@ export async function POST(request: Request) {
         suggestedHarnessRefs: resolved.suggestedHarnessRefs
       },
       definitionSnapshot: {
+        version: 1,
         target: resolved.target,
-        workflow: resolved.runRequest.workflow,
-        singleNode: resolved.runRequest.singleNode,
-        roles: resolved.runRequest.roles,
-        skills: resolved.runRequest.skills,
-        workspaceInstructions: resolved.runRequest.workspaceInstructions,
-        memories: resolved.runRequest.memories,
-        files: resolved.runRequest.files,
-        connections: resolved.runRequest.connections,
-        workflows: resolved.workflows,
-        evals: resolved.evals,
+        executionMode: resolved.executionMode,
         provider: resolved.runRequest.provider,
         model: resolved.runRequest.model,
-        directorRuntimePolicy: resolved.directorRuntimePolicy
+        directorRuntimePolicy: resolved.directorRuntimePolicy,
+        // ── Reachable entities only ──────────────────────────
+        // Only persist the entities directly referenced by this run.
+        // Broad harness caching is handled by the in-memory store; the
+        // snapshot is the load-bearing record for exact reproduction.
+        workflow: resolved.runRequest.workflow,
+        singleNode: resolved.runRequest.singleNode,
+        roles: resolved.runRequest.workflow
+          ? filterReachableRoles(resolved.runRequest.roles, resolved.runRequest.workflow)
+          : resolved.runRequest.singleNode && resolved.runRequest.singleNode.role
+            ? { [resolved.runRequest.singleNode.role.id]: resolved.runRequest.singleNode.role }
+            : {},
+        skills: resolved.runRequest.workflow
+          ? filterReachableSkills(resolved.runRequest.skills, resolved.runRequest.workflow)
+          : resolved.runRequest.singleNode && resolved.runRequest.singleNode.skill
+            ? { [resolved.runRequest.singleNode.skill.id]: resolved.runRequest.singleNode.skill }
+            : {},
+        workflows: resolved.executionMode === "director"
+          ? resolved.workflows
+          : {},
+        evals: resolved.runRequest.singleNode?.kind === "eval" && resolved.runRequest.singleNode.evalFile
+          ? { [resolved.runRequest.singleNode.evalFile.id]: resolved.runRequest.singleNode.evalFile }
+          : {},
+        files: resolved.runRequest.files,
+        workspaceInstructions: resolved.runRequest.workspaceInstructions,
+        memories: resolved.runRequest.memories,
+        connections: resolved.runRequest.connections,
       },
       idempotencyKey
     });
@@ -184,17 +197,17 @@ export async function POST(request: Request) {
       });
     }
 
-    const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
         // The HTTP reader is only a viewer of the durable run. Navigating or
         // reloading may detach that viewer, but must not cancel the LangGraph
         // execution. Explicit cancellation travels through /cancel instead.
         let clientConnected = !request.signal.aborted;
-        const send = (value: unknown) => {
+        let checkpointVersion = Number(run.checkpoint_version ?? 0);
+        const send = (frame: SseFrame) => {
           if (!clientConnected) return;
           try {
-            controller.enqueue(encoder.encode(frame(value)));
+            controller.enqueue(encodeSseFrame(frame, checkpointVersion));
           } catch {
             clientConnected = false;
           }
@@ -230,7 +243,7 @@ export async function POST(request: Request) {
           send({ kind: "chat_created", chatId, chat: chatRowToChat(chatRow) });
         }
         for (const msg of initialMessagesResult) {
-          send({ kind: "message_persisted", chatId, message: messageRowToChatMessage(msg), runId: run.id });
+          send({ kind: "message_persisted", chatId: chatId!, message: messageRowToChatMessage(msg), runId: run.id });
         }
 
         let outputText = "";
@@ -307,7 +320,6 @@ export async function POST(request: Request) {
         // A crash anywhere in the transaction rolls everything back; the
         // next attempt re-reads the run row and resumes from the
         // authoritative `checkpoint_version`.
-        let checkpointVersion = Number(run.checkpoint_version ?? 0);
         const flushAtomicCheckpoint = async (stateOverride?: RunCheckpoint) => {
           if (queuedEvents.length === 0 && stateOverride === undefined) return;
           const batch = queuedEvents.splice(0, queuedEvents.length);
@@ -431,7 +443,7 @@ export async function POST(request: Request) {
               signal: executionController.signal,
               checkControl,
               directorThreadId: chatId ?? run.id,
-              directorCheckpointer: await buildPostgresSaver(process.env.DATABASE_URL?.trim() || null, "public", authDatabasePool),
+              directorCheckpointer: await buildPostgresSaver(process.env.DATABASE_URL?.trim() || null, "public"),
               directorWorkflows: workflowsForDirector(resolved.workflows),
               directorEvals: resolved.evals,
               directorToolContext: buildDirectorToolContext({
@@ -826,3 +838,31 @@ export async function POST(request: Request) {
     return errorResponse(err);
   }
 }
+
+// ── Snapshot helpers ──────────────────────────────────────────────
+
+function filterReachableRoles(
+  allRoles: Record<string, import("@spielos/core").Role>,
+  workflow: import("@spielos/core").WorkflowFile
+): Record<string, import("@spielos/core").Role> {
+  const reachable = new Set(workflow.nodes.map((n) => n.roleId));
+  const out: Record<string, import("@spielos/core").Role> = {};
+  for (const [id, role] of Object.entries(allRoles)) {
+    if (reachable.has(id)) out[id] = role;
+  }
+  return out;
+}
+
+function filterReachableSkills(
+  allSkills: Record<string, import("@spielos/core").Skill>,
+  workflow: import("@spielos/core").WorkflowFile
+): Record<string, import("@spielos/core").Skill> {
+  const reachable = new Set(workflow.nodes.flatMap((n) => n.skillIds));
+  const out: Record<string, import("@spielos/core").Skill> = {};
+  for (const [id, skill] of Object.entries(allSkills)) {
+    if (reachable.has(id)) out[id] = skill;
+  }
+  return out;
+}
+
+

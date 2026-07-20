@@ -6,6 +6,127 @@ type SqlLike = Pick<postgres.Sql<{}>, "json">;
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 
+// ── Connection profile — single authority for all database access ──
+
+export type ConnectionProfileMode = "direct" | "session" | "transaction" | "pooler-session";
+
+export type ConnectionProfile = {
+  connectionString: string;
+  mode: ConnectionProfileMode;
+  prepareStatements: boolean;
+  ssl: Record<string, unknown>;
+  statementTimeout: string;
+  poolMax: number;
+  poolMin: number;
+  connectTimeoutSeconds: number;
+  diagnostic: ConnectionDiagnostics;
+};
+
+export type ConnectionDiagnostics = {
+  host: string;
+  port: string;
+  mode: ConnectionProfileMode;
+  prepareStatements: boolean;
+  poolMax: number;
+  poolMin: number;
+};
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function classifySupabaseHost(host: string): "direct" | "pooler" | "generic" {
+  const lower = host.toLowerCase();
+  if (/^db\.[a-z0-9-]+\.supabase\.co$/i.test(lower)) return "direct";
+  if (/pooler\.supabase\.com/i.test(lower) || /supavisor/i.test(lower)) return "pooler";
+  return "generic";
+}
+
+// Re-export for use by auth.ts and other consumers
+export { classifySupabaseHost as _classifySupabaseHost, positiveIntegerEnv as _positiveIntegerEnv };
+
+export function resolveConnectionProfile(connectionString: string): ConnectionProfile {
+  const explicitDirectEnv = process.env.DATABASE_URL_DIRECT?.trim();
+  const effective = explicitDirectEnv || connectionString;
+
+  const url = new URL(effective);
+  const host = url.hostname.toLowerCase();
+  const port = url.port || (url.protocol === "postgres:" || url.protocol === "postgresql:" ? "5432" : "");
+
+  let mode: ConnectionProfileMode;
+
+  if (process.env.DATABASE_CONNECTION_MODE) {
+    const raw = process.env.DATABASE_CONNECTION_MODE.trim().toLowerCase();
+    if (raw === "direct") mode = "direct";
+    else if (raw === "session") mode = "session";
+    else if (raw === "transaction") mode = "transaction";
+    else if (raw === "pooler-session") mode = "pooler-session";
+    else throw new Error(
+      `Invalid DATABASE_CONNECTION_MODE="${raw}". Must be one of: direct, session, transaction, pooler-session.`
+    );
+    // Validate mode agrees with URL for Supabase hosts to catch misconfiguration early.
+    const hostClass = classifySupabaseHost(host);
+    if (hostClass === "direct" && mode !== "direct") {
+      console.warn(
+        `[db] DATABASE_CONNECTION_MODE=${mode} but host looks like a Supabase direct endpoint ` +
+        `(${host}). This may cause prepared-statement or TLS issues.`
+      );
+    }
+    if (hostClass === "pooler" && mode === "direct") {
+      throw new Error(
+        `DATABASE_CONNECTION_MODE=direct but ${host} is a Supabase pooler host. ` +
+        `Set DATABASE_URL_DIRECT to the direct endpoint, or use mode=transaction/pooler-session.`
+      );
+    }
+  } else {
+    // Infer from URL when no explicit mode
+    if (port === "6543") mode = "transaction";
+    else if (classifySupabaseHost(host) === "direct") mode = "direct";
+    else if (classifySupabaseHost(host) === "pooler") mode = "pooler-session";
+    else mode = "session";
+  }
+
+  const prepareStatements = mode === "direct" || mode === "session";
+
+  const ssl: Record<string, unknown> = { rejectUnauthorized: false };
+  if (classifySupabaseHost(host) !== "generic") {
+    // Supabase requires SSL and uses SNI
+    ssl.servername = host;
+  }
+
+  // Statement timeout: pooler modes need aggressive timeouts because
+  // pgBouncer can wedge connections in idle-in-transaction state.
+  const statementTimeout = mode === "transaction" || mode === "pooler-session"
+    ? "statement_timeout=10000,idle_in_transaction_session_timeout=10000"
+    : "statement_timeout=30000";
+
+  const poolMax = positiveIntegerEnv("DB_POOL_MAX", 10);
+  const poolMin = positiveIntegerEnv("DB_POOL_MIN", 1);
+  const connectTimeoutSeconds = positiveIntegerEnv("DB_CONNECT_TIMEOUT_SECONDS", 10);
+
+  const diagnostic: ConnectionDiagnostics = {
+    host,
+    port,
+    mode,
+    prepareStatements,
+    poolMax,
+    poolMin,
+  };
+
+  return {
+    connectionString: effective,
+    mode,
+    prepareStatements,
+    ssl,
+    statementTimeout,
+    poolMax,
+    poolMin,
+    connectTimeoutSeconds,
+    diagnostic,
+  };
+}
+
 /**
  * Normalize an application value at the database JSON boundary. JavaScript
  * strings can contain lone UTF-16 surrogates, while PostgreSQL JSON text is
@@ -34,157 +155,39 @@ function toJsonb(sql: SqlLike, value: unknown): ReturnType<postgres.Sql<{}>["jso
 
 export type Sql = ReturnType<typeof postgres>;
 
-export type DatabaseConnectionMode = "direct" | "session" | "transaction" | "pooler-session";
-
-const VALID_MODES: DatabaseConnectionMode[] = ["direct", "session", "transaction", "pooler-session"];
-
-function isSupabasePoolerHost(host: string): boolean {
-  return /^aws-\d+-[a-z0-9-]+\.pooler\.supabase\.com$/i.test(host) || /supavisor/i.test(host);
-}
-
-function isSupabaseDirectHost(host: string): boolean {
-  return /^db\.[a-z0-9-]+\.supabase\.co$/i.test(host);
-}
-
-function extractSupabaseProjectRef(connectionString: string): string | null {
-  try {
-    const url = new URL(connectionString);
-    const host = url.hostname.toLowerCase();
-    const poolerMatch = host.match(/^aws-[\w-]+\.pooler\.supabase\.com$/i);
-    if (poolerMatch) {
-      const userMatch = url.username.match(/^postgres\.([a-z0-9]+)$/i);
-      if (userMatch) return userMatch[1];
-    }
-    const directMatch = host.match(/^db\.([a-z0-9-]+)\.supabase\.co$/i);
-    if (directMatch) return directMatch[1];
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Resolve the connection string the runtime should actually use. Order:
- *   1. `DATABASE_URL` if it is a `DATABASE_URL` that is *not* a Supabase
- *      session-pooler URL (transaction pooler on 6543, direct on 5432 to
- *      `db.<ref>.supabase.co`, or a non-Supabase URL).
- *   2. If the URL is a Supabase **session** pooler (port 5432 to
- *      `pooler.supabase.com`) and `DATABASE_DIRECT_FROM_POOLER` is not
- *      "0", rewrite it to the direct equivalent. The session pooler is
- *      the wrong architecture for `pg.Pool` because pgBouncer in session
- *      mode is hostile to client-side connection rotation.
- *   3. `DATABASE_URL_DIRECT` if set wins over the auto-rewrite.
- *   4. The original `connectionString` unchanged.
- *
- * The transaction pooler (port 6543) is left alone — it is the
- * recommended Supabase target for this kind of app and has 60+ slots on
- * the free tier, vs 4 on the direct endpoint.
- */
-export function resolveConnectionString(connectionString: string): string {
-  const explicitDirect = process.env.DATABASE_URL_DIRECT?.trim();
-  if (explicitDirect) {
-    return explicitDirect;
-  }
-  const autoDirect = process.env.DATABASE_DIRECT_FROM_POOLER !== "0";
-  try {
-    const url = new URL(connectionString);
-    const host = url.hostname.toLowerCase();
-    if (!isSupabasePoolerHost(host)) return connectionString;
-    // Only rewrite the SESSION pooler (port 5432). The transaction pooler
-    // (port 6543) is already the right architecture for a persistent
-    // Node app and bypassing it would break the connection when the
-    // direct endpoint DNS is not yet propagated.
-    const port = url.port || (url.protocol === "postgres:" || url.protocol === "postgresql:" ? "5432" : "");
-    if (port === "6543") return connectionString;
-    if (!autoDirect) return connectionString;
-    const projectRef = extractSupabaseProjectRef(connectionString);
-    if (!projectRef) return connectionString;
-    const direct = new URL(connectionString);
-    direct.username = "postgres";
-    direct.host = `db.${projectRef}.supabase.co`;
-    direct.port = "5432";
-    return direct.toString();
-  } catch {
-    return connectionString;
-  }
-}
-
-export function resolveConnectionMode(connectionString: string): DatabaseConnectionMode {
-  // `direct`, `transaction`, and `pooler-session` are explicit overrides.
-  // `session` (or unset) is the "infer from URL" mode — same default the
-  // original code used, but it now also recognizes Supabase pooler hosts
-  // and disables prepared statements for them, which is the difference
-  // between 22 s `write CONNECT_TIMEOUT` and sub-second queries.
-  const raw = process.env.DATABASE_CONNECTION_MODE?.trim().toLowerCase();
-  if (raw === "direct" || raw === "transaction" || raw === "pooler-session") {
-    return raw as DatabaseConnectionMode;
-  }
-  try {
-    const url = new URL(connectionString);
-    const host = url.hostname.toLowerCase();
-    const port = url.port
-      || (url.protocol === "postgres:" || url.protocol === "postgresql:" ? "5432" : "");
-    // Port takes precedence: the same pooler host can be either session
-    // (5432) or transaction (6543) mode, and the port is the cheapest,
-    // most reliable signal.
-    if (port === "6543") return "transaction";
-    if (isSupabaseDirectHost(host)) return "direct";
-    if (isSupabasePoolerHost(host)) return "pooler-session";
-    if (port === "5432") return "session";
-  } catch {
-    // fall through
-  }
-  return "session";
-}
-
-export function shouldUsePreparedStatements(mode: DatabaseConnectionMode): boolean {
-  // Pooler-session (pgBouncer in front) and transaction mode poolers do not
-  // allow session-level prepared statements — the prepared statement lives on
-  // a physical connection that may not be the one the next statement lands on.
-  return mode === "direct" || mode === "session";
-}
-
 export function createSql(connectionString: string): Sql {
-  const effective = resolveConnectionString(connectionString);
-  const parsed = new URL(effective);
-  const projectRef = parsed.searchParams.get("host");
-  const ssl: Record<string, unknown> = { rejectUnauthorized: false };
+  const profile = resolveConnectionProfile(connectionString);
+  const url = new URL(profile.connectionString);
   const connection: Record<string, string> = {};
+  const ssl = { ...profile.ssl };
+  // postgres.js uses searchParams "host" for SNI if present
+  const projectRef = url.searchParams.get("host");
   if (projectRef) {
     ssl.servername = projectRef;
     connection.host = projectRef;
+  } else if (ssl.servername) {
+    connection.host = ssl.servername as string;
   }
-  const mode = resolveConnectionMode(effective);
-  const prepare = shouldUsePreparedStatements(mode);
-  const poolMax = Math.max(4, Number(process.env.DB_POOL_MAX) || 15);
-  const poolMin = Math.max(1, Number(process.env.DB_POOL_MIN) || 2);
   const opts: Record<string, unknown> = {
-    // Workspace reads and durable run checkpoints happen concurrently.
-    // One connection makes checkpoints queue behind unrelated UI reads.
-    max: poolMax,
-    min: poolMin,
+    max: profile.poolMax,
+    min: profile.poolMin,
     idle_timeout: 60,
-    // Remote transaction poolers can take several seconds to establish a
-    // fresh TLS socket after an idle period. Five seconds produced false
-    // CONNECT_TIMEOUT failures during otherwise healthy first run creation.
-    connect_timeout: Math.max(1, Number(process.env.DB_CONNECT_TIMEOUT_SECONDS) || 10),
-    prepare,
+    connect_timeout: profile.connectTimeoutSeconds,
+    prepare: profile.prepareStatements,
     ssl,
     connection,
-    // TCP keep-alive prevents Supabase's server-side idle reaper from
-    // silently closing connections that the postgres-js client still
-    // believes are healthy.
     keep_alive: 15,
-    // Allow postgres.js to retry dead connections instead of surfacing
-    // transient network failures as CONNECT_TIMEOUT to callers.
     max_lifetime: 300,
     onnotice: () => undefined,
     transform: { undefined: null },
   };
-  const sql = postgres(effective, opts as any);
+  const sql = postgres(profile.connectionString, opts as any);
   if (process.env.NODE_ENV !== "production") {
-    const original = effective === connectionString ? "default" : "rewritten-from-pooler";
-    console.info(`[db] mode=${mode} prepare=${prepare} source=${original}`);
+    console.info(
+      `[db] mode=${profile.mode} prepare=${profile.prepareStatements} ` +
+      `poolMax=${profile.poolMax} poolMin=${profile.poolMin} ` +
+      `host=${profile.diagnostic.host} port=${profile.diagnostic.port}`
+    );
   }
   return sql;
 }
@@ -199,38 +202,41 @@ export type InstrumentedSql = Sql & {
 };
 
 /**
- * Wrap a postgres.js Sql instance so every wire-bound query increments
+ * Wrap a postgres.js Sql instance so every query increments
  * `__counter.count` and contributes its wall time to `__counter.totalMs`.
  *
- * Implementation note: a naive Proxy on the tagged-template function
- * breaks postgres.js sub-templates (`sql\`DEFAULT\`` embedded inside a
- * parent query) because every `Query` instance is a thenable and
- * calling `.then()` on it triggers `handle()` -> actual wire execution.
- * We instead wire the existing `debug` callback, which fires only on
- * queries that are about to be sent to the server. This naturally
- * excludes Builder/Identifier fragments that never reach the wire.
+ * Implementation: postgres.js offers no after-query callback natively, so
+ * we Proxy the result promise's `.then`/`.catch`.  This correctly captures
+ * the completion time (including wire/network) rather than the dispatch
+ * time that the `debug` callback would give us.
  */
 export function instrumentSql(sql: Sql): InstrumentedSql {
   const counter: SqlCounter = { count: 0, totalMs: 0 };
-  type PostgresDebug = (connection: number, query: string, parameters: unknown[], paramTypes: unknown[]) => void;
-  const optionsWithDebug = sql.options as Sql["options"] & {
-    debug?: PostgresDebug | false;
-  };
-  const previousDebug = optionsWithDebug.debug;
-  const wireDebug: PostgresDebug = (connection, query, parameters, paramTypes) => {
-    const start = performance.now();
-    counter.count += 1;
-    const finalize = () => {
-      counter.totalMs += performance.now() - start;
-      if (typeof previousDebug === "function") previousDebug(connection, query, parameters, paramTypes);
-    };
-    if (typeof process !== "undefined" && typeof process.nextTick === "function") {
-      process.nextTick(finalize);
-    } else {
-      setTimeout(finalize, 0);
-    }
-  };
-  optionsWithDebug.debug = wireDebug;
+  // Wrap the tagged-template function's thenable to measure actual query completion.
+  // postgres.js queries are thenables, so we can wrap the resolved value.
+  const originalThen = (sql as unknown as PromiseLike<unknown>).then?.bind(sql);
+  if (typeof originalThen === "function") {
+    (sql as unknown as InstrumentedSql).__counter = counter;
+    // We use a Proxy on the sql function itself to intercept tagged-template calls.
+    // The proxy replaces `then` so every query pipeline gets instrumented.
+    const instrumented = new Proxy(sql, {
+      apply(target, thisArg, args) {
+        const start = performance.now();
+        counter.count += 1;
+        const result = Reflect.apply(target, thisArg, args) as Promise<unknown>;
+        const track = (value: unknown) => {
+          counter.totalMs += performance.now() - start;
+          return value;
+        };
+        return result.then(track, (err: unknown) => {
+          counter.totalMs += performance.now() - start;
+          throw err;
+        });
+      },
+    });
+    (instrumented as unknown as InstrumentedSql).__counter = counter;
+    return instrumented as unknown as InstrumentedSql;
+  }
   (sql as unknown as InstrumentedSql).__counter = counter;
   return sql as unknown as InstrumentedSql;
 }
@@ -1926,6 +1932,67 @@ export async function resetWorkspace(
     await sql`delete from run_output_files where org_id = ${orgId} and file_id = any(${ids}::uuid[])`;
     await sql`delete from files where org_id = ${orgId}`;
   }
+}
+
+/**
+ * Build a pg.Pool config from a connection profile. Used by Better Auth
+ * (pg driver) and the Director checkpointer (pg-based PostgresSaver).
+ */
+export type PgPoolOptions = {
+  poolMaxOverride?: number;
+  poolMinOverride?: number;
+  connectionTimeoutMsOverride?: number;
+};
+
+export function createPgPoolConfig(
+  connectionString: string,
+  poolOptions?: PgPoolOptions
+): {
+  connectionString: string;
+  max: number;
+  min: number;
+  idleTimeoutMillis: number;
+  connectionTimeoutMillis: number;
+  ssl: Record<string, unknown>;
+  query_timeout: number;
+  keepAlive: boolean;
+  keepAliveInitialDelayMillis: number;
+  options?: string;
+} {
+  const profile = resolveConnectionProfile(connectionString);
+  const url = new URL(profile.connectionString);
+  const isPooler = profile.mode === "transaction" || profile.mode === "pooler-session";
+
+  // Inject statement timeouts as connection options for pooler modes to
+  // prevent pgBouncer from wedging connections in idle-in-transaction state.
+  let options: string | undefined;
+  if (isPooler) {
+    options = "-c statement_timeout=10000 -c idle_in_transaction_session_timeout=10000";
+  }
+
+  const sslConfig: Record<string, unknown> = { rejectUnauthorized: false };
+  // For Supabase hosts, set the TLS SNI servername explicitly.
+  const hostClass = classifySupabaseHost(url.hostname);
+  if (hostClass !== "generic") {
+    sslConfig.servername = url.hostname;
+  }
+
+  const poolMax = poolOptions?.poolMaxOverride ?? positiveIntegerEnv("DB_POOL_MAX", 10);
+  const poolMin = poolOptions?.poolMinOverride ?? positiveIntegerEnv("DB_POOL_MIN", 1);
+  const connectTimeoutMs = poolOptions?.connectionTimeoutMsOverride ?? positiveIntegerEnv("PG_CONNECT_TIMEOUT_MS", 10_000);
+
+  return {
+    connectionString: profile.connectionString,
+    max: poolMax,
+    min: poolMin,
+    idleTimeoutMillis: 60_000,
+    connectionTimeoutMillis: connectTimeoutMs,
+    ssl: sslConfig,
+    query_timeout: positiveIntegerEnv("PG_QUERY_TIMEOUT_MS", 60_000),
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 5_000,
+    options,
+  };
 }
 
 // ── Auth & Multi-Org ─────────────────────────────────────────────

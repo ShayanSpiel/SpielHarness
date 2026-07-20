@@ -1,9 +1,11 @@
 "use client";
 
-import type { ChatMessage, RunStatus, RunEvent, Artifact, HumanInputRequest } from "@spielos/core";
+import { sseEnvelopeSchema, type ChatMessage, type RunStatus, type RunEvent, type Artifact, type HumanInputRequest, type SseFrame } from "@spielos/core";
 import type { Chat as CoreChat } from "@spielos/core";
 
-type StoreWrites = {
+export type TextUpdateCallback = (text: string) => void;
+
+export type StoreWrites = {
   upsertChat: (chat: CoreChat) => void;
   upsertMessage: (chatId: string, msg: ChatMessage) => void;
   setRunStatus: (status: RunStatus) => void;
@@ -32,54 +34,76 @@ export type PendingFrame =
   | { kind: "run_state"; state: Record<string, unknown> }
   | { kind: "usage"; usage: { inputTokens: number; outputTokens: number; toolCalls: number } }
   | { kind: "human_input"; request: HumanInputRequest }
+  | { kind: "text"; text: string }
   | { kind: "error"; message: string }
   | { kind: "done"; status: RunStatus };
+
+function applyFrames(frames: PendingFrame[], writes: StoreWrites, generationId: string, onText?: TextUpdateCallback): void {
+  if (!writes.isGenerationCurrent(generationId)) return;
+  for (const item of frames) {
+    switch (item.kind) {
+      case "run":
+        writes.clearEvents();
+        writes.clearArtifacts();
+        writes.setActiveRunId(item.runId);
+        writes.activateRunProjection(item.runId);
+        break;
+      case "chat_created":
+        writes.upsertChat(item.chat);
+        break;
+      case "message_persisted":
+        writes.upsertMessage(item.chatId, item.message);
+        break;
+      case "event":
+        writes.appendEvent(item.event);
+        break;
+      case "artifact":
+        writes.appendArtifact(item.artifact);
+        break;
+      case "status":
+        break;
+      case "run_state":
+        writes.setDurableState(item.state);
+        break;
+      case "usage":
+        writes.setLiveUsage(item.usage);
+        break;
+      case "human_input":
+        writes.setHumanInputRequest(item.request);
+        break;
+      case "text":
+        onText?.(item.text);
+        break;
+      case "error":
+        writes.setRunStatus("failed");
+        break;
+      case "done":
+        writes.setRunStatus(item.status);
+        if (item.status !== "running" && item.status !== "waiting_human") {
+          writes.setActiveRunId(null);
+        }
+        break;
+    }
+  }
+}
 
 function scheduleFlush(
   pendingRef: { current: PendingFrame[] },
   writes: StoreWrites,
   generationId: string,
   rafScheduledRef: { current: boolean },
-  _onNarrativeUpdate?: (text: string) => void
-) { void _onNarrativeUpdate;
+  onText?: TextUpdateCallback
+) {
   if (rafScheduledRef.current) return;
   rafScheduledRef.current = true;
-  requestAnimationFrame(() => {
+  const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+    ? window.requestAnimationFrame.bind(window)
+    : (cb: (t: number) => void) => { cb(typeof performance !== "undefined" ? performance.now() : 0); return 0; };
+  raf(() => {
     rafScheduledRef.current = false;
     const frames = pendingRef.current;
     pendingRef.current = [];
-    if (!writes.isGenerationCurrent(generationId)) return;
-    for (const item of frames) {
-      if (item.kind === "run") {
-        writes.clearEvents();
-        writes.clearArtifacts();
-        writes.setActiveRunId(item.runId);
-        writes.activateRunProjection(item.runId);
-      } else if (item.kind === "chat_created") {
-        writes.upsertChat(item.chat);
-      } else if (item.kind === "message_persisted") {
-        writes.upsertMessage(item.chatId, item.message);
-      } else if (item.kind === "event") {
-        writes.appendEvent(item.event);
-      } else if (item.kind === "artifact") {
-        writes.appendArtifact(item.artifact);
-      } else if (item.kind === "status") {
-        // status messages are informational only
-      } else if (item.kind === "run_state") {
-        writes.setDurableState(item.state);
-      } else if (item.kind === "usage") {
-        writes.setLiveUsage(item.usage);
-      } else if (item.kind === "human_input") {
-        writes.setHumanInputRequest(item.request);
-      } else if (item.kind === "error") {
-        writes.setRunStatus("failed");
-      } else if (item.kind === "done") {
-        writes.setRunStatus(item.status);
-        if (item.status !== "running" && item.status !== "waiting_human") {
-          writes.setActiveRunId(null);
-        }
-      }
-    }
+    applyFrames(frames, writes, generationId, onText);
   });
 }
 
@@ -87,38 +111,84 @@ export async function consumeSseStream(
   response: Response,
   writes: StoreWrites,
   generationId: string,
-  _onNarrativeUpdate?: (text: string) => void
-): Promise<{ status: RunStatus; runId: string | null }> { void _onNarrativeUpdate;
+  onText?: TextUpdateCallback
+): Promise<{ status: RunStatus; runId: string | null }> {
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let narrative = "";
   let terminalStatus: RunStatus | null = null;
   let captureRunId: string | null = null;
-  const pending: PendingFrame[] = [];
+  let lastCheckpointVersion = 0;
+  const pendingFrames: PendingFrame[] = [];
   const rafScheduled = { current: false };
 
   function pushFrame(frame: PendingFrame) {
-    pending.push(frame);
-    scheduleFlush({ current: pending }, writes, generationId, rafScheduled, _onNarrativeUpdate);
+    pendingFrames.push(frame);
+    scheduleFlush({ current: pendingFrames }, writes, generationId, rafScheduled, onText);
   }
 
   async function readLoop(): Promise<void> {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        buffer += decoder.decode();
+        break;
+      }
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const raw = line.slice(6).trim();
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() ?? "";
+      for (const part of parts) {
+        const dataLine = part.split("\n").find((line) => line.startsWith("data: "));
+        if (!dataLine) continue;
+        const raw = dataLine.slice(6).trim();
         if (!raw) continue;
         try {
-          const parsed = JSON.parse(raw) as { type: string; payload: Record<string, unknown> };
-          parseSseFrame(parsed, pushFrame, { narrative: () => narrative, setNarrative: (v: string) => { narrative = v; }, captureRunId: () => captureRunId, setCaptureRunId: (v: string | null) => { captureRunId = v; }, terminalStatus: () => terminalStatus, setTerminalStatus: (v: RunStatus) => { terminalStatus = v; } });
+          const parsed = JSON.parse(raw);
+          const envelopeResult = sseEnvelopeSchema.safeParse(parsed);
+          if (!envelopeResult.success) {
+            continue;
+          }
+          const envelope = envelopeResult.data;
+          if (envelope.protocol && envelope.protocol !== "spielos-sse-v1") {
+            continue;
+          }
+          if (typeof envelope.checkpointVersion === "number") {
+            if (envelope.checkpointVersion > lastCheckpointVersion) {
+              lastCheckpointVersion = envelope.checkpointVersion;
+              writes.recordCheckpointVersion(envelope.checkpointVersion);
+            }
+          }
+          const frame: SseFrame = envelope.body;
+          if (frame.kind === "run") {
+            captureRunId = frame.runId;
+            pushFrame({ kind: "run", runId: frame.runId });
+          } else if (frame.kind === "chat_created") {
+            pushFrame({ kind: "chat_created", chatId: frame.chatId, chat: frame.chat });
+          } else if (frame.kind === "message_persisted") {
+            pushFrame({ kind: "message_persisted", chatId: frame.chatId, message: frame.message });
+          } else if (frame.kind === "event") {
+            pushFrame({ kind: "event", event: frame.event });
+          } else if (frame.kind === "artifact") {
+            pushFrame({ kind: "artifact", artifact: frame.artifact });
+          } else if (frame.kind === "status") {
+            pushFrame({ kind: "status", message: frame.message });
+          } else if (frame.kind === "run_state") {
+            pushFrame({ kind: "run_state", state: frame.state as Record<string, unknown> });
+          } else if (frame.kind === "usage") {
+            pushFrame({ kind: "usage", usage: frame.usage });
+          } else if (frame.kind === "human_input") {
+            pushFrame({ kind: "human_input", request: frame.request });
+          } else if (frame.kind === "text") {
+            pushFrame({ kind: "text", text: frame.text });
+          } else if (frame.kind === "error") {
+            pushFrame({ kind: "error", message: frame.message });
+            terminalStatus = "failed";
+          } else if (frame.kind === "done") {
+            pushFrame({ kind: "done", status: frame.status });
+            terminalStatus = frame.status;
+          }
         } catch {
-          // Skip malformed frames
+          // Malformed frame — do not corrupt remaining stream
         }
       }
     }
@@ -126,105 +196,11 @@ export async function consumeSseStream(
 
   await readLoop();
 
-  // Flush any remaining pending frames
-  if (pending.length > 0 && writes.isGenerationCurrent(generationId)) {
-    const frames = pending.splice(0);
-    for (const item of frames) {
-      if (item.kind === "run") {
-        writes.clearEvents();
-        writes.clearArtifacts();
-        writes.setActiveRunId(item.runId);
-        writes.activateRunProjection(item.runId);
-      } else if (item.kind === "chat_created") {
-        writes.upsertChat(item.chat);
-      } else if (item.kind === "message_persisted") {
-        writes.upsertMessage(item.chatId, item.message);
-      } else if (item.kind === "event") {
-        writes.appendEvent(item.event);
-      } else if (item.kind === "artifact") {
-        writes.appendArtifact(item.artifact);
-      } else if (item.kind === "run_state") {
-        writes.setDurableState(item.state);
-      } else if (item.kind === "usage") {
-        writes.setLiveUsage(item.usage);
-      } else if (item.kind === "human_input") {
-        writes.setHumanInputRequest(item.request);
-      } else if (item.kind === "error") {
-        writes.setRunStatus("failed");
-      } else if (item.kind === "done") {
-        writes.setRunStatus(item.status);
-        if (item.status !== "running" && item.status !== "waiting_human") {
-          writes.setActiveRunId(null);
-        }
-      }
-    }
+  // Synchronously flush any remaining frames at stream end
+  if (pendingFrames.length > 0 && writes.isGenerationCurrent(generationId)) {
+    const frames = pendingFrames.splice(0);
+    applyFrames(frames, writes, generationId, onText);
   }
 
   return { status: terminalStatus ?? "failed", runId: captureRunId };
-}
-
-function parseSseFrame(
-  parsed: { type: string; payload: Record<string, unknown> },
-  pushFrame: (frame: PendingFrame) => void,
-  ctx: {
-    narrative: () => string;
-    setNarrative: (v: string) => void;
-    captureRunId: () => string | null;
-    setCaptureRunId: (v: string | null) => void;
-    terminalStatus: () => RunStatus | null;
-    setTerminalStatus: (v: RunStatus) => void;
-  }
-) {
-  const { type, payload } = parsed;
-  switch (type) {
-    case "run": {
-      const runId = payload.runId as string;
-      ctx.setCaptureRunId(runId);
-      pushFrame({ kind: "run", runId });
-      break;
-    }
-    case "chat_created":
-      pushFrame({
-        kind: "chat_created",
-        chatId: payload.chatId as string,
-        chat: payload.chat as unknown as CoreChat
-      });
-      break;
-    case "message_persisted":
-      pushFrame({
-        kind: "message_persisted",
-        chatId: payload.chatId as string,
-        message: payload.message as unknown as ChatMessage
-      });
-      break;
-    case "event":
-      pushFrame({ kind: "event", event: payload.event as unknown as RunEvent });
-      break;
-    case "artifact":
-      pushFrame({ kind: "artifact", artifact: payload.artifact as unknown as Artifact });
-      break;
-    case "status":
-      pushFrame({ kind: "status", message: payload.message as string });
-      break;
-    case "run_state":
-      pushFrame({ kind: "run_state", state: payload.state as Record<string, unknown> });
-      break;
-    case "usage":
-      pushFrame({ kind: "usage", usage: payload.usage as { inputTokens: number; outputTokens: number; toolCalls: number } });
-      break;
-    case "human_input":
-      pushFrame({
-        kind: "human_input",
-        request: payload.request as HumanInputRequest
-      });
-      break;
-    case "error":
-      pushFrame({ kind: "error", message: payload.message as string });
-      ctx.setTerminalStatus("failed");
-      break;
-    case "done":
-      pushFrame({ kind: "done", status: payload.status as RunStatus });
-      ctx.setTerminalStatus(payload.status as RunStatus);
-      break;
-  }
 }
