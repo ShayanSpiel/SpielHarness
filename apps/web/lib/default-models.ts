@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { ensureEnvironmentModels, listModels, type ModelRow, type Sql } from "@spielos/db";
+import { stableUuid } from "@spielos/core/node";
 import type { ModelCapabilities, ModelProvider } from "@spielos/core";
 
 type EnvironmentModel = {
@@ -14,14 +15,6 @@ type EnvironmentModel = {
 function numberFromEnv(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
-}
-
-function stableUuid(value: string): string {
-  const chars = createHash("sha256").update(value).digest("hex").slice(0, 32).split("");
-  chars[12] = "5";
-  chars[16] = ((Number.parseInt(chars[16], 16) & 0x3) | 0x8).toString(16);
-  const hex = chars.join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function reasoningFromEnv(prefix: string, fallback: ModelCapabilities["reasoningEffort"]): ModelCapabilities["reasoningEffort"] {

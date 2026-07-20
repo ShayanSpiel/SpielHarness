@@ -1616,7 +1616,7 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
       return event;
     };
     if (state.failed || state.status === "waiting_human" || state.status === "cancelled") return {};
-    const role = state.roles[workflowNode.roleId] ?? null;
+    const role = state.roles[workflowNode.roleId ?? ""] ?? null;
     if (!role) {
       const errorEvent = makeEvent(
         state.orgId,
@@ -1668,9 +1668,9 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
     const skillIds = workflowNode.skillIds.length > 0
       ? workflowNode.skillIds
       : role.skillIds;
-    const nodeSkills = skillIds
-      .map((id) => state.skills[id])
-      .filter((skill): skill is Skill => Boolean(skill) && skill.status === "active");
+    const nodeSkills: Skill[] = skillIds
+      .map((id): Skill | undefined => state.skills[id])
+      .filter((s): s is Skill => s?.status === "active");
 
     if (nodeSkills.length === 0) {
       const errorEvent = makeEvent(
@@ -2277,6 +2277,8 @@ function buildSingleNodeGraph(req: RunRequest) {
     roleId: single.role.id,
     skillIds: single.skill?.id ? [single.skill.id] : [],
     fileIds: single.fileIds,
+    skillSlugs: [],
+    fileSlugs: [],
     inputContract: "any",
     outputContract: "any",
     position: { x: 0, y: 0 }

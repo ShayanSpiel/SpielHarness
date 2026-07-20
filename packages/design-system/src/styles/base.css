@@ -239,6 +239,23 @@ button:disabled {
   animation: skeleton-pulse 1.5s var(--ease) infinite;
 }
 
+/*
+ * Electric border — shared animation primitive.
+ * Intensity scale: "high" → subtle crackle, "xhigh" → medium, "max" → intense.
+ * Color driven by --accent token. Applied via data-reasoning-level attribute.
+ */
+@keyframes electric-glow-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+.electric-border-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .skeleton {
     animation: none;

@@ -109,9 +109,8 @@ function tryDecryptCredential(config: Record<string, unknown>): string | null {
   try {
     const source =
       process.env.CONNECTION_ENCRYPTION_KEY ||
-      (process.env.NODE_ENV !== "production"
-        ? process.env.DATABASE_URL || "spielos-dev-fallback"
-        : "");
+      process.env.DATABASE_URL ||
+      (process.env.NODE_ENV !== "production" ? "spielos-dev-fallback" : "");
     const key = createHash("sha256").update(source).digest();
     const [iv, tag, ciphertext] = encrypted.split(".");
     if (!iv || !tag || !ciphertext) throw new Error("Invalid encrypted credential");

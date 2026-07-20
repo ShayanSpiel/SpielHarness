@@ -1,11 +1,12 @@
 "use client";
 
 import type { ExternalStoreAdapter, AppendMessage, ThreadMessage, ThreadMessageLike } from "@assistant-ui/react";
+import { activeRunStreams } from "./chat-adapter";
 import { fromThreadMessageLike } from "@assistant-ui/react";
 import type { RunContextValue } from "./run-context";
 import type { Store } from "./use-workspace-store";
 import type { StartRunConfig } from "@assistant-ui/core";
-import { executionModeSchema, DEFAULT_EXECUTION_MODE } from "@spielos/core";
+import { executionModeSchema, DEFAULT_EXECUTION_MODE, type RunStatus } from "@spielos/core";
 import { consumeSseStream } from "./sse-stream-consumer";
 
 function getMessageText(content: readonly { type: string; text?: string }[]): string {
@@ -187,28 +188,55 @@ export function buildExternalStoreAdapter(
       // Phase 4: consume SSE stream — upserts directly to our store.
       // No generator/yield needed; store reactivity drives the runtime.
       run.clearContinuationText();
-      const sseResult = await consumeSseStream(response, {
-        upsertChat: (chat) => store.upsertChat(chat),
-        upsertMessage: (cid, msg) => store.upsertMessage(cid, msg),
-        setRunStatus: (s) => run.setRunStatus(s),
-        setRunType: (t: string | null) => run.setRunType(t as import("@spielos/core").RunType | null),
-        setActiveRunId: (rid) => run.setActiveRunId(rid),
-        appendEvent: (e) => run.appendEvent(e),
-        clearEvents: () => run.clearEvents(),
-        clearArtifacts: () => run.clearArtifacts(),
-        appendArtifact: (a) => run.appendArtifact(a),
-        setDurableState: (s) => run.setDurableState(s),
-        setLiveUsage: (u) => run.setLiveUsage(u),
-        setHumanInputRequest: (r) => run.setHumanInputRequest(r),
-        recordCheckpointVersion: (v) => run.recordCheckpointVersion(v),
-        beginRunAttempt: () => run.beginRunAttempt(),
-        activateRunProjection: (rid) => run.activateRunProjection(rid),
-        isGenerationCurrent: (gid: string) => run.isGenerationCurrent(gid)
-      }, generationId, (text) => run.appendContinuationText(text));
+      let sseResult: { status: RunStatus; runId: string | null };
+      try {
+        sseResult = await consumeSseStream(response, {
+          upsertChat: (chat) => store.upsertChat(chat),
+          upsertMessage: (cid, msg) => store.upsertMessage(cid, msg),
+          setRunStatus: (s) => { console.log("[adapter-debug] writes.setRunStatus called status=" + s + " currentRunStatus=" + run.status); run.setRunStatus(s); },
+          setRunType: (t: string | null) => run.setRunType(t as import("@spielos/core").RunType | null),
+          setActiveRunId: (rid) => run.setActiveRunId(rid),
+          setActivity: (a) => run.setActivity(a),
+          attachStream: (rid) => { run.attachStream(rid); activeRunStreams.add(rid); },
+          detachStream: (rid) => { run.detachStream(rid); activeRunStreams.delete(rid); },
+          appendEvent: (e) => run.appendEvent(e),
+          clearEvents: () => run.clearEvents(),
+          clearArtifacts: () => run.clearArtifacts(),
+          appendArtifact: (a) => run.appendArtifact(a),
+          setDurableState: (s) => run.setDurableState(s),
+          setLiveUsage: (u) => run.setLiveUsage(u),
+          setHumanInputRequest: (r) => run.setHumanInputRequest(r),
+          recordCheckpointVersion: (v) => run.recordCheckpointVersion(v),
+          beginRunAttempt: () => run.beginRunAttempt(),
+          activateRunProjection: (rid) => run.activateRunProjection(rid),
+          isGenerationCurrent: (gid: string) => run.isGenerationCurrent(gid)
+        }, generationId, (text) => run.appendContinuationText(text));
+        console.log("[adapter-debug] consumeSseStream returned status=" + sseResult.status + " runId=" + sseResult.runId + " activeChatId=" + store.activeChatId + " run.status=" + run.status);
+      } catch (streamErr) {
+        console.error("[adapter-debug] SSE stream consumption FAILED:", streamErr);
+        run.setRunStatus("failed");
+        store.upsertMessage(chatId, {
+          id: crypto.randomUUID(),
+          chatId,
+          orgId: "",
+          role: "assistant",
+          body: `Run failed: stream error`,
+          metadata: { error: true },
+          createdAt: new Date().toISOString(),
+          sequenceNumber: (store.messages[chatId]?.length ?? 0) + 1
+        });
+        return;
+      }
+
+      console.log("[adapter-debug] onNew about to commitPendingChat activeChatId=" + store.activeChatId + " chatId=" + chatId + " sseResult.runId=" + sseResult.runId + " run.status=" + run.status);
 
       // If this created a new chat (no activeChatId at start), commit
       // the pending navigation so ChatRuntimeProvider handles the redirect.
+      // Set activeChatId synchronously so the adapter's useMemo picks it
+      // up in the same render — prevents a blank render frame where the
+      // adapter is recreated with activeChatId=null → messages=[].
       if (!store.activeChatId && chatId && sseResult.runId) {
+        store.setActiveChat(chatId);
         run.commitPendingChat({ chatId, runId: sseResult.runId });
       }
     },
@@ -245,6 +273,9 @@ export function buildExternalStoreAdapter(
         setRunStatus: (s) => run.setRunStatus(s),
         setRunType: (t: string | null) => run.setRunType(t as import("@spielos/core").RunType | null),
         setActiveRunId: (rid) => run.setActiveRunId(rid),
+        setActivity: (a) => run.setActivity(a),
+        attachStream: (rid) => { run.attachStream(rid); activeRunStreams.add(rid); },
+        detachStream: (rid) => { run.detachStream(rid); activeRunStreams.delete(rid); },
         appendEvent: (e) => run.appendEvent(e),
         clearEvents: () => run.clearEvents(),
         clearArtifacts: () => run.clearArtifacts(),

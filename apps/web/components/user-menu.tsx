@@ -6,14 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger, cn } from "@spielos/design-sys
 import { Skeleton } from "@spielos/design-system";
 import { useWorkspace } from "../lib/workspace-context";
 import { signOut, useSession } from "../lib/auth-client";
-import { useCallback, useState } from "react";
-
-type Org = {
-  org_id: string;
-  org_name: string;
-  org_slug: string;
-  role: string;
-};
+import { useState } from "react";
 
 function initials(name: string): string {
   const words = name.trim().split(/\s+/);
@@ -23,24 +16,13 @@ function initials(name: string): string {
 }
 
 export function UserMenu() {
-  const { workspace, switchWorkspace } = useWorkspace();
+  const { workspace, orgs, switchWorkspace } = useWorkspace();
   const { data: sessionData, isPending: sessionLoading } = useSession();
-  const [orgs, setOrgs] = useState<Org[]>([]);
   const [switching, setSwitching] = useState(false);
   const [creating, setCreating] = useState(false);
   const [open, setOpen] = useState(false);
 
   const user = sessionData?.user ?? null;
-
-  const fetchOrgs = useCallback(async () => {
-    try {
-      const res = await fetch("/api/orgs", { cache: "no-store" });
-      const data: { orgs?: Org[] } = res.ok ? await res.json() : { orgs: [] };
-      setOrgs(data.orgs ?? []);
-    } catch {
-      setOrgs([]);
-    }
-  }, []);
 
   async function handleSwitch(orgId: string) {
     if (orgId === workspace?.org_id) return;
@@ -84,7 +66,6 @@ export function UserMenu() {
     <Popover
       onOpenChange={(nextOpen) => {
         setOpen(nextOpen);
-        if (nextOpen && orgs.length === 0) fetchOrgs();
       }}
       open={open}
     >

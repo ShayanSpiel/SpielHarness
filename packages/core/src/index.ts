@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+export function generateId(): string {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
 // ── Execution mode (top-level switch for chat) ──────────────────
 //
 // `direct` keeps the existing deterministic single-node / workflow
@@ -48,6 +55,13 @@ export type FileType = z.infer<typeof fileTypeSchema>;
 
 export const fileStatusSchema = z.enum(["draft", "active", "archived", "deleted"]);
 export type FileStatus = z.infer<typeof fileStatusSchema>;
+
+// Phase E: Split lifecycle from enablement
+export const lifecycleSchema = z.enum(["draft", "published", "archived"]);
+export type Lifecycle = z.infer<typeof lifecycleSchema>;
+
+export const enabledSchema = z.boolean();
+export type Enabled = z.infer<typeof enabledSchema>;
 
 // ── Skill kinds ────────────────────────────────────────────────
 export const skillKindSchema = z.enum([
@@ -101,6 +115,13 @@ export const evalRuleSchema = z.object({
   importance: z.number().default(10)
 });
 export type EvalRule = z.infer<typeof evalRuleSchema>;
+
+// ── Executor binding: explicitly assigns a skill to a role ────
+export const executorBindingSchema = z.object({
+  skillId: z.string(),
+  roleId: z.string(),
+});
+export type ExecutorBinding = z.infer<typeof executorBindingSchema>;
 
 // ── Skill binding to a connection operation ────────────────────
 export const skillBindingSchema = z.object({
@@ -184,11 +205,14 @@ export type EvalInputSource = z.infer<typeof evalInputSourceSchema>;
 export const workflowNodeSchema = z.object({
   id: z.string(),
   title: z.string(),
-  roleId: z.string(),
+  roleId: z.string().optional(),
+  roleSlug: z.string().optional(),
   promptOverride: z.string().optional(),
   humanQuestions: z.array(humanInputQuestionSchema).optional(),
   skillIds: z.array(z.string()).default([]),
+  skillSlugs: z.array(z.string()).default([]),
   fileIds: z.array(z.string()).default([]),
+  fileSlugs: z.array(z.string()).default([]),
   toolCallLimits: z.record(z.number().int().positive()).optional(),
   requiredToolCalls: z.array(z.string()).optional(),
   inputContract: z.string().default("any"),
@@ -232,6 +256,10 @@ export const evalFileSchema = z.object({
 });
 export type EvalFile = z.infer<typeof evalFileSchema>;
 
+// ── Workflow topology mode ─────────────────────────────────────
+export const workflowTopologySchema = z.enum(["dag", "sequential"]);
+export type WorkflowTopology = z.infer<typeof workflowTopologySchema>;
+
 // ── Workflow file (the saved DAG) ──────────────────────────────
 export const workflowFileSchema = z.object({
   id: z.string(),
@@ -240,6 +268,7 @@ export const workflowFileSchema = z.object({
   description: z.string().default(""),
   nodes: z.array(workflowNodeSchema).default([]),
   edges: z.array(workflowEdgeSchema).default([]),
+  topology: workflowTopologySchema.optional(),
   status: fileStatusSchema.default("active"),
   metadata: z.record(z.unknown()).default({}),
   createdAt: z.string().optional(),
@@ -816,7 +845,7 @@ function applySetGoal(state: ChatPinnedState, op: Extract<StateOperation, { op: 
   return {
     ...state,
     primaryGoal: {
-      id: crypto.randomUUID(),
+      id: generateId(),
       text: op.text,
       authority: "model",
       status: "active",
@@ -830,7 +859,7 @@ function applySetGoal(state: ChatPinnedState, op: Extract<StateOperation, { op: 
 
 function applyAddDecision(state: ChatPinnedState, op: Extract<StateOperation, { op: "add_decision" }>, now: string): ChatPinnedState {
   const candidate: StateItem = {
-    id: crypto.randomUUID(),
+    id: generateId(),
     text: op.text,
     authority: "model",
     status: "active",
@@ -856,7 +885,7 @@ function applySupersedeDecision(state: ChatPinnedState, op: Extract<StateOperati
     )
     .concat([
       {
-        id: crypto.randomUUID(),
+        id: generateId(),
         text: op.text,
         authority: "model",
         status: "active",
@@ -871,7 +900,7 @@ function applySupersedeDecision(state: ChatPinnedState, op: Extract<StateOperati
 
 function applyAddConstraint(state: ChatPinnedState, op: Extract<StateOperation, { op: "add_constraint" }>, now: string): ChatPinnedState {
   const candidate: StateItem = {
-    id: crypto.randomUUID(),
+    id: generateId(),
     text: op.text,
     authority: "model",
     status: "active",
@@ -885,7 +914,7 @@ function applyAddConstraint(state: ChatPinnedState, op: Extract<StateOperation, 
 
 function applyAddOpenWork(state: ChatPinnedState, op: Extract<StateOperation, { op: "add_open_work" }>, now: string): ChatPinnedState {
   const candidate: StateItem = {
-    id: crypto.randomUUID(),
+    id: generateId(),
     text: op.text,
     authority: "model",
     status: "active",
@@ -1108,6 +1137,36 @@ export const runVerificationSchema = z.object({
 });
 export type RunVerification = z.infer<typeof runVerificationSchema>;
 
+// Phase H: Director completion criteria — evidence-based verification
+export const requiredToolCallSchema = z.object({
+  capability: z.string(),
+  minCount: z.number().int().positive().default(1),
+});
+export type RequiredToolCall = z.infer<typeof requiredToolCallSchema>;
+
+export const requiredEvalThresholdSchema = z.object({
+  evalId: z.string(),
+  minScore: z.number().min(0).max(100).default(75),
+});
+export type RequiredEvalThreshold = z.infer<typeof requiredEvalThresholdSchema>;
+
+export const completionCriteriaSchema = z.object({
+  requiredArtifacts: z.array(z.string()).default([]),
+  requiredWorkflows: z.array(z.string()).default([]),
+  requiredToolCalls: z.array(requiredToolCallSchema).default([]),
+  requiredEvalThresholds: z.array(requiredEvalThresholdSchema).default([]),
+});
+export type CompletionCriteria = z.infer<typeof completionCriteriaSchema>;
+
+export type CompletionEvidence = {
+  artifacts: string[];
+  completedWorkflows: string[];
+  toolCalls: Record<string, number>;
+  evalResults: Record<string, { score: number; passed: boolean }>;
+  todosCompleted: number;
+  todosTotal: number;
+};
+
 export const runStateFrameSchema = z.object({
   goal: runGoalSchema.optional(),
   budget: runBudgetSchema.optional(),
@@ -1213,6 +1272,39 @@ export const memoryRecordSchema = z.object({
 });
 export type MemoryRecord = z.infer<typeof memoryRecordSchema>;
 
+// ── Workspace settings ─────────────────────────────────────────
+export const workspaceSettingsSchema = z.object({
+  defaultExecutionMode: executionModeSchema.default("director"),
+  defaultModelId: z.string().uuid().nullable().default(null),
+  contextLimits: z.object({
+    maxInputTokens: z.number().positive().default(100000),
+    maxOutputTokens: z.number().positive().default(100000),
+  }).default({}),
+  retrievalPolicy: z.object({
+    knowledgeSearchLimit: z.number().positive().default(10),
+    memoryRetrievalLimit: z.number().positive().default(8),
+  }).default({}),
+  directorRuntimePolicy: directorRuntimePolicySchema.optional(),
+  approvalPolicy: z.object({
+    requireApprovalForSideEffects: z.boolean().default(true),
+  }).default({}),
+});
+export type WorkspaceSettings = z.infer<typeof workspaceSettingsSchema>;
+
+// ── Validation exports ─────────────────────────────────────────
+export {
+  safeParseRole,
+  safeParseSkill,
+  safeParseWorkflow,
+  safeParseEval,
+  validateHarnessEntities,
+} from "./validate.ts";
+export type {
+  EntityDiagnostic,
+  EntityResult,
+  HarnessEntities,
+} from "./validate.ts";
+
 // ── File record (DB row, camelCase) ────────────────────────────
 export const fileRecordSchema = z.object({
   id: z.string(),
@@ -1220,6 +1312,9 @@ export const fileRecordSchema = z.object({
   folderId: z.string().nullable(),
   fileType: fileTypeSchema,
   status: fileStatusSchema,
+  lifecycle: lifecycleSchema.default("published"),
+  enabled: enabledSchema.default(true),
+  validationDiagnostics: z.array(z.unknown()).default([]),
   title: z.string(),
   body: z.string(),
   contentFormat: z.string(),
@@ -1308,6 +1403,8 @@ export function parseWorkflowFile(row: FileRecord): WorkflowFile {
       humanQuestions: n.humanQuestions as WorkflowNode["humanQuestions"],
       skillIds: (n.skillIds as string[]) ?? (n.skillSlugs as string[]) ?? [],
       fileIds: (n.fileIds as string[]) ?? (n.fileSlugs as string[]) ?? [],
+      skillSlugs: [],
+      fileSlugs: [],
       toolCallLimits: n.toolCallLimits as WorkflowNode["toolCallLimits"],
       requiredToolCalls: n.requiredToolCalls as WorkflowNode["requiredToolCalls"],
       inputContract: String(n.inputContract ?? n.input ?? "any"),
@@ -1329,6 +1426,68 @@ export function parseWorkflowFile(row: FileRecord): WorkflowFile {
   };
 }
 
+// ── Eval file → synthetic skill ──────────────────────────────
+export function evalFileToSkill(evalFile: EvalFile, orgId: string): Skill {
+  return {
+    id: `runtime.eval.skill.${evalFile.id}`,
+    orgId,
+    name: evalFile.name,
+    slug: (typeof evalFile.metadata?.slug === "string" ? evalFile.metadata.slug : "") || `eval.${evalFile.id}`,
+    description: evalFile.description,
+    kind: "eval",
+    status: "active",
+    auth: "none",
+    sideEffect: "none",
+    inputSchema: JSON.stringify({ input: "string" }),
+    outputSchema: JSON.stringify({ score: "number", passed: "boolean" }),
+    implementation: evalFile.description,
+    bindings: [],
+    evalRules: evalFile.rules,
+    overallThreshold: evalFile.overallThreshold,
+    metadata: { ...evalFile.metadata, evalId: evalFile.id, loopConfig: evalFile.loopConfig }
+  };
+}
+
+/**
+ * Resolve the explicit executor role for a skill.
+ * 1. Check explicit executor bindings (if provided)
+ * 2. Fall back to finding a role whose skillIds includes the target skill
+ * 3. If no role found, return null
+ *
+ * Returns null if ambiguous (multiple roles claim the same skill with no explicit binding).
+ */
+export function resolveExplicitExecutor(
+  roles: Record<string, Role>,
+  skillId: string,
+  explicitBindings?: ExecutorBinding[]
+): { role: Role; ambiguous?: boolean } | null {
+  // Check explicit bindings first
+  if (explicitBindings && explicitBindings.length > 0) {
+    const binding = explicitBindings.find((b) => b.skillId === skillId);
+    if (binding) {
+      const role = roles[binding.roleId];
+      if (role && role.status === "active") return { role };
+      return null;
+    }
+  }
+
+  // Fall back to role.skillIds matching
+  const active = Object.values(roles).filter((r) => r.status === "active");
+  const claiming = active.filter((r) => r.skillIds.includes(skillId));
+
+  if (claiming.length === 1) return { role: claiming[0] };
+  if (claiming.length > 1) {
+    // Ambiguous — return first but mark as ambiguous
+    return { role: claiming[0], ambiguous: true };
+  }
+
+  // No role claims this skill — check orchestrator as last resort
+  const orchestrator = active.find((r) => r.metadata?.systemRole === "orchestrator");
+  if (orchestrator) return { role: orchestrator };
+
+  return null;
+}
+
 export function defaultInputContract(): RoleContract {
   return {
     name: "Input",
@@ -1337,6 +1496,122 @@ export function defaultInputContract(): RoleContract {
     required: true,
     multiple: false
   };
+}
+
+/**
+ * Infer the topology mode for a workflow.
+ * Workflows with explicit edges → "dag", with 0 edges and >1 nodes → "sequential", with 1 node → "dag".
+ */
+export function inferWorkflowTopology(wf: WorkflowFile): "dag" | "sequential" {
+  if (wf.topology) return wf.topology;
+  if (wf.edges.length > 0) return "dag";
+  if (wf.nodes.length <= 1) return "dag";
+  return "sequential";
+}
+
+export type DAGValidationIssue = {
+  type: "missing_source" | "missing_target" | "cycle" | "orphan" | "unreachable" | "no_entry" | "no_terminal" | "duplicate_node_id" | "duplicate_edge_id" | "missing_eval_ref";
+  nodeId?: string;
+  edgeId?: string;
+  message: string;
+};
+
+export function validateWorkflowDAG(wf: WorkflowFile): DAGValidationIssue[] {
+  const issues: DAGValidationIssue[] = [];
+
+  const nodeIds = new Set<string>();
+  for (const node of wf.nodes) {
+    if (nodeIds.has(node.id)) {
+      issues.push({ type: "duplicate_node_id", nodeId: node.id, message: `Duplicate node id "${node.id}".` });
+    }
+    nodeIds.add(node.id);
+  }
+
+  const edgeIds = new Set<string>();
+  for (const edge of wf.edges) {
+    if (edgeIds.has(edge.id)) {
+      issues.push({ type: "duplicate_edge_id", edgeId: edge.id, message: `Duplicate edge id "${edge.id}".` });
+    }
+    edgeIds.add(edge.id);
+  }
+
+  for (const edge of wf.edges) {
+    if (!nodeIds.has(edge.source)) {
+      issues.push({ type: "missing_source", edgeId: edge.id, message: `Edge "${edge.id}" references missing source "${edge.source}".` });
+    }
+    if (!nodeIds.has(edge.target)) {
+      issues.push({ type: "missing_target", edgeId: edge.id, message: `Edge "${edge.id}" references missing target "${edge.target}".` });
+    }
+  }
+
+  const topology = inferWorkflowTopology(wf);
+  if (topology === "sequential" || wf.nodes.length <= 1) return issues;
+
+  const adj = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+  const outDegree = new Map<string, number>();
+  for (const n of wf.nodes) {
+    adj.set(n.id, []);
+    inDegree.set(n.id, 0);
+    outDegree.set(n.id, 0);
+  }
+  for (const e of wf.edges) {
+    adj.get(e.source)?.push(e.target);
+    inDegree.set(e.target, (inDegree.get(e.target) ?? 0) + 1);
+    outDegree.set(e.source, (outDegree.get(e.source) ?? 0) + 1);
+  }
+
+  const entryNodes = [...nodeIds].filter((id) => (inDegree.get(id) ?? 0) === 0);
+  if (entryNodes.length === 0) {
+    issues.push({ type: "no_entry", message: "DAG has no entry node." });
+  }
+
+  const terminalNodes = [...nodeIds].filter((id) => (outDegree.get(id) ?? 0) === 0);
+  if (terminalNodes.length === 0) {
+    issues.push({ type: "no_terminal", message: "DAG has no terminal node." });
+  }
+
+  const visited = new Set<string>();
+  const stack = new Set<string>();
+  function dfs(id: string): boolean {
+    if (stack.has(id)) return true;
+    if (visited.has(id)) return false;
+    visited.add(id);
+    stack.add(id);
+    for (const next of adj.get(id) ?? []) {
+      if (dfs(next)) return true;
+    }
+    stack.delete(id);
+    return false;
+  }
+  for (const n of wf.nodes) {
+    if (dfs(n.id)) {
+      issues.push({ type: "cycle", nodeId: n.id, message: `DAG contains a cycle involving node "${n.id}".` });
+      break;
+    }
+  }
+  if (issues.some((i) => i.type === "cycle")) return issues;
+
+  const reachableFromEntry = new Set<string>();
+  function markReachable(id: string) {
+    if (reachableFromEntry.has(id)) return;
+    reachableFromEntry.add(id);
+    for (const next of adj.get(id) ?? []) markReachable(next);
+  }
+  for (const entry of entryNodes) markReachable(entry);
+  for (const n of wf.nodes) {
+    if (!reachableFromEntry.has(n.id)) {
+      issues.push({ type: "unreachable", nodeId: n.id, message: `Node "${n.id}" is not reachable from any entry node.` });
+    }
+  }
+
+  for (const node of wf.nodes) {
+    if (node.evalInput?.nodeId && !nodeIds.has(node.evalInput.nodeId)) {
+      issues.push({ type: "missing_eval_ref", nodeId: node.id, message: `Node "${node.id}" evalInput references missing node "${node.evalInput.nodeId}".` });
+    }
+  }
+
+  return issues;
 }
 
 export function defaultOutputContract(): RoleContract {

@@ -55,7 +55,7 @@ function buildNodes(
       role:
         n.evalInput
           ? evalsById.get(n.skillIds[0] ?? "")
-          : rolesById.get(n.roleId),
+          : rolesById.get(n.roleId ?? ""),
       isConnecting: fromNodeId === n.id,
       selected: false,
       hasIncoming: incomingIds.has(n.id),

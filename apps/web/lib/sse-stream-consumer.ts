@@ -11,6 +11,9 @@ export type StoreWrites = {
   setRunStatus: (status: RunStatus) => void;
   setRunType: (type: string) => void;
   setActiveRunId: (runId: string | null) => void;
+  setActivity: (activity: string | null) => void;
+  attachStream: (runId: string) => void;
+  detachStream: (runId: string) => void;
   appendEvent: (event: RunEvent) => void;
   clearEvents: () => void;
   clearArtifacts: () => void;
@@ -61,6 +64,7 @@ function applyFrames(frames: PendingFrame[], writes: StoreWrites, generationId: 
         writes.appendArtifact(item.artifact);
         break;
       case "status":
+        writes.setActivity(item.message);
         break;
       case "run_state":
         writes.setDurableState(item.state);
@@ -122,75 +126,100 @@ export async function consumeSseStream(
   const pendingFrames: PendingFrame[] = [];
   const rafScheduled = { current: false };
 
+  // Safety net: if the stream does not close (server ReadableStrem
+  // controller.close() is never reached) the read-loop would block
+  // forever.  Force-exit after 5 minutes so the run cycles out of
+  // "running" and the user can retry.
+  const STREAM_TIMEOUT_MS = 300_000;
+  let streamTimedOut = false;
+  const streamTimeout = setTimeout(() => {
+    streamTimedOut = true;
+    reader.cancel("stream-timeout").catch(() => {});
+  }, STREAM_TIMEOUT_MS);
+
   function pushFrame(frame: PendingFrame) {
     pendingFrames.push(frame);
     scheduleFlush({ current: pendingFrames }, writes, generationId, rafScheduled, onText);
   }
 
+  function processBuffer(flush: boolean): void {
+    const parts = buffer.split("\n\n");
+    if (flush) {
+      buffer = "";
+    } else {
+      buffer = parts.pop() ?? "";
+    }
+    for (const part of parts) {
+      const dataLine = part.split("\n").find((line) => line.startsWith("data: "));
+      if (!dataLine) continue;
+      const raw = dataLine.slice(6).trim();
+      if (!raw) continue;
+      try {
+        const parsed = JSON.parse(raw);
+        const envelopeResult = sseEnvelopeSchema.safeParse(parsed);
+        if (!envelopeResult.success) {
+          continue;
+        }
+        const envelope = envelopeResult.data;
+        if (envelope.protocol && envelope.protocol !== "spielos-sse-v1") {
+          continue;
+        }
+        if (typeof envelope.checkpointVersion === "number") {
+          if (envelope.checkpointVersion > lastCheckpointVersion) {
+            lastCheckpointVersion = envelope.checkpointVersion;
+            writes.recordCheckpointVersion(envelope.checkpointVersion);
+          }
+        }
+        const frame: SseFrame = envelope.body;
+        if (frame.kind === "run") {
+          captureRunId = frame.runId;
+          writes.attachStream(frame.runId);
+          pushFrame({ kind: "run", runId: frame.runId });
+        } else if (frame.kind === "chat_created") {
+          pushFrame({ kind: "chat_created", chatId: frame.chatId, chat: frame.chat });
+        } else if (frame.kind === "message_persisted") {
+          pushFrame({ kind: "message_persisted", chatId: frame.chatId, message: frame.message });
+        } else if (frame.kind === "event") {
+          pushFrame({ kind: "event", event: frame.event });
+        } else if (frame.kind === "artifact") {
+          pushFrame({ kind: "artifact", artifact: frame.artifact });
+        } else if (frame.kind === "status") {
+          pushFrame({ kind: "status", message: frame.message });
+        } else if (frame.kind === "run_state") {
+          pushFrame({ kind: "run_state", state: frame.state as Record<string, unknown> });
+        } else if (frame.kind === "usage") {
+          pushFrame({ kind: "usage", usage: frame.usage });
+        } else if (frame.kind === "human_input") {
+          pushFrame({ kind: "human_input", request: frame.request });
+        } else if (frame.kind === "text") {
+          pushFrame({ kind: "text", text: frame.text });
+        } else if (frame.kind === "error") {
+          pushFrame({ kind: "error", message: frame.message });
+          terminalStatus = "failed";
+        } else if (frame.kind === "done") {
+          pushFrame({ kind: "done", status: frame.status });
+          terminalStatus = frame.status;
+        }
+      } catch {
+        // Malformed frame — do not corrupt remaining stream
+      }
+    }
+  }
+
   async function readLoop(): Promise<void> {
     while (true) {
+      if (streamTimedOut) break;
       const { done, value } = await reader.read();
       if (done) {
-        buffer += decoder.decode();
+        // Decode and process any remaining bytes — the last chunk may
+        // include the final SSE frame (e.g. the `done` frame) that would
+        // otherwise be lost.
+        buffer += decoder.decode(value, { stream: true });
+        processBuffer(true);
         break;
       }
       buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split("\n\n");
-      buffer = parts.pop() ?? "";
-      for (const part of parts) {
-        const dataLine = part.split("\n").find((line) => line.startsWith("data: "));
-        if (!dataLine) continue;
-        const raw = dataLine.slice(6).trim();
-        if (!raw) continue;
-        try {
-          const parsed = JSON.parse(raw);
-          const envelopeResult = sseEnvelopeSchema.safeParse(parsed);
-          if (!envelopeResult.success) {
-            continue;
-          }
-          const envelope = envelopeResult.data;
-          if (envelope.protocol && envelope.protocol !== "spielos-sse-v1") {
-            continue;
-          }
-          if (typeof envelope.checkpointVersion === "number") {
-            if (envelope.checkpointVersion > lastCheckpointVersion) {
-              lastCheckpointVersion = envelope.checkpointVersion;
-              writes.recordCheckpointVersion(envelope.checkpointVersion);
-            }
-          }
-          const frame: SseFrame = envelope.body;
-          if (frame.kind === "run") {
-            captureRunId = frame.runId;
-            pushFrame({ kind: "run", runId: frame.runId });
-          } else if (frame.kind === "chat_created") {
-            pushFrame({ kind: "chat_created", chatId: frame.chatId, chat: frame.chat });
-          } else if (frame.kind === "message_persisted") {
-            pushFrame({ kind: "message_persisted", chatId: frame.chatId, message: frame.message });
-          } else if (frame.kind === "event") {
-            pushFrame({ kind: "event", event: frame.event });
-          } else if (frame.kind === "artifact") {
-            pushFrame({ kind: "artifact", artifact: frame.artifact });
-          } else if (frame.kind === "status") {
-            pushFrame({ kind: "status", message: frame.message });
-          } else if (frame.kind === "run_state") {
-            pushFrame({ kind: "run_state", state: frame.state as Record<string, unknown> });
-          } else if (frame.kind === "usage") {
-            pushFrame({ kind: "usage", usage: frame.usage });
-          } else if (frame.kind === "human_input") {
-            pushFrame({ kind: "human_input", request: frame.request });
-          } else if (frame.kind === "text") {
-            pushFrame({ kind: "text", text: frame.text });
-          } else if (frame.kind === "error") {
-            pushFrame({ kind: "error", message: frame.message });
-            terminalStatus = "failed";
-          } else if (frame.kind === "done") {
-            pushFrame({ kind: "done", status: frame.status });
-            terminalStatus = frame.status;
-          }
-        } catch {
-          // Malformed frame — do not corrupt remaining stream
-        }
-      }
+      processBuffer(false);
     }
   }
 
@@ -202,5 +231,21 @@ export async function consumeSseStream(
     applyFrames(frames, writes, generationId, onText);
   }
 
-  return { status: terminalStatus ?? "failed", runId: captureRunId };
+  clearTimeout(streamTimeout);
+
+  // Phase 2: release stream ownership so realtime reloads resume
+  if (captureRunId) {
+    writes.detachStream(captureRunId);
+  }
+
+  // If the stream closed cleanly (not a timeout) but no `done` frame
+  // was parsed, assume "completed" — the server sent it but it may
+  // have been lost in the final chunk.  Timeouts and explicit error
+  // frames set terminalStatus to "failed" already.
+  if (terminalStatus === null && !streamTimedOut) {
+    terminalStatus = "completed";
+    writes.setRunStatus("completed");
+    writes.setActiveRunId(null);
+  }
+  return { status: terminalStatus ?? "completed", runId: captureRunId };
 }

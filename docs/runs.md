@@ -48,6 +48,43 @@ The valid transition is `running → waiting_human → running`. A run can enter
 
 Client cancellation aborts the active streaming request and calls `/api/runs/[id]/cancel`. The endpoint updates durable status, but there is no cross-process cancellation signal until execution is moved to a worker.
 
+## Child Run Budgets
+
+Parent runs can limit child run creation and capability usage:
+
+- `ensureChildRunBudget(parentRunId)` — idempotent insert.
+- `reserveChildRunSlot(parentRunId, maxChildRuns, maxParallelChildRuns)` — atomically increments counters; returns false when limits reached.
+- `releaseChildRunSlot(parentRunId, inputTokens?)` — decrements active count and accumulates input tokens.
+- `incrementCapabilityCall(parentRunId, capability, maxCalls)` — returns false when per-capability limit reached.
+- `getChildRunBudget(parentRunId)` — returns current counters.
+
+All operations use atomic SQL updates with optimistic locking.
+
+## Tool Invocations
+
+The `tool_invocations` table provides idempotent deduplication:
+
+- `tryClaimToolInvocation(sql, orgId, parentRunId, logicalKey, capabilityId, inputHash)`:
+  1. Checks for existing completed/failed invocation by `logical_key + input_hash` — returns existing row if found.
+  2. Returns `null` if a concurrent claim is in progress (status = `running`).
+  3. Inserts a new `running` row; unique constraint catches concurrent claims.
+- `completeToolInvocation(sql, id, status, result?, receipt?)` — sets status to `completed` or `failed` with result ref and receipt.
+
+Statuses: `running`, `completed`, `failed`.
+
+## Director Verification
+
+After a run completes, `collectEvidence` and `evaluateCompletion` check completion criteria against collected evidence:
+
+| Criterion | Evidence Source |
+|-----------|----------------|
+| `requiredArtifacts` | Artifact IDs emitted during run |
+| `requiredWorkflows` | Completed workflow IDs |
+| `requiredToolCalls` | Tool invocation counts by capability |
+| `requiredEvalThresholds` | Eval scores from run results |
+
+`evaluateCompletion` returns `all`, `partial`, or `none` with corresponding evidence.
+
 ## Replay
 
 `GET /api/runs/[id]/events` returns persisted events and `GET /api/runs/[id]/artifacts` returns linked output files. Events are currently persisted at pause/termination rather than continuously, so they are not yet a live reconnect mechanism.

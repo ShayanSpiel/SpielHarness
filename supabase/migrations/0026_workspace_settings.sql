@@ -1,0 +1,1 @@
+../../packages/db/migrations/0026_workspace_settings.sql

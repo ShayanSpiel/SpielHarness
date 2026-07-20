@@ -17,6 +17,9 @@ function toClient(row: {
   folder_id: string | null;
   file_type: string;
   status: string;
+  lifecycle: string;
+  enabled: boolean;
+  validation_diagnostics: Record<string, unknown>[];
   title: string;
   body: string;
   content_format: string;
@@ -31,6 +34,9 @@ function toClient(row: {
     folderId: row.folder_id,
     fileType: row.file_type as FileRecord["fileType"],
     status: row.status as FileRecord["status"],
+    lifecycle: row.lifecycle as "draft" | "published" | "archived",
+    enabled: row.enabled,
+    validationDiagnostics: row.validation_diagnostics ?? [],
     title: row.title,
     body: row.body,
     contentFormat: row.content_format,

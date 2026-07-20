@@ -13,6 +13,7 @@ import {
   useMessagePartText
 } from "@assistant-ui/react";
 import { usePathname } from "next/navigation";
+import { activeRunStreams } from "../../lib/chat-adapter";
 import {
   type FormEvent,
   type KeyboardEvent,
@@ -289,6 +290,9 @@ function useHumanInputFlow(
         setRunStatus: (s) => run.setRunStatus(s),
         setRunType: (t) => run.setRunType(t as import("@spielos/core").RunType | null),
         setActiveRunId: (rid) => run.setActiveRunId(rid),
+        setActivity: (a) => run.setActivity(a),
+        attachStream: (rid) => { run.attachStream(rid); activeRunStreams.add(rid); },
+        detachStream: (rid) => { run.detachStream(rid); activeRunStreams.delete(rid); },
         appendEvent: (e) => run.appendEvent(e),
         clearEvents: () => run.clearEvents(),
         clearArtifacts: () => run.clearArtifacts(),
@@ -478,7 +482,8 @@ function HumanInputPrompt({ flow }: { flow: HumanInputFlow }) {
 function Composer() {
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const run = useRunContext();
-  const durablyRunning = isRunning || (run.status === "running" && Boolean(run.activeRunId));
+  const terminal = run.status === "failed" || run.status === "cancelled" || run.status === "completed";
+  const durablyRunning = !terminal && (isRunning || (run.status === "running" && Boolean(run.activeRunId)));
   const store = useWorkspaceStore();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composerShellRef = useRef<HTMLDivElement>(null);
@@ -959,7 +964,7 @@ function RunActivityTimeline({ snapshot }: { snapshot?: RunActivitySnapshot } = 
   };
   const terminalProblem = current.status === "failed" || current.status === "cancelled";
   const ordered = orderRunEvents(current.events);
-  if (!current.running && current.status !== "waiting_human" && current.events.length === 0) return null;
+  if (!current.running && current.status !== "waiting_human" && current.events.length === 0 && !terminalProblem) return null;
   const latestNativeActivity = [...ordered].reverse().find(isStartEvent);
   const latestTerminal = [...ordered].reverse().find((event) =>
     event.type === "run_completed" || event.type === "run_failed" || event.type === "run_cancelled"
@@ -1305,12 +1310,24 @@ export function ChatRuntimeProvider({ children }: { children: ReactNode }) {
     }
     // Phase 4: When the run transitions running → not-running and no active
     // chat is set yet (new chat created by the run), navigate to it.
+    // IMPORTANT: The commit may be set AFTER the `done`-frame re-render has
+    // already reset prevIsRunning, so we must ALSO check for a pending
+    // commit unconditionally (consumePendingCommit is idempotent — it
+    // returns null when no commit is waiting).
     const isNowRunning = run.status === "running";
     const wasRunning = prevIsRunning.current;
     prevIsRunning.current = isNowRunning;
-    if (wasRunning && !isNowRunning) {
+    if (!store.activeChatId) {
       const commit = run.consumePendingCommit();
-      if (commit && !store.activeChatId) {
+      if (commit) {
+        store.setActiveChat(commit.chatId);
+        if (typeof window !== "undefined") {
+          window.history.replaceState(null, "", `/runs/${commit.runId}`);
+        }
+      }
+    } else if (wasRunning && !isNowRunning) {
+      const commit = run.consumePendingCommit();
+      if (commit) {
         store.setActiveChat(commit.chatId);
         if (typeof window !== "undefined") {
           window.history.replaceState(null, "", `/runs/${commit.runId}`);
@@ -1379,7 +1396,13 @@ function ChatThreadInner() {
         : null);
     const restorableRunId = urlRunId ?? metadataRunId;
     if (!restorableRunId) {
-      currentRun.reset();
+      // If the run status hasn't reached a terminal state, or
+      // if a non-idle status exists, don't reset — a run may be
+      // in progress or just completing. Only reset on true idle
+      // root landing.
+      if (currentRun.status === "idle") {
+        currentRun.reset();
+      }
       return;
     }
 

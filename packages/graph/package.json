@@ -10,6 +10,7 @@
     "./director/usage": "./src/director/usage.ts",
     "./director/interrupt": "./src/director/interrupt.ts",
     "./director/model-factory": "./src/director/model-factory.ts",
+    "./compile": "./src/compile.ts",
     "./director/tools": "./src/director/tools.ts",
     "./director/checkpointer": "./src/director/checkpointer.ts",
     "./director/values": "./src/director/values.ts"

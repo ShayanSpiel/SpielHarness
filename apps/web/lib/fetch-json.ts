@@ -49,7 +49,17 @@ export type FetchPolicy = {
    * 408/429 still retry because they are explicitly transient.
    */
   skipRetryOn5xx?: boolean;
+  /** If true, skip in-flight request deduplication for this call. */
+  noDedup?: boolean;
 };
+
+const inFlight = new Map<string, Promise<unknown>>();
+
+function dedupKey(input: RequestInfo | URL, init: RequestInit): string {
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") return "";
+  return String(input);
+}
 
 /** Shared policy for idempotent client reads. Mutation retries require explicit idempotency and are intentionally excluded. */
 export async function fetchJsonWithRetry<T>(
@@ -62,6 +72,27 @@ export async function fetchJsonWithRetry<T>(
     throw new Error("fetchJsonWithRetry only supports idempotent reads");
   }
 
+  // Deduplicate in-flight GET requests to the same URL.
+  const key = policy.noDedup ? "" : dedupKey(input, init);
+  if (key && inFlight.has(key)) {
+    return inFlight.get(key) as Promise<T>;
+  }
+
+  const run = executeFetch<T>(input, init, policy);
+  if (key) {
+    inFlight.set(key, run);
+    void run.finally(() => {
+      if (inFlight.get(key) === run) inFlight.delete(key);
+    });
+  }
+  return run;
+}
+
+async function executeFetch<T>(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  policy: FetchPolicy = {}
+): Promise<T> {
   const attempts = policy.attempts ?? REQUEST_POLICY.attempts;
   const baseDelayMs = policy.baseDelayMs ?? REQUEST_POLICY.baseDelayMs;
   const skipRetryOn5xx = policy.skipRetryOn5xx ?? false;

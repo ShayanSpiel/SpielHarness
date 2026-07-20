@@ -184,6 +184,8 @@ export default function WorkflowsPage() {
       position: { x: pos.x, y: pos.y },
       skillIds: [],
       fileIds: [],
+      skillSlugs: [],
+      fileSlugs: [],
       inputContract: roleContractName(role, "inputs", "Role input"),
       outputContract: roleContractName(role, "outputs", "Role output")
     };
@@ -204,6 +206,8 @@ export default function WorkflowsPage() {
       position: { x: pos.x, y: pos.y },
       skillIds: [evalFile.id],
       fileIds: [],
+      skillSlugs: [],
+      fileSlugs: [],
       inputContract: "previous_output",
       outputContract: "Eval report",
       loopConfig: { ...evalFile.loopConfig, evalId: evalFile.id },

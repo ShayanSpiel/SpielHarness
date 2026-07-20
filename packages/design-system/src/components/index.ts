@@ -106,4 +106,6 @@ export { ThemeToggle } from "./theme-toggle";
 export { Tooltip, TooltipContent, TooltipProvider, TooltipRoot, TooltipTrigger } from "./tooltip";
 export { GoogleLogo, ProviderLogo } from "./provider-logos";
 
+export { ElectricBorderDefs } from "./electric-border-defs";
+
 export { toast } from "sonner";

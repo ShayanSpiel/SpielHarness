@@ -1,5 +1,5 @@
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
-import type { Artifact, ArtifactFile, ArtifactProject, ModelUsageUpdate, RunEvent } from "@spielos/core";
+import type { Artifact, ArtifactFile, ArtifactProject, ModelUsageUpdate, RunEvent, CompletionCriteria, CompletionEvidence } from "@spielos/core";
 import { textFromProviderContent } from "@spielos/providers";
 import type { FileData } from "deepagents";
 import type { RunYield } from "../index.ts";
@@ -374,4 +374,95 @@ export function artifactsFromDirectorFiles(
     });
   }
   return artifacts;
+}
+
+// ── Evidence collector & completion evaluator ────────────────
+
+export type CompletionVerdict = {
+  passed: boolean;
+  evidence: CompletionEvidence;
+  unmetCriteria: string[];
+};
+
+export function collectEvidence(
+  events: RunEvent[],
+  completedChildRunIds: string[],
+  artifactTitles: string[]
+): CompletionEvidence {
+  const toolCalls: Record<string, number> = {};
+  for (const ev of events) {
+    if (ev.type === "tool_call_started") {
+      const op = String(ev.payload?.operation ?? "");
+      if (op) toolCalls[op] = (toolCalls[op] ?? 0) + 1;
+    }
+  }
+
+  const evalResults: Record<string, { score: number; passed: boolean }> = {};
+  for (const ev of events) {
+    if (ev.type === "eval_score_updated" && ev.payload?.evalId) {
+      evalResults[String(ev.payload.evalId)] = {
+        score: Number(ev.payload.score ?? 0),
+        passed: ev.payload.passed === true,
+      };
+    }
+  }
+
+  const todosTotal = events.filter(
+    (ev) => ev.type === "tool_call_started" && ev.payload?.operation === "write_todos"
+  ).length;
+  const todosCompleted = events.filter(
+    (ev) => ev.type === "tool_call_result" && ev.payload?.operation === "write_todos"
+  ).length;
+
+  return {
+    artifacts: artifactTitles,
+    completedWorkflows: completedChildRunIds,
+    toolCalls,
+    evalResults,
+    todosCompleted,
+    todosTotal,
+  };
+}
+
+export function evaluateCompletion(
+  criteria: CompletionCriteria,
+  evidence: CompletionEvidence
+): CompletionVerdict {
+  const unmet: string[] = [];
+
+  // Required artifacts
+  for (const required of criteria.requiredArtifacts) {
+    const found = evidence.artifacts.some((a) => a.includes(required) || a === required);
+    if (!found) unmet.push(`Required artifact "${required}" was not created.`);
+  }
+
+  // Required workflows
+  for (const required of criteria.requiredWorkflows) {
+    const found = evidence.completedWorkflows.some((wf) => wf.includes(required));
+    if (!found) unmet.push(`Required workflow "${required}" was not completed.`);
+  }
+
+  // Required tool calls
+  for (const tc of criteria.requiredToolCalls) {
+    const count = evidence.toolCalls[tc.capability] ?? 0;
+    if (count < tc.minCount) {
+      unmet.push(`Required tool call "${tc.capability}" was called ${count} time(s), minimum ${tc.minCount}.`);
+    }
+  }
+
+  // Required eval thresholds
+  for (const evalReq of criteria.requiredEvalThresholds) {
+    const result = evidence.evalResults[evalReq.evalId];
+    if (!result) {
+      unmet.push(`Eval "${evalReq.evalId}" has no result.`);
+    } else if (result.score < evalReq.minScore) {
+      unmet.push(`Eval "${evalReq.evalId}" scored ${result.score}, minimum ${evalReq.minScore}.`);
+    }
+  }
+
+  return {
+    passed: unmet.length === 0,
+    evidence,
+    unmetCriteria: unmet,
+  };
 }

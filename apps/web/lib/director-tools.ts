@@ -7,31 +7,10 @@ import {
   recordUsage,
   type InstrumentedSql
 } from "@spielos/db";
-import type { WorkflowFile, EvalFile, Role, Skill, Model, ModelProvider, Connection, RunEvent, DirectorRuntimePolicy } from "@spielos/core";
+import { evalFileToSkill, resolveExplicitExecutor, type WorkflowFile, type EvalFile, type Role, type Skill, type Model, type ModelProvider, type Connection, type RunEvent, type DirectorRuntimePolicy } from "@spielos/core";
 import { searchAttachedFiles, streamRun, type AttachedFile, type RunCheckpoint, type RunRequest } from "@spielos/graph";
 import { registerRun } from "./run-registry.ts";
 import { generatedFileFolder } from "./workspace-data.ts";
-
-function evalFileToSkill(evalFile: EvalFile, orgId: string): Skill {
-  return {
-    id: `runtime.eval.skill.${evalFile.id}`,
-    orgId,
-    name: evalFile.name,
-    slug: (typeof evalFile.metadata?.slug === "string" ? evalFile.metadata.slug : "") || `eval.${evalFile.id}`,
-    description: evalFile.description,
-    kind: "eval",
-    status: "active",
-    auth: "none",
-    sideEffect: "none",
-    inputSchema: JSON.stringify({ input: "string" }),
-    outputSchema: JSON.stringify({ score: "number", passed: "boolean" }),
-    implementation: evalFile.description,
-    bindings: [],
-    evalRules: evalFile.rules,
-    overallThreshold: evalFile.overallThreshold,
-    metadata: { ...evalFile.metadata, evalId: evalFile.id, loopConfig: evalFile.loopConfig }
-  };
-}
 
 export type BuildDirectorToolContextArgs = {
   sql: InstrumentedSql;
@@ -455,8 +434,10 @@ function toolInputText(input: unknown): string {
 }
 
 function resolveExecutionRole(roles: Record<string, Role>, skillId: string): Role | null {
-  const active = Object.values(roles).filter((role) => role.status === "active");
-  return active.find((role) => role.skillIds.includes(skillId))
-    ?? active.find((role) => role.metadata?.systemRole === "orchestrator")
-    ?? null;
+  const result = resolveExplicitExecutor(roles, skillId);
+  if (!result) return null;
+  if (result.ambiguous) {
+    console.warn(`[director-tools] ambiguous executor for skill "${skillId}" — using first matching role "${result.role.name}". Define an explicit executor binding to resolve.`);
+  }
+  return result.role;
 }

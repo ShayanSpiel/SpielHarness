@@ -18,8 +18,13 @@ export type WorkspaceInfo = {
   role: string;
 };
 
+export type OrgInfo = WorkspaceInfo & {
+  org_slug: string;
+};
+
 type WorkspaceContextValue = {
   workspace: WorkspaceInfo | null;
+  orgs: OrgInfo[];
   switchWorkspace: (orgId: string) => Promise<void>;
 };
 
@@ -39,6 +44,7 @@ function setCookie(name: string, value: string, maxAge = 60 * 60 * 24 * 365) {
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
+  const [orgs, setOrgs] = useState<OrgInfo[]>([]);
   const showedName = useRef(false);
 
   useEffect(() => {
@@ -61,9 +67,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           }
           return res.ok ? res.json() : { orgs: [] };
         })
-        .then((data: { orgs?: WorkspaceInfo[] } | null) => {
+        .then((data: { orgs?: OrgInfo[] } | null) => {
           if (!data) return;
           const orgList = data.orgs ?? [];
+          setOrgs(orgList);
           const cookieId = getCookie("spielos.org");
           const current = orgList.find((o) => o.org_id === cookieId) ?? orgList[0];
           if (current) {
@@ -100,7 +107,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     window.location.href = window.location.pathname;
   }, [workspace?.org_id]);
 
-  const value = useMemo(() => ({ workspace, switchWorkspace }), [workspace, switchWorkspace]);
+  const value = useMemo(() => ({ workspace, orgs, switchWorkspace }), [workspace, orgs, switchWorkspace]);
 
   return createElement(WorkspaceContext.Provider, { value }, children);
 }

@@ -558,8 +558,14 @@ export async function POST(request: Request) {
                 }
               });
             } else if (item.kind === "done") {
-              const allowed: RunStatus[] = ["running", "waiting_human", "completed", "failed", "cancelled"];
-              terminalStatus = (allowed.includes(item.status as RunStatus) ? item.status : "completed") as RunStatus;
+              const incoming = item.status as RunStatus;
+              // The provider's `done` status describes whether the PRODUCER
+              // stream finished, not the overall run outcome. Accept only
+              // `waiting_human` (a genuine state) and `completed` (the
+              // default); never downgrade from `completed` to `failed` or
+              // `cancelled` based on the provider's self-report. Actual
+              // failures are caught by the outer try/catch.
+              if (incoming === "waiting_human") terminalStatus = "waiting_human";
               log.info("provider stream done", { terminalStatus, runId: run.id });
             }
           }
@@ -585,6 +591,10 @@ export async function POST(request: Request) {
           try { await flushAtomicCheckpoint(); } catch { /* logged inside */ }
         }
 
+        // Wrap remaining work so controller.close() always executes.
+        // Even if finalization, usage recording, or pub-sub throws, the
+        // client receives a clean stream-end signal instead of hanging.
+        try {
         const completedAt =
           terminalStatus === "completed" || terminalStatus === "failed" || terminalStatus === "cancelled"
             ? new Date().toISOString()
@@ -781,18 +791,23 @@ export async function POST(request: Request) {
         }
 
         // ── SSE frames ────────────────────────────────────────────────────
+        const tSse0 = performance.now();
         const finalMsgs = finalTurnResult?.messages ?? [];
         for (const msg of finalMsgs) {
           send({ kind: "message_persisted", chatId: chatId!, message: messageRowToChatMessage(msg), runId: run.id });
         }
+        log.info("step_after_complete__send_final_msgs", { ms: Math.round(performance.now() - tSse0) });
 
+        const tGetChat = performance.now();
         if (chatId) {
           const latestChat = await getChat(sql, org.orgId, chatId);
           if (latestChat) {
             send({ kind: "chat_created", chatId, chat: chatRowToChat(latestChat) });
           }
         }
+        log.info("step_after_complete__getChat", { ms: Math.round(performance.now() - tGetChat) });
 
+        const tRunState = performance.now();
         if (checkpoint) {
           send({
             kind: "run_state",
@@ -813,12 +828,21 @@ export async function POST(request: Request) {
           checkpointVersion,
           ts: new Date().toISOString()
         });
+        log.info("step_after_complete__publish_done", { ms: Math.round(performance.now() - tRunState) });
 
+        const tDone = performance.now();
         send({ kind: "done", runId: run.id, status: terminalStatus });
-        if (clientConnected) {
-          try { controller.close(); } catch { /* reader detached */ }
-        }
+        log.info("step_after_complete__send_done", { ms: Math.round(performance.now() - tDone) });
+      } catch (finalizeErr) {
+        console.error("[runs/execute] post-provider finalization failed:", finalizeErr);
+        terminalStatus = terminalStatus === "running" || !terminalStatus ? "failed" : terminalStatus;
+        send({ kind: "done", runId: run.id, status: terminalStatus });
+      } finally {
+        const tClose = performance.now();
+        try { controller.close(); } catch { /* reader detached */ }
+        log.info("step_after_complete__controller_close", { ms: Math.round(performance.now() - tClose) });
       }
+    }
     });
 
     return new Response(stream, {

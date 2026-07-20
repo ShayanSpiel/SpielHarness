@@ -71,10 +71,59 @@ Saved workflow edges are authoritative. The server rejects missing endpoints, cy
 
 Plain chat completes through the same run API without building a workflow graph. It receives a file-backed workspace instruction plus a generated catalog of available harness names, while unattached file bodies remain excluded.
 
+## File Lifecycle & Enablement
+
+Every file carries three lifecycle fields:
+
+- `lifecycle` — `"draft"`, `"published"`, or `"archived"`. Default is `"published"`.
+- `enabled` — boolean flag for runtime inclusion. Default is `true`.
+- `validation_diagnostics` — array of diagnostic objects produced by `validateHarnessEntities`. Populated by the snapshot compiler.
+
+The UI may filter by lifecycle or enabled state. The runtime excludes disabled files and publishes diagnostics on the WorkspaceSnapshot.
+
+## Workflow Topology
+
+Workflows carry an explicit `metadata.topology` field:
+
+- `"sequential"` — linear chain (default when no edges present and >1 node).
+- `"dag"` — directed acyclic graph with explicit edges. DAG-mode workflows must define at least one edge.
+
+`inferWorkflowTopology` and `validateWorkflowDAG` in `@spielos/core` enforce these rules at resolution time.
+
+## Executor Binding
+
+Skills may be explicitly bound to roles via `executorBindingSchema` (`{ skillId, roleId }`). `resolveExplicitExecutor` resolves in priority order:
+
+1. Explicit binding (if provided and role is active).
+2. Role `skillIds` matching.
+3. Ambient orchestrator (last resort).
+4. Null if no match.
+
+Ambiguous matches (multiple roles claiming the same skill) are returned with an `ambiguous: true` flag for warning emission.
+
+## Workspace Settings
+
+`workspace_settings` is the single source of truth for runtime configuration:
+
+| Field | Type | Default |
+|-------|------|---------|
+| `defaultExecutionMode` | `"director" \| "direct"` | `"director"` |
+| `defaultModelId` | `string (uuid) \| null` | `null` |
+| `contextLimits` | `{ maxInputTokens, maxOutputTokens }` | `{ 100000, 100000 }` |
+| `retrievalPolicy` | `{ knowledgeSearchLimit, memoryRetrievalLimit }` | `{ 10, 8 }` |
+| `directorRuntimePolicy` | `DirectorRuntimePolicy \| undefined` | undefined |
+| `approvalPolicy` | `{ requireApprovalForSideEffects }` | `{ true }` |
+
+If no settings row exists, `resolveExecution` falls back to legacy runtime policy files. `upsertWorkspaceSettings` performs an upsert keyed on `org_id`.
+
+## Director Verification
+
+Runs with completion criteria (`requiredToolCalls`, `requiredEvalThresholds`, `requiredArtifacts`, `requiredWorkflows`) are evaluated by `collectEvidence` and `evaluateCompletion` after the run finishes. Child run budgets (`child_run_budgets`) limit parallel child runs and capability call counts. Tool invocations (`tool_invocations`) deduplicate by `logical_key + input_hash` with concurrent-claim protection via unique constraint.
+
 ## Adding Resources
 
 - Provider or integration: add server-side configuration, expose redacted metadata in `/api/integrations`, and register provider adapters in `packages/providers`.
 - Skill: create a `harness_skill` file with `metadata.skill=true`, a `kind`, input/output schemas, side-effect metadata, and operation references where needed.
 - Role: create a `harness_role` file with prompt body and role metadata including `skillIds`, model id, input types, and output types.
 - Evaluation: create a `harness_eval` file with rubric metadata. It can be run directly or saved as an eval skill.
-- Workflow: create a `harness_workflow` file whose nodes reference role ids or stable role slugs. Keep workflow configuration small.
+- Workflow: create a `harness_workflow` file whose nodes reference role ids or stable role slugs. Keep workflow configuration small. Set `metadata.topology` explicitly for DAG-mode workflows.

@@ -2,10 +2,17 @@ import {
   DEFAULT_EXECUTION_MODE,
   directorRuntimePolicySchema,
   executionModeSchema,
-  parseEvalFile,
-  parseRoleFile,
-  parseSkillFile,
-  parseWorkflowFile,
+  fileTypeSchema,
+  fileStatusSchema,
+  connectionKindSchema,
+  connectionStatusSchema,
+  connectionOperationSchema,
+  fileRecordSchema,
+  validateHarnessEntities,
+  evalFileToSkill,
+  inferWorkflowTopology,
+  validateWorkflowDAG,
+  resolveExplicitExecutor,
   type ExecutionMode,
   type DirectorRuntimePolicy,
   type Model,
@@ -21,6 +28,7 @@ import {
   type WorkflowFile,
   type WorkflowNode
 } from "@spielos/core";
+import { stableUuid } from "@spielos/core/node";
 import type { OrgContext } from "./server";
 import { HttpError } from "./server";
 import {
@@ -28,6 +36,7 @@ import {
   createFile,
   getFile,
   getOrchestratorPrompt,
+  getWorkspaceSettings,
   listConnections,
   listHarnessFiles,
   updateFileIfVersion
@@ -36,32 +45,30 @@ import type { Connection, FileRecord } from "@spielos/core";
 import type { RunRequest, AttachedFile } from "@spielos/graph";
 import type { ConversationCompaction } from "@spielos/providers";
 import type { FileRow } from "@spielos/db";
-import { createHash } from "node:crypto";
 import { listModelsWithEnvironmentDefaults } from "./default-models";
 
-function stableUuid(value: string): string {
-  const chars = createHash("sha256").update(value).digest("hex").slice(0, 32).split("");
-  chars[12] = "5";
-  chars[16] = ((Number.parseInt(chars[16], 16) & 0x3) | 0x8).toString(16);
-  const hex = chars.join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
 function fileRowToRecord(row: FileRow): FileRecord {
-  return {
+  const fileType = fileTypeSchema.parse(row.file_type);
+  const status = fileStatusSchema.parse(row.status);
+  const toStr = (v: unknown): string =>
+    v instanceof Date ? v.toISOString() : String(v ?? "");
+  return fileRecordSchema.parse({
     id: row.id,
     orgId: row.org_id,
     folderId: row.folder_id,
-    fileType: row.file_type as FileRecord["fileType"],
-    status: row.status as FileRecord["status"],
+    fileType,
+    status,
+    lifecycle: row.lifecycle ?? "published",
+    enabled: row.enabled ?? true,
+    validationDiagnostics: row.validation_diagnostics ?? [],
     title: row.title,
     body: row.body,
     contentFormat: row.content_format,
     metadata: row.metadata,
     currentVersion: row.current_version,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+    createdAt: toStr(row.created_at),
+    updatedAt: toStr(row.updated_at),
+  });
 }
 
 // ── API request body ──────────────────────────────────────────
@@ -200,22 +207,16 @@ export async function resolveExecution(
   const fileReferenceIds = new Map<string, string>();
 
   if (!isPlainChat) {
-    roles = indexBy(
-      files.filter((f) => f.file_type === "harness_role").map(toRecord).map(parseRoleFile),
-      (r) => r.id
-    );
-    skills = indexBy(
-      files.filter((f) => f.file_type === "harness_skill").map(toRecord).map(parseSkillFile),
-      (s) => s.id
-    );
-    evals = indexBy(
-      files.filter((f) => f.file_type === "harness_eval").map(toRecord).map(parseEvalFile),
-      (e) => e.id
-    );
-    workflows = indexBy(
-      files.filter((f) => f.file_type === "harness_workflow" || f.file_type === "harness_workstream").map(toRecord).map(parseWorkflowFile),
-      (w) => w.id
-    );
+    const validated = validateHarnessEntities(files.map(toRecord));
+
+    for (const d of validated.diagnostics) {
+      console.warn(`[execution-service] entity diagnostic [${d.entityType}] ${d.entityId}: ${d.field} — ${d.message}`);
+    }
+
+    roles = validated.roles;
+    skills = validated.skills;
+    evals = validated.evals;
+    workflows = validated.workflows;
 
     for (const role of Object.values(roles)) {
       const slug = role.metadata?.slug;
@@ -293,6 +294,8 @@ export async function resolveExecution(
       roleId: role.id,
       skillIds,
       fileIds: contextFileIds,
+      skillSlugs: [],
+      fileSlugs: [],
       inputContract: role.inputContract?.name ?? "any",
       outputContract: role.outputContract?.name ?? "any",
       position: { x: 0, y: 0 }
@@ -380,37 +383,50 @@ export async function resolveExecution(
       return file.metadata?.workspaceConfig === true || orchestratorContextSlugs.has(slug);
     })
     .map(toAttached);
+  // Resolve settings from workspace_settings table (Phase F authority)
+  const settingsRow = executionMode === "director" ? await getWorkspaceSettings(org.sql, org.orgId) : null;
+  let settingsPolicy: DirectorRuntimePolicy | null = null;
+  if (settingsRow?.director_runtime_policy && typeof settingsRow.director_runtime_policy === "object" && Object.keys(settingsRow.director_runtime_policy).length > 0) {
+    const parsedPolicy = directorRuntimePolicySchema.safeParse(settingsRow.director_runtime_policy);
+    if (parsedPolicy.success) settingsPolicy = parsedPolicy.data;
+  }
+
   const runtimePolicyFile = files.find((file) =>
     file.status === "active" && file.metadata?.runtimePolicy === true
   );
   let directorRuntimePolicy: DirectorRuntimePolicy | null = null;
   if (executionMode === "director") {
-    if (!runtimePolicyFile) {
-      throw new HttpError(409, "Director requires an active file-backed runtime policy.");
+    // Prefer workspace_settings, fall back to legacy file
+    if (settingsPolicy) {
+      directorRuntimePolicy = settingsPolicy;
+    } else if (runtimePolicyFile) {
+      let parsedBody: unknown;
+      try {
+        parsedBody = JSON.parse(runtimePolicyFile.body);
+      } catch {
+        throw new HttpError(409, `Director runtime policy "${runtimePolicyFile.title}" is not valid JSON.`);
+      }
+      const parsedPolicy = directorRuntimePolicySchema.safeParse(parsedBody);
+      if (!parsedPolicy.success) {
+        throw new HttpError(409, `Director runtime policy "${runtimePolicyFile.title}" is invalid: ${parsedPolicy.error.issues[0]?.message ?? "unknown error"}`);
+      }
+      directorRuntimePolicy = parsedPolicy.data;
+    } else {
+      throw new HttpError(409, "Director requires an active runtime policy. Configure workspace settings or enable a runtime policy file.");
     }
-    let parsedBody: unknown;
-    try {
-      parsedBody = JSON.parse(runtimePolicyFile.body);
-    } catch {
-      throw new HttpError(409, `Director runtime policy "${runtimePolicyFile.title}" is not valid JSON.`);
-    }
-    const parsedPolicy = directorRuntimePolicySchema.safeParse(parsedBody);
-    if (!parsedPolicy.success) {
-      throw new HttpError(409, `Director runtime policy "${runtimePolicyFile.title}" is invalid: ${parsedPolicy.error.issues[0]?.message ?? "unknown error"}`);
-    }
-    directorRuntimePolicy = parsedPolicy.data;
   }
   const memories: AttachedFile[] = retrieveMemories(files, body.prompt, targetType, targetId, org.userId).map(toAttached);
   const directorSearchFiles: AttachedFile[] = executionMode === "director"
     ? files.filter((file) => file.status !== "deleted").map(toAttached)
     : [];
 
-  // Resolve model — prefer explicit user choice, then the orchestrator
-  // role's modelId (so the Director has its own model), then fallback.
+  // Resolve model — prefer explicit user choice, then workspace settings default,
+  // then orchestrator role's modelId, then fallback.
+  const settingsDefaultModelId = settingsRow?.default_model_id ?? null;
   const orchestratorModelId = Object.values(roles).find(
     (r) => r.metadata?.systemRole === "orchestrator"
   )?.modelId ?? null;
-  const preferredModelId = body.modelId ?? orchestratorModelId ?? (workflow
+  const preferredModelId = body.modelId ?? settingsDefaultModelId ?? orchestratorModelId ?? (workflow
     ? Object.values(roles).find((r) => workflow!.nodes.some((n) => n.roleId === r.id))?.modelId ?? null
     : singleNode?.role?.modelId ?? null);
   let model = resolveModel(modelRows, preferredModelId);
@@ -443,23 +459,35 @@ export async function resolveExecution(
     for (const c of connections) {
       const exposesSkillOperation = (c.operations ?? []).some((operation) => operationIds.has(String(operation.id)));
       if (connectionIds.has(c.id) || exposesSkillOperation) {
+        const kind = connectionKindSchema.parse(c.kind);
+        const status = connectionStatusSchema.parse(c.status);
         connectionsById[c.id] = {
           id: c.id,
           orgId: c.org_id,
           name: c.name,
-          kind: c.kind as Connection["kind"],
-          status: c.status as Connection["status"],
+          kind,
+          status,
           baseUrl: c.base_url,
           secretEnvKey: c.secret_env_key,
           config: c.config ?? {},
-          operations: (c.operations ?? []).map((o) => ({
-            id: String(o.id),
-            label: o.label as string | undefined,
-            effect: (o.effect as "read" | "write" | "send" | "destructive" | undefined) ?? "read",
-            method: o.method as string | undefined,
-            path: o.path as string | undefined,
-            inputParam: o.inputParam as string | undefined
-          })),
+          operations: (c.operations ?? []).map((o) => {
+            const parsed = connectionOperationSchema.safeParse({
+              id: String(o.id),
+              label: o.label ?? undefined,
+              effect: o.effect ?? "read",
+              method: o.method ?? undefined,
+              path: o.path ?? undefined,
+              inputParam: o.inputParam ?? undefined,
+            });
+            return parsed.success ? parsed.data : {
+              id: String(o.id),
+              label: o.label as string | undefined,
+              effect: "read" as const,
+              method: o.method as string | undefined,
+              path: o.path as string | undefined,
+              inputParam: o.inputParam as string | undefined,
+            };
+          }),
           enabled: c.enabled
         };
       }
@@ -694,15 +722,18 @@ function normalizeWorkflow(
   fileReferenceIds: Map<string, string>
 ): WorkflowFile {
   if (wf.nodes.length === 0) throw new HttpError(400, `Workflow "${wf.name}" has no steps.`);
+  const topology = inferWorkflowTopology(wf);
   const seenNodeIds = new Set<string>();
   const nodes: WorkflowNode[] = wf.nodes.map((node, i) => {
-    let roleId = node.roleId;
+    let roleId = node.roleId ?? node.roleSlug ?? "";
     if (!roles[roleId]) {
       const resolved = roleBySlug.get(roleId);
       if (resolved) roleId = resolved;
     }
-    const skillIds = node.skillIds.map((id) => skillBySlug.get(id) ?? id);
-    // Ensure role has a valid skill list (or fall back to role's default)
+    const skillIds = [
+      ...node.skillIds.map((id) => skillBySlug.get(id) ?? id),
+      ...node.skillSlugs.map((slug) => skillBySlug.get(slug) ?? slug),
+    ];
     let role: Role | null = roles[roleId] ?? null;
     let effectiveSkillIds = skillIds;
     if (effectiveSkillIds.length === 0 && role) {
@@ -732,7 +763,7 @@ function normalizeWorkflow(
     const roleContextSlugs = role && Array.isArray(role.metadata?.contextSlugs)
       ? role.metadata.contextSlugs.filter((value): value is string => typeof value === "string")
       : [];
-    const fileIds = dedupe([...roleContextSlugs, ...n.fileIds])
+    const fileIds = dedupe([...roleContextSlugs, ...n.fileIds, ...n.fileSlugs ?? []])
       .map((idOrSlug) => fileReferenceIds.get(idOrSlug) ?? idOrSlug);
     const nodeId = n.id || `node-${i + 1}`;
     if (seenNodeIds.has(nodeId)) throw new HttpError(400, `Workflow contains duplicate node id "${nodeId}".`);
@@ -746,16 +777,14 @@ function normalizeWorkflow(
       position: n.position ?? { x: 120 + i * 260, y: 160 }
     };
   });
-  // Build edges if missing — link consecutive nodes
-  let edges = wf.edges;
-  if (edges.length === 0 && nodes.length > 1) {
-    edges = nodes.slice(0, -1).map((node, i) => ({
-      id: `edge-${node.id}-${nodes[i + 1].id}`,
-      source: node.id,
-      target: nodes[i + 1].id
-    }));
+
+  // Topology enforcement
+  const edges = wf.edges;
+  if (topology === "dag" && edges.length === 0 && nodes.length > 1) {
+    throw new HttpError(400, `Workflow "${wf.name}" has no edges but topology is "dag". Add explicit edges or set topology to "sequential".`);
   }
-  // Validate edges
+
+  // Validate edges exist for all targets
   for (const edge of edges) {
     if (!nodes.find((n) => n.id === edge.source)) {
       throw new HttpError(400, `Workflow edge "${edge.id}" references missing source.`);
@@ -764,64 +793,17 @@ function normalizeWorkflow(
       throw new HttpError(400, `Workflow edge "${edge.id}" references missing target.`);
     }
   }
-  // Verify no cycles using simple DFS
-  if (hasCycle(nodes, edges)) {
-    throw new HttpError(400, "Workflow contains a cycle.");
-  }
-  return { ...wf, nodes, edges };
-}
 
-function evalFileToSkill(evalFile: EvalFile, orgId: string): Skill {
-  return {
-    id: `runtime.eval.skill.${evalFile.id}`,
-    orgId,
-    name: evalFile.name,
-    slug: (typeof evalFile.metadata?.slug === "string" ? evalFile.metadata.slug : "") || `eval.${evalFile.id}`,
-    description: evalFile.description,
-    kind: "eval",
-    status: "active",
-    auth: "none",
-    sideEffect: "none",
-    inputSchema: JSON.stringify({ input: "string" }),
-    outputSchema: JSON.stringify({ score: "number", passed: "boolean" }),
-    implementation: evalFile.description,
-    bindings: [],
-    evalRules: evalFile.rules,
-    overallThreshold: evalFile.overallThreshold,
-    metadata: { ...evalFile.metadata, evalId: evalFile.id, loopConfig: evalFile.loopConfig }
-  };
-}
+  // Full DAG validation
+  const dagIssues = validateWorkflowDAG({ ...wf, nodes, edges });
+  if (dagIssues.length > 0) {
+    throw new HttpError(400, `Workflow "${wf.name}" has validation errors: ${dagIssues.map((i) => i.message).join("; ")}`);
+  }
 
-function hasCycle(nodes: WorkflowNode[], edges: WorkflowFile["edges"]): boolean {
-  const adj = new Map<string, string[]>();
-  for (const n of nodes) adj.set(n.id, []);
-  for (const e of edges) adj.get(e.source)?.push(e.target);
-  const visited = new Set<string>();
-  const stack = new Set<string>();
-  function dfs(id: string): boolean {
-    if (stack.has(id)) return true;
-    if (visited.has(id)) return false;
-    visited.add(id);
-    stack.add(id);
-    for (const next of adj.get(id) ?? []) {
-      if (dfs(next)) return true;
-    }
-    stack.delete(id);
-    return false;
-  }
-  for (const n of nodes) {
-    if (dfs(n.id)) return true;
-  }
-  return false;
+  return { ...wf, nodes, edges, topology };
 }
 
 // ── Helpers ───────────────────────────────────────────────────
-function indexBy<T>(items: T[], key: (item: T) => string): Record<string, T> {
-  const out: Record<string, T> = {};
-  for (const item of items) out[key(item)] = out[key(item)] ?? item;
-  return out;
-}
-
 function normalizeSuggestedHarnessRefs(input: SuggestedHarnessRef[] | undefined): SuggestedHarnessRef[] {
   if (!Array.isArray(input)) return [];
   const seen = new Set<string>();
@@ -846,10 +828,12 @@ function normalizeSuggestedHarnessRefs(input: SuggestedHarnessRef[] | undefined)
 }
 
 function resolveDirectExecutorRole(roles: Record<string, Role>, skillId: string): Role | null {
-  const active = Object.values(roles).filter((role) => role.status === "active");
-  return active.find((role) => role.skillIds.includes(skillId))
-    ?? active.find((role) => role.metadata?.systemRole === "orchestrator")
-    ?? null;
+  const result = resolveExplicitExecutor(roles, skillId);
+  if (!result) return null;
+  if (result.ambiguous) {
+    console.warn(`[execution-service] ambiguous executor for skill "${skillId}" — using first matching role "${result.role.name}". Define an explicit executor binding to resolve.`);
+  }
+  return result.role;
 }
 
 function dedupe<T>(items: T[]): T[] {

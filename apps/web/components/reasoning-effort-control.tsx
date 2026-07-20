@@ -1,7 +1,6 @@
 "use client";
 
-import { Icon } from "@spielos/design-system/components";
-import { Button, Popover, PopoverContent, PopoverTrigger, cn } from "@spielos/design-system";
+import { Button, Icon, Popover, PopoverContent, PopoverTrigger, cn } from "@spielos/design-system";
 import type { ModelCapabilities } from "@spielos/core";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import "./reasoning-effort-control.css";
@@ -82,7 +81,7 @@ export function ReasoningEffortControl({
           <span>{active.label}</span>
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-80" side="top">
+      <PopoverContent align="start" className="reasoning-content w-80" side="top" data-reasoning-level={localValue}>
         <div className="flex items-center gap-2">
           <span className={cn("flex h-7 w-7 items-center justify-center rounded-md bg-panel", maximum ? "text-info" : "text-muted-foreground")}>
             <Icon name={maximum ? "zap" : "brain"} size={13} />
@@ -124,13 +123,7 @@ export function ReasoningEffortControl({
             type="range"
             value={activeIndex}
           />
-          {maximum ? (
-            <span aria-hidden className="reasoning-slider__electricity">
-              <Icon className="reasoning-slider__spark reasoning-slider__spark--one" name="zap" size={10} />
-              <Icon className="reasoning-slider__spark reasoning-slider__spark--two" name="zap" size={9} />
-              <Icon className="reasoning-slider__spark reasoning-slider__spark--three" name="zap" size={8} />
-            </span>
-          ) : null}
+
         </div>
 
         <div className="mt-2 grid grid-cols-6 gap-1">

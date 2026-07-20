@@ -1,0 +1,1 @@
+../../packages/db/migrations/0025_lifecycle_enablement.sql

@@ -11,6 +11,7 @@ import {
   useState,
   type ReactNode
 } from "react";
+import { usePathname } from "next/navigation";
 import { messageRowToChatMessage, upsertMessage as mergeMessage, mergeMessages, reconcileChats, type ChatMessage as DbChatMessage, type Chat as CoreChat } from "@spielos/core";
 import { activeRunStreams } from "./chat-adapter";
 import { toast } from "@spielos/design-system";
@@ -61,6 +62,7 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
   const initialLoaded = useRef(false);
   const loadErrorShown = useRef(false);
   const reloadRef = useRef<(() => Promise<void>) | null>(null);
+  const mountTime = useRef(Date.now());
   const chatVersionsRef = useRef<Map<string, number>>(new Map());
   const reloadSeqRef = useRef(0);
   const chatsRef = useRef<Chat[]>([]);
@@ -73,6 +75,10 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     .find((row) => row.startsWith("spielos.org="))
     ?.split("=")[1] ?? null;
   const realtimeListener = useCallback((event: DomainEvent) => {
+    // The relay sends `context.invalidated` as a greeting on every new
+    // SSE connection. Skip it during the first 3s — the data was just
+    // loaded by the mount effect.
+    if (event.type === "context.invalidated" && Date.now() - mountTime.current < 3_000) return;
     if (event.type === "run.event.appended" || event.type === "run.usage.updated" || event.type === "run.status.changed") {
       window.dispatchEvent(new CustomEvent("spielos:run-update", { detail: event }));
     }
@@ -195,6 +201,15 @@ export function ChatStoreProvider({ children }: { children: ReactNode }) {
     window.addEventListener("spielos:workspace-reload", handler);
     return () => window.removeEventListener("spielos:workspace-reload", handler);
   }, [reload]);
+
+  const pathname = usePathname();
+
+  useEffect(() => {
+    if (pathname === "/") {
+      setActiveChatId(null);
+      window.localStorage.removeItem(ACTIVE_CHAT_STORAGE_KEY);
+    }
+  }, [pathname]);
 
   const createChat = useCallback(
     async (title = "New chat", activate = true) => {

@@ -1,35 +1,7 @@
 @keyframes spiel-reasoning-surge {
-  from {
-    opacity: 0;
-    transform: scaleX(0);
-  }
-  55% {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-    transform: scaleX(1);
-  }
-}
-
-@keyframes spiel-reasoning-spark-one {
-  0%, 100% { opacity: 0.2; transform: translate(-0.65rem, -0.8rem) rotate(-18deg) scale(0.7); }
-  45% { opacity: 1; transform: translate(-0.85rem, -1rem) rotate(-32deg) scale(1.1); }
-}
-
-@keyframes spiel-reasoning-spark-two {
-  0%, 100% { opacity: 0.3; transform: translate(0.45rem, -0.65rem) rotate(24deg) scale(0.75); }
-  60% { opacity: 1; transform: translate(0.75rem, -0.9rem) rotate(38deg) scale(1.05); }
-}
-
-@keyframes spiel-reasoning-spark-three {
-  0%, 100% { opacity: 0.15; transform: translate(0.65rem, 0.45rem) rotate(155deg) scale(0.7); }
-  35% { opacity: 0.9; transform: translate(0.85rem, 0.65rem) rotate(175deg) scale(1); }
-}
-
-@keyframes spiel-reasoning-electric-ring {
-  0% { opacity: 0.9; transform: translate(-50%, -50%) scale(0.55); }
-  70%, 100% { opacity: 0; transform: translate(-50%, -50%) scale(1.8); }
+  from { opacity: 0; transform: scaleX(0); }
+  55% { opacity: 1; }
+  to { opacity: 0; transform: scaleX(1); }
 }
 
 .reasoning-slider {
@@ -76,9 +48,7 @@
   background: transparent;
 }
 
-.reasoning-slider__input:active {
-  cursor: grabbing;
-}
+.reasoning-slider__input:active { cursor: grabbing; }
 
 .reasoning-slider__input::-webkit-slider-runnable-track {
   height: 0.35rem;
@@ -129,9 +99,7 @@
   transform: scale(1.16);
 }
 
-.reasoning-slider__input:focus-visible {
-  outline: none;
-}
+.reasoning-slider__input:focus-visible { outline: none; }
 
 .reasoning-slider__input:focus-visible::-webkit-slider-thumb {
   outline: 0.2rem solid var(--focus-ring);
@@ -143,63 +111,107 @@
   outline-offset: 0.12rem;
 }
 
-.reasoning-slider__electricity {
-  position: absolute;
-  z-index: 3;
-  inset-inline-start: var(--reasoning-fill);
-  top: 50%;
-  width: 0;
-  height: 0;
-  pointer-events: none;
-  color: var(--info);
-}
-
-.reasoning-slider[data-max="true"] .reasoning-slider__electricity {
-  inset-inline-start: auto;
-  inset-inline-end: 0.55rem;
-}
-
-.reasoning-slider__electricity::before,
-.reasoning-slider__electricity::after {
-  position: absolute;
-  inset-inline-start: 0;
-  top: 0;
-  width: 1rem;
-  height: 1rem;
-  border: 0.08rem solid var(--info);
-  border-radius: var(--radius-pill);
-  content: "";
-  animation: spiel-reasoning-electric-ring var(--duration-slow) var(--ease) infinite;
-}
-
-.reasoning-slider__electricity::after {
-  animation-delay: calc(var(--duration-slow) / -2);
-}
-
-.reasoning-slider__spark {
-  position: absolute;
-  inset-inline-start: 0;
-  top: 0;
-}
-
-.reasoning-slider__spark--one { animation: spiel-reasoning-spark-one var(--duration-slow) var(--ease) infinite; }
-.reasoning-slider__spark--two { animation: spiel-reasoning-spark-two var(--duration) var(--ease) infinite alternate; }
-.reasoning-slider__spark--three { animation: spiel-reasoning-spark-three var(--duration-slow) var(--ease) infinite reverse; }
-
 .reasoning-trigger[data-max="true"] {
   color: var(--info);
 }
 
-.reasoning-trigger[data-running="true"][data-max="true"] svg {
-  animation: spiel-reasoning-spark-two var(--duration-slow) var(--ease) infinite alternate;
+/*
+ * Electric border — applied to the popover content based on reasoning effort.
+ * The ::before layer carries the SVG displacement filter for the chaotic edge.
+ * The popover content itself is NOT filtered — only the border pseudo-element.
+ * Intensity scales: high → subtle, xhigh → medium, max → intense.
+ */
+
+/* --- high --- */
+.reasoning-content[data-reasoning-level="high"] {
+  position: relative;
+  border-color: transparent;
+}
+.reasoning-content[data-reasoning-level="high"]::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  z-index: -1;
+  border-radius: inherit;
+  border: 1px solid var(--accent);
+  filter: url(#electric-high);
+  pointer-events: none;
+}
+.reasoning-content[data-reasoning-level="high"]::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  z-index: -2;
+  border-radius: inherit;
+  border: 1px solid color-mix(in oklab, var(--accent) 25%, transparent);
+  filter: blur(3px);
+  animation: electric-glow-pulse 4s var(--ease) infinite;
+  pointer-events: none;
+}
+
+/* --- xhigh --- */
+.reasoning-content[data-reasoning-level="xhigh"] {
+  position: relative;
+  border-color: transparent;
+}
+.reasoning-content[data-reasoning-level="xhigh"]::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  z-index: -1;
+  border-radius: inherit;
+  border: 1px solid var(--accent);
+  filter: url(#electric-xhigh);
+  pointer-events: none;
+}
+.reasoning-content[data-reasoning-level="xhigh"]::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  z-index: -2;
+  border-radius: inherit;
+  border: 1px solid color-mix(in oklab, var(--accent) 35%, transparent);
+  filter: blur(5px);
+  animation: electric-glow-pulse 3s var(--ease) infinite;
+  pointer-events: none;
+}
+
+/* --- max --- */
+.reasoning-content[data-reasoning-level="max"] {
+  position: relative;
+  border-color: transparent;
+}
+.reasoning-content[data-reasoning-level="max"]::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  z-index: -1;
+  border-radius: inherit;
+  border: 1px solid var(--accent);
+  filter: url(#electric-max);
+  pointer-events: none;
+}
+.reasoning-content[data-reasoning-level="max"]::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  z-index: -2;
+  border-radius: inherit;
+  border: 1px solid color-mix(in oklab, var(--accent) 50%, transparent);
+  filter: blur(7px);
+  animation: electric-glow-pulse 2s var(--ease) infinite;
+  pointer-events: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .reasoning-slider__surge,
-  .reasoning-slider__spark,
-  .reasoning-slider__electricity::before,
-  .reasoning-slider__electricity::after,
-  .reasoning-trigger svg {
+  .reasoning-slider__surge {
     animation: none !important;
+  }
+  .reasoning-content[data-reasoning-level]::before,
+  .reasoning-content[data-reasoning-level]::after {
+    animation: none !important;
+  }
+  .reasoning-content[data-reasoning-level]::before {
+    filter: none !important;
   }
 }

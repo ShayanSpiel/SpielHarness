@@ -25,6 +25,7 @@ import {
   DockRight, DockRightAlt,
   ChessKnight, Strategy, WorkflowAlt, Cognition, ReadingGlass,
   Task, Psychology, Head, Key, Community, Intellect,
+  Building, Wallet, Palette, ChartTrend,
   type BoxIconProps,
 } from "@boxicons/react";
 
@@ -55,6 +56,7 @@ const ICON_COMPONENTS: Record<string, React.ComponentType<BoxIconProps>> = {
   DockRight, DockRightAlt,
   ChessKnight, Strategy, WorkflowAlt, Cognition, ReadingGlass,
   Task, Psychology, Head, Key, Community, Intellect,
+  Building, Wallet, Palette, ChartTrend,
 };
 
 function toBoxiconSize(size?: number | string): "xs" | "sm" | "base" | "md" | "lg" | "xl" {

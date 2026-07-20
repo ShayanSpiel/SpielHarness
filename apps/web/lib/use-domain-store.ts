@@ -218,6 +218,8 @@ function parseWorkflow(row: FileRecord): CoreWorkflowFile {
       humanQuestions: n.humanQuestions as CoreWorkflowFile["nodes"][number]["humanQuestions"],
       skillIds: (n.skillIds as string[]) ?? (n.skillSlugs as string[]) ?? [],
       fileIds: (n.fileIds as string[]) ?? (n.fileSlugs as string[]) ?? [],
+      skillSlugs: [],
+      fileSlugs: [],
       inputContract: String(n.inputContract ?? n.input ?? "any"),
       outputContract: String(n.outputContract ?? n.output ?? "any"),
       position: (n.position as { x: number; y: number }) ?? { x: 120 + i * 260, y: 160 },
@@ -297,6 +299,7 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
   const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const loadErrorShown = useRef(false);
   const reloadRef = useRef<(() => Promise<void>) | null>(null);
+  const mountTime = useRef(Date.now());
 
   // Phase 4: subscribe to org-scoped domain events. File mutations
   // published by the server trigger a fresh `reload()` so the UI sees
@@ -308,6 +311,10 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
     .find((row) => row.startsWith("spielos.org="))
     ?.split("=")[1] ?? null;
   const realtimeListener = useCallback((event: DomainEvent) => {
+    // The relay sends `context.invalidated` as a greeting on every new
+    // SSE connection. Skip it during the first 3s — the data was just
+    // loaded by the mount effect.
+    if (event.type === "context.invalidated" && Date.now() - mountTime.current < 3_000) return;
     if (
       event.type === "file.created" ||
       event.type === "file.updated" ||
@@ -701,7 +708,10 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-      if (!res.ok) throw new Error("Failed to add model");
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text ? `Failed to add model: ${text}` : "Failed to add model");
+      }
       const data = (await res.json()) as { model: { id: string; orgId: string; name: string; provider: string; model: string; baseUrl: string | null; secretEnvKey: string | null; config: Record<string, unknown>; enabled: boolean } };
       const parsed = parseModel(data.model);
       setModels((current) => [...current, parsed]);

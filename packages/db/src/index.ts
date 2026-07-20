@@ -257,6 +257,9 @@ export type FileRow = {
   folder_id: string | null;
   file_type: string;
   status: string;
+  lifecycle: string;
+  enabled: boolean;
+  validation_diagnostics: Record<string, unknown>[];
   title: string;
   body: string;
   content_format: string;
@@ -268,8 +271,10 @@ export type FileRow = {
 
 export async function listHarnessFiles(sql: Sql, orgId: string): Promise<FileRow[]> {
   return sql<FileRow[]>`
-    select id, org_id, folder_id, file_type, status, title, body, content_format,
-           metadata, current_version, created_at, updated_at
+    select id, org_id, folder_id, file_type, status,
+           lifecycle, enabled, validation_diagnostics,
+           title, body, content_format, metadata,
+           current_version, created_at, updated_at
     from files
     where org_id = ${orgId}
       and deleted_at is null
@@ -285,8 +290,9 @@ export async function listHarnessFiles(sql: Sql, orgId: string): Promise<FileRow
 
 export async function getOrchestratorPrompt(sql: Sql, orgId: string): Promise<FileRow | null> {
   const rows = await sql<FileRow[]>`
-    select id, org_id, folder_id, file_type, status, title, body, content_format,
-           metadata, current_version, created_at, updated_at
+    select id, org_id, folder_id, file_type, status,
+           lifecycle, enabled, validation_diagnostics,
+           title, body, content_format, metadata, current_version, created_at, updated_at
     from files
     where org_id = ${orgId}
       and deleted_at is null
@@ -300,8 +306,9 @@ export async function getOrchestratorPrompt(sql: Sql, orgId: string): Promise<Fi
 
 export async function getFile(sql: Sql, orgId: string, id: string): Promise<FileRow | null> {
   const rows = await sql<FileRow[]>`
-    select id, org_id, folder_id, file_type, status, title, body, content_format,
-           metadata, current_version, created_at, updated_at
+    select id, org_id, folder_id, file_type, status,
+           lifecycle, enabled, validation_diagnostics,
+           title, body, content_format, metadata, current_version, created_at, updated_at
     from files
     where org_id = ${orgId} and id = ${id} and deleted_at is null
     limit 1
@@ -312,8 +319,9 @@ export async function getFile(sql: Sql, orgId: string, id: string): Promise<File
 export async function getFilesByIds(sql: Sql, orgId: string, ids: string[]): Promise<FileRow[]> {
   if (ids.length === 0) return [];
   return sql<FileRow[]>`
-    select id, org_id, folder_id, file_type, status, title, body, content_format,
-           metadata, current_version, created_at, updated_at
+    select id, org_id, folder_id, file_type, status,
+           lifecycle, enabled, validation_diagnostics,
+           title, body, content_format, metadata, current_version, created_at, updated_at
     from files
     where org_id = ${orgId} and id = any(${ids}) and deleted_at is null
   `;
@@ -327,8 +335,9 @@ export async function getFilesBySlugs(
   const out = new Map<string, FileRow>();
   if (refs.length === 0) return out;
   const rows = await sql<FileRow[]>`
-    select id, org_id, folder_id, file_type, status, title, body, content_format,
-           metadata, current_version, created_at, updated_at
+    select id, org_id, folder_id, file_type, status,
+           lifecycle, enabled, validation_diagnostics,
+           title, body, content_format, metadata, current_version, created_at, updated_at
     from files
     where org_id = ${orgId}
       and deleted_at is null
@@ -371,8 +380,10 @@ export async function createFile(
       ${toJsonb(sql, input.metadata ?? {})}
     )
     on conflict (id) do nothing
-    returning id, org_id, folder_id, file_type, status, title, body, content_format,
-              metadata, current_version, created_at, updated_at
+    returning id, org_id, folder_id, file_type, status,
+              lifecycle, enabled, validation_diagnostics,
+              title, body, content_format, metadata,
+              current_version, created_at, updated_at
   `;
   if (rows[0]) return rows[0];
   if (input.id) {
@@ -407,8 +418,10 @@ export async function updateFile(
         folder_id = ${patch.folderId === undefined ? sql`folder_id` : patch.folderId},
         metadata = ${patch.metadata === undefined ? sql`metadata` : toJsonb(sql, patch.metadata)}
     where org_id = ${orgId} and id = ${id} and deleted_at is null
-    returning id, org_id, folder_id, file_type, status, title, body, content_format,
-              metadata, current_version, created_at, updated_at
+    returning id, org_id, folder_id, file_type, status,
+              lifecycle, enabled, validation_diagnostics,
+              title, body, content_format, metadata,
+              current_version, created_at, updated_at
   `;
   if (rows.length === 0) throw new Error("File not found or already deleted");
   return rows[0];
@@ -433,8 +446,10 @@ export async function updateFileIfVersion(
       and id = ${id}
       and current_version = ${expectedVersion}
       and deleted_at is null
-    returning id, org_id, folder_id, file_type, status, title, body, content_format,
-              metadata, current_version, created_at, updated_at
+    returning id, org_id, folder_id, file_type, status,
+              lifecycle, enabled, validation_diagnostics,
+              title, body, content_format, metadata,
+              current_version, created_at, updated_at
   `;
   return rows[0] ?? null;
 }
@@ -1447,6 +1462,13 @@ export async function createModel(
     values (${data.id ?? sql`DEFAULT`}, ${orgId}, ${data.name}, ${data.provider}, ${data.model},
             ${data.baseUrl ?? null}, ${data.secretEnvKey ?? null},
             ${toJsonb(sql, data.config ?? {})}, ${data.enabled ?? true})
+    on conflict (org_id, provider, model) do update set
+      name = excluded.name,
+      base_url = excluded.base_url,
+      secret_env_key = excluded.secret_env_key,
+      config = excluded.config,
+      enabled = excluded.enabled,
+      updated_at = now()
     returning id, org_id, name, provider, model, base_url, secret_env_key, config, enabled
   `;
   return rows[0];
@@ -2607,3 +2629,222 @@ export async function finalizeRunTurn(
     return { run: finalRun!, messages, chat: chat ?? null };
   });
 }
+
+// ── Relation queries ─────────────────────────────────────────────
+export {
+  listRoleSkills,
+  listWorkflowNodeRoles,
+  listWorkflowNodeSkills,
+  listWorkflowNodeFiles,
+  listSkillConnectionOps,
+} from "./relations.ts";
+export type { SkillConnectionOp, FileRelationRow } from "./relations.ts";
+
+// ── Workspace settings ────────────────────────────────────────────
+
+export type WorkspaceSettingsRow = {
+  org_id: string;
+  default_execution_mode: string;
+  default_model_id: string | null;
+  context_limits: Record<string, unknown>;
+  retrieval_policy: Record<string, unknown>;
+  director_runtime_policy: Record<string, unknown>;
+  approval_policy: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function getWorkspaceSettings(sql: Sql, orgId: string): Promise<WorkspaceSettingsRow | null> {
+  const rows = await sql<WorkspaceSettingsRow[]>`
+    select * from workspace_settings where org_id = ${orgId} limit 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function upsertWorkspaceSettings(
+  sql: Sql,
+  orgId: string,
+  patch: Record<string, unknown>
+): Promise<WorkspaceSettingsRow> {
+  const exists = await getWorkspaceSettings(sql, orgId);
+  if (exists) {
+    const result = await sql<WorkspaceSettingsRow[]>`
+      update workspace_settings set
+        default_execution_mode = coalesce(${patch.defaultExecutionMode as string ?? null}, default_execution_mode),
+        default_model_id = ${patch.defaultModelId !== undefined ? (patch.defaultModelId as string | null) : sql`default_model_id`},
+        context_limits = ${patch.contextLimits !== undefined ? toJsonb(sql, patch.contextLimits as Record<string, unknown>) : sql`context_limits`},
+        retrieval_policy = ${patch.retrievalPolicy !== undefined ? toJsonb(sql, patch.retrievalPolicy as Record<string, unknown>) : sql`retrieval_policy`},
+        director_runtime_policy = ${patch.directorRuntimePolicy !== undefined ? toJsonb(sql, patch.directorRuntimePolicy as Record<string, unknown>) : sql`director_runtime_policy`},
+        approval_policy = ${patch.approvalPolicy !== undefined ? toJsonb(sql, patch.approvalPolicy as Record<string, unknown>) : sql`approval_policy`},
+        updated_at = now()
+      where org_id = ${orgId}
+      returning *
+    `;
+    return result[0];
+  }
+  const created = await sql<WorkspaceSettingsRow[]>`
+    insert into workspace_settings (org_id, default_execution_mode, default_model_id, context_limits, retrieval_policy, director_runtime_policy, approval_policy)
+    values (
+      ${orgId},
+      ${(patch.defaultExecutionMode as string) ?? "director"},
+      ${patch.defaultModelId as string ?? null},
+      ${toJsonb(sql, (patch.contextLimits as Record<string, unknown>) ?? {})},
+      ${toJsonb(sql, (patch.retrievalPolicy as Record<string, unknown>) ?? {})},
+      ${toJsonb(sql, (patch.directorRuntimePolicy as Record<string, unknown>) ?? {})},
+      ${toJsonb(sql, (patch.approvalPolicy as Record<string, unknown>) ?? {})}
+    )
+    on conflict (org_id) do update set updated_at = now()
+    returning *
+  `;
+  return created[0];
+}
+
+// ── Child run budgets (Phase I) ──────────────────────────────────
+
+export type ChildRunBudgetRow = {
+  parent_run_id: string;
+  capability_call_count: number;
+  child_run_count: number;
+  active_child_runs: number;
+  child_input_tokens: number;
+  tool_calls_count: number;
+};
+
+export async function ensureChildRunBudget(sql: Sql, parentRunId: string): Promise<void> {
+  await sql`
+    insert into child_run_budgets (parent_run_id)
+    values (${parentRunId})
+    on conflict (parent_run_id) do nothing
+  `;
+}
+
+export async function reserveChildRunSlot(
+  sql: Sql,
+  parentRunId: string,
+  maxChildRuns: number,
+  maxParallelChildRuns: number
+): Promise<boolean> {
+  const rows = await sql<ChildRunBudgetRow[]>`
+    update child_run_budgets
+    set child_run_count = child_run_count + 1,
+        active_child_runs = active_child_runs + 1
+    where parent_run_id = ${parentRunId}
+      and child_run_count < ${maxChildRuns}
+      and active_child_runs < ${maxParallelChildRuns}
+    returning *
+  `;
+  return rows.length > 0;
+}
+
+export async function releaseChildRunSlot(
+  sql: Sql,
+  parentRunId: string,
+  inputTokens?: number
+): Promise<void> {
+  await sql`
+    update child_run_budgets
+    set active_child_runs = greatest(0, active_child_runs - 1),
+        child_input_tokens = child_input_tokens + ${inputTokens ?? 0}
+    where parent_run_id = ${parentRunId}
+  `;
+}
+
+export async function incrementCapabilityCall(
+  sql: Sql,
+  parentRunId: string,
+  capability: string,
+  maxCalls: number
+): Promise<boolean> {
+  const rows = await sql<{ capability_call_count: number }[]>`
+    update child_run_budgets
+    set capability_call_count = capability_call_count + 1
+    where parent_run_id = ${parentRunId}
+      and capability_call_count < ${maxCalls}
+    returning capability_call_count
+  `;
+  return rows.length > 0;
+}
+
+export async function getChildRunBudget(
+  sql: Sql,
+  parentRunId: string
+): Promise<ChildRunBudgetRow | null> {
+  const rows = await sql<ChildRunBudgetRow[]>`
+    select * from child_run_budgets where parent_run_id = ${parentRunId} limit 1
+  `;
+  return rows[0] ?? null;
+}
+
+// ── Tool invocations (Phase J) ──────────────────────────────────
+
+export type ToolInvocationRow = {
+  id: string;
+  org_id: string;
+  parent_run_id: string;
+  logical_key: string;
+  capability_id: string;
+  input_hash: string;
+  attempt: number;
+  status: string;
+  result_ref: string | null;
+  external_receipt: string | null;
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+};
+
+export async function tryClaimToolInvocation(
+  sql: Sql,
+  orgId: string,
+  parentRunId: string,
+  logicalKey: string,
+  capabilityId: string,
+  inputHash: string
+): Promise<ToolInvocationRow | null> {
+  // Check for existing completed invocation first (dedup)
+  const existing = await sql<ToolInvocationRow[]>`
+    select * from tool_invocations
+    where org_id = ${orgId}
+      and logical_key = ${logicalKey}
+      and input_hash = ${inputHash}
+    limit 1
+  `;
+  if (existing.length > 0) {
+    if (existing[0].status === "completed" || existing[0].status === "failed") {
+      return existing[0];
+    }
+    return null; // concurrent claim — already in progress
+  }
+
+  // Create a new running invocation
+  try {
+    const rows = await sql<ToolInvocationRow[]>`
+      insert into tool_invocations (org_id, parent_run_id, logical_key, capability_id, input_hash, status)
+      values (${orgId}, ${parentRunId}, ${logicalKey}, ${capabilityId}, ${inputHash}, 'running')
+      returning *
+    `;
+    return rows[0] ?? null;
+  } catch {
+    // Unique constraint violation — concurrent claim
+    return null;
+  }
+}
+
+export async function completeToolInvocation(
+  sql: Sql,
+  id: string,
+  status: "completed" | "failed",
+  result?: string,
+  receipt?: string
+): Promise<void> {
+  await sql`
+    update tool_invocations
+    set status = ${status},
+        result_ref = ${result ?? null},
+        external_receipt = ${receipt ?? null},
+        completed_at = now()
+    where id = ${id}
+  `;
+}
+
+// ── Child run budgets (Phase I) ──────────────────────────────────

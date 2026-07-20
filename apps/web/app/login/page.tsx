@@ -55,7 +55,7 @@ function LoginForm() {
   if (loading) {
     return (
       <div className="flex h-screen min-h-screen w-full items-center justify-center bg-background">
-        <div className="text-sm text-muted-foreground">Loading...</div>
+        <Spinner size="lg" />
       </div>
     );
   }
@@ -111,7 +111,7 @@ export default function LoginPage() {
   return (
     <Suspense fallback={
       <div className="flex h-screen min-h-screen w-full items-center justify-center bg-background">
-        <div className="text-sm text-muted-foreground">Loading...</div>
+        <Spinner size="lg" />
       </div>
     }>
       <LoginForm />
