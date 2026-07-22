@@ -30,3 +30,12 @@ test("Director keeps a standalone artifact file as a source artifact", () => {
   assert.equal(artifacts[0].type, "draft");
   assert.equal(artifacts[0].title, "notes.md");
 });
+
+test("Director context-cleanup history never becomes a user artifact", () => {
+  const now = new Date().toISOString();
+  const artifacts = artifactsFromDirectorFiles({
+    "/conversation_history/session-1.md": { content: "Internal summarized history", mimeType: "text/markdown", created_at: now, modified_at: now }
+  }, {}, "org-1", "run-1");
+
+  assert.deepEqual(artifacts, []);
+});

@@ -14,6 +14,7 @@ import { EventEmitter } from "node:events";
 
 export type DomainEvent =
   | { type: "run.status.changed"; orgId: string; runId: string; status: string; checkpointVersion: number; ts: string }
+  | { type: "run.status.message"; orgId: string; runId: string; message: string; ts: string }
   | { type: "run.output.updated"; orgId: string; runId: string; text: string; ts: string }
   | { type: "run.usage.updated"; orgId: string; runId: string; inputTokens: number; outputTokens: number; toolCalls: number; ts: string }
   | { type: "run.event.appended"; orgId: string; runId: string; eventId: string; eventType: string; ts: string }

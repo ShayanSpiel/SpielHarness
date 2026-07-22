@@ -1,11 +1,12 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import AppProviders from "./app-providers";
+import { DEFAULT_THEME_META_COLOR } from "@spielos/design-system";
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#282828"
+  themeColor: DEFAULT_THEME_META_COLOR
 };
 
 export const metadata: Metadata = {

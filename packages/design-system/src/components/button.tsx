@@ -56,10 +56,13 @@ export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> &
   };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { className, variant, size, asChild, icon, loading = false, disabled, children, ...props },
+  { className, variant, size, asChild, icon, loading = false, disabled, children, type, ...props },
   ref
 ) {
   const Comp = asChild ? Slot : "button";
+  // Safe default: buttons default to "button" type to prevent accidental
+  // form submission. Callers may override with type="submit" explicitly.
+  const resolvedType = asChild ? undefined : (type ?? "button");
   const iconSize = size ? ICON_SIZE[size] : 14;
   return (
     <Comp
@@ -67,6 +70,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       aria-busy={loading || undefined}
       className={cn(buttonStyles({ variant, size }), className)}
       disabled={disabled || loading}
+      type={resolvedType}
       {...props}
     >
       {loading ? (

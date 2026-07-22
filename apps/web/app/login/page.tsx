@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Icon } from "@spielos/design-system/components";
-import { GoogleLogo, Spinner } from "@spielos/design-system";
+import { GoogleLogo, Notice, Spinner } from "@spielos/design-system";
 import { signIn } from "../../lib/auth-client";
 
 type Session = {
@@ -21,6 +21,7 @@ function LoginForm() {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [signingIn, setSigningIn] = useState(false);
+  const [signInError, setSignInError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/auth/get-session")
@@ -42,12 +43,18 @@ function LoginForm() {
 
   async function handleGoogleSignIn() {
     setSigningIn(true);
+    setSignInError(null);
     try {
-      await signIn.social({
+      const result = await signIn.social({
         provider: "google",
         callbackURL: callbackUrl,
       });
-    } catch {
+      if (result?.error) {
+        setSignInError(result.error.message ?? "Google sign-in could not be started. Check the configured app URL and OAuth callback.");
+        setSigningIn(false);
+      }
+    } catch (error) {
+      setSignInError(error instanceof Error ? error.message : "Google sign-in could not be started.");
       setSigningIn(false);
     }
   }
@@ -96,6 +103,9 @@ function LoginForm() {
               )}
               Continue with Google
             </button>
+            {signInError ? (
+              <Notice className="mt-3" tone="destructive">{signInError}</Notice>
+            ) : null}
           </div>
 
           <p className="mt-4 text-center text-2xs text-muted-foreground">

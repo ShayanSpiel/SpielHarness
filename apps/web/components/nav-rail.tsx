@@ -7,6 +7,7 @@ import { ThemeToggle } from "@spielos/design-system/components/theme-toggle";
 import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { SIDEBAR } from "@spielos/design-system";
 import { UserMenu } from "./user-menu";
+import { useRuntimeStore } from "../lib/runtime-store";
 
 type NavEntry = {
   href: string;
@@ -94,6 +95,7 @@ export function NavRail({ onOpenSearch }: { onOpenSearch: () => void }) {
                     active && section.activeClass
                   )}
                   href={item.href}
+                  onClick={item.href === "/" ? () => useRuntimeStore.getState().startNewChat() : undefined}
                 >
                   <Icon name={item.icon} size={16} />
                 </Link>

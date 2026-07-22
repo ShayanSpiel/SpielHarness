@@ -1,251 +1,220 @@
 "use client";
 
-import { sseEnvelopeSchema, type ChatMessage, type RunStatus, type RunEvent, type Artifact, type HumanInputRequest, type SseFrame } from "@spielos/core";
-import type { Chat as CoreChat } from "@spielos/core";
+import { sseEnvelopeSchema, type RunStatus } from "@spielos/core";
+import { useRuntimeStore, type RuntimeAction } from "./runtime-store";
 
-export type TextUpdateCallback = (text: string) => void;
+export type TextUpdateCallback = (text: string, runId: string) => void;
+export type RunBoundCallback = (identity: {
+  runId: string;
+  chatId: string | null;
+  turnId: string | null;
+}) => void;
 
-export type StoreWrites = {
-  upsertChat: (chat: CoreChat) => void;
-  upsertMessage: (chatId: string, msg: ChatMessage) => void;
-  setRunStatus: (status: RunStatus) => void;
-  setRunType: (type: string) => void;
-  setActiveRunId: (runId: string | null) => void;
-  setActivity: (activity: string | null) => void;
-  attachStream: (runId: string) => void;
-  detachStream: (runId: string) => void;
-  appendEvent: (event: RunEvent) => void;
-  clearEvents: () => void;
-  clearArtifacts: () => void;
-  appendArtifact: (artifact: Artifact) => void;
-  setDurableState: (state: Record<string, unknown> | null) => void;
-  setLiveUsage: (usage: { inputTokens: number; outputTokens: number; toolCalls: number } | null) => void;
-  setHumanInputRequest: (request: HumanInputRequest | null) => void;
-  recordCheckpointVersion: (version: number) => void;
-  beginRunAttempt: () => string;
-  activateRunProjection: (runId: string) => void;
-  isGenerationCurrent: (generationId: string) => boolean;
-};
-
-export type PendingFrame =
-  | { kind: "run"; runId: string }
-  | { kind: "chat_created"; chatId: string; chat: CoreChat }
-  | { kind: "message_persisted"; chatId: string; message: ChatMessage }
-  | { kind: "event"; event: RunEvent }
-  | { kind: "artifact"; artifact: Artifact }
-  | { kind: "status"; message: string }
-  | { kind: "run_state"; state: Record<string, unknown> }
-  | { kind: "usage"; usage: { inputTokens: number; outputTokens: number; toolCalls: number } }
-  | { kind: "human_input"; request: HumanInputRequest }
-  | { kind: "text"; text: string }
-  | { kind: "error"; message: string }
-  | { kind: "done"; status: RunStatus };
-
-function applyFrames(frames: PendingFrame[], writes: StoreWrites, generationId: string, onText?: TextUpdateCallback): void {
-  if (!writes.isGenerationCurrent(generationId)) return;
-  for (const item of frames) {
-    switch (item.kind) {
-      case "run":
-        writes.clearEvents();
-        writes.clearArtifacts();
-        writes.setActiveRunId(item.runId);
-        writes.activateRunProjection(item.runId);
-        break;
-      case "chat_created":
-        writes.upsertChat(item.chat);
-        break;
-      case "message_persisted":
-        writes.upsertMessage(item.chatId, item.message);
-        break;
-      case "event":
-        writes.appendEvent(item.event);
-        break;
-      case "artifact":
-        writes.appendArtifact(item.artifact);
-        break;
-      case "status":
-        writes.setActivity(item.message);
-        break;
-      case "run_state":
-        writes.setDurableState(item.state);
-        break;
-      case "usage":
-        writes.setLiveUsage(item.usage);
-        break;
-      case "human_input":
-        writes.setHumanInputRequest(item.request);
-        break;
-      case "text":
-        onText?.(item.text);
-        break;
-      case "error":
-        writes.setRunStatus("failed");
-        break;
-      case "done":
-        writes.setRunStatus(item.status);
-        if (item.status !== "running" && item.status !== "waiting_human") {
-          writes.setActiveRunId(null);
-        }
-        break;
-    }
-  }
-}
-
-function scheduleFlush(
-  pendingRef: { current: PendingFrame[] },
-  writes: StoreWrites,
-  generationId: string,
-  rafScheduledRef: { current: boolean },
-  onText?: TextUpdateCallback
-) {
-  if (rafScheduledRef.current) return;
-  rafScheduledRef.current = true;
-  const raf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
-    ? window.requestAnimationFrame.bind(window)
-    : (cb: (t: number) => void) => { cb(typeof performance !== "undefined" ? performance.now() : 0); return 0; };
-  raf(() => {
-    rafScheduledRef.current = false;
-    const frames = pendingRef.current;
-    pendingRef.current = [];
-    applyFrames(frames, writes, generationId, onText);
-  });
+function sseLog(event: string, data?: Record<string, unknown>) {
+  if (process.env.NODE_ENV !== "production") console.log(`[SSE] ${event}`, data ?? "");
 }
 
 export async function consumeSseStream(
   response: Response,
-  writes: StoreWrites,
   generationId: string,
-  onText?: TextUpdateCallback
+  callbacks?: { onText?: TextUpdateCallback; onRunBound?: RunBoundCallback },
 ): Promise<{ status: RunStatus; runId: string | null }> {
-  const reader = response.body!.getReader();
+  if (!response.body) throw new Error("Run response did not contain a stream.");
+
+  const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let terminalStatus: RunStatus | null = null;
   let captureRunId: string | null = null;
-  let lastCheckpointVersion = 0;
-  const pendingFrames: PendingFrame[] = [];
-  const rafScheduled = { current: false };
+  let queuedActions: RuntimeAction[] = [];
+  let queuedText = "";
+  let flushHandle: number | ReturnType<typeof setTimeout> | null = null;
 
-  // Safety net: if the stream does not close (server ReadableStrem
-  // controller.close() is never reached) the read-loop would block
-  // forever.  Force-exit after 5 minutes so the run cycles out of
-  // "running" and the user can retry.
+  const flush = () => {
+    flushHandle = null;
+    const actions = queuedActions;
+    const text = queuedText;
+    queuedActions = [];
+    queuedText = "";
+    if (!useRuntimeStore.getState().isGenerationCurrent(generationId)) return;
+    for (const action of actions) useRuntimeStore.getState().dispatch(action);
+    if (text && captureRunId) callbacks?.onText?.(text, captureRunId);
+  };
+
+  const scheduleFlush = () => {
+    if (flushHandle !== null) return;
+    if (typeof requestAnimationFrame === "function") {
+      flushHandle = requestAnimationFrame(flush);
+    } else {
+      flushHandle = setTimeout(flush, 0);
+    }
+  };
+
+  const cancelScheduledFlush = () => {
+    if (flushHandle === null) return;
+    if (typeof flushHandle === "number" && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(flushHandle);
+    } else {
+      clearTimeout(flushHandle as ReturnType<typeof setTimeout>);
+    }
+    flushHandle = null;
+  };
+
+  const flushNow = () => {
+    cancelScheduledFlush();
+    if (queuedActions.length || queuedText) flush();
+  };
+
+  const queueFrame = (action: RuntimeAction) => {
+    queuedActions.push(action);
+    scheduleFlush();
+  };
+
+  const queueProgress = (runId: string, sequence: number, checkpointVersion?: number) => {
+    if (sequence < 0) return;
+    const last = queuedActions.at(-1);
+    if (last?.type === "stream_progressed" && last.runId === runId) {
+      queuedActions[queuedActions.length - 1] = {
+        ...last,
+        sequence: Math.max(last.sequence, sequence),
+        checkpointVersion: typeof checkpointVersion === "number"
+          ? Math.max(last.checkpointVersion ?? 0, checkpointVersion)
+          : last.checkpointVersion,
+      };
+    } else {
+      queuedActions.push({ type: "stream_progressed", runId, sequence, firstSequence: sequence, checkpointVersion });
+    }
+    scheduleFlush();
+  };
+
   const STREAM_TIMEOUT_MS = 300_000;
   let streamTimedOut = false;
   const streamTimeout = setTimeout(() => {
     streamTimedOut = true;
-    reader.cancel("stream-timeout").catch(() => {});
+    sseLog("stream_timeout", { generationId, runId: captureRunId });
+    void reader.cancel("stream-timeout");
   }, STREAM_TIMEOUT_MS);
 
-  function pushFrame(frame: PendingFrame) {
-    pendingFrames.push(frame);
-    scheduleFlush({ current: pendingFrames }, writes, generationId, rafScheduled, onText);
-  }
-
-  function processBuffer(flush: boolean): void {
+  const processBuffer = (final: boolean) => {
     const parts = buffer.split("\n\n");
-    if (flush) {
-      buffer = "";
-    } else {
-      buffer = parts.pop() ?? "";
-    }
+    buffer = final ? "" : (parts.pop() ?? "");
+    if (!useRuntimeStore.getState().isGenerationCurrent(generationId)) return;
+
     for (const part of parts) {
-      const dataLine = part.split("\n").find((line) => line.startsWith("data: "));
+      const dataLine = part.split("\n").find((line) => line.startsWith("data:"));
       if (!dataLine) continue;
-      const raw = dataLine.slice(6).trim();
+      const raw = dataLine.slice(5).trim();
       if (!raw) continue;
+
       try {
-        const parsed = JSON.parse(raw);
-        const envelopeResult = sseEnvelopeSchema.safeParse(parsed);
-        if (!envelopeResult.success) {
+        const result = sseEnvelopeSchema.safeParse(JSON.parse(raw));
+        if (!result.success || result.data.protocol !== "spielos-sse-v1") {
+          sseLog("invalid_envelope", { issues: result.success ? "protocol" : result.error.issues.length });
           continue;
         }
-        const envelope = envelopeResult.data;
-        if (envelope.protocol && envelope.protocol !== "spielos-sse-v1") {
-          continue;
-        }
-        if (typeof envelope.checkpointVersion === "number") {
-          if (envelope.checkpointVersion > lastCheckpointVersion) {
-            lastCheckpointVersion = envelope.checkpointVersion;
-            writes.recordCheckpointVersion(envelope.checkpointVersion);
-          }
-        }
-        const frame: SseFrame = envelope.body;
+        const envelope = result.data;
+        const frame = envelope.body;
+        const sequence = envelope.streamSequence ?? -1;
+
         if (frame.kind === "run") {
+          flushNow();
           captureRunId = frame.runId;
-          writes.attachStream(frame.runId);
-          pushFrame({ kind: "run", runId: frame.runId });
-        } else if (frame.kind === "chat_created") {
-          pushFrame({ kind: "chat_created", chatId: frame.chatId, chat: frame.chat });
-        } else if (frame.kind === "message_persisted") {
-          pushFrame({ kind: "message_persisted", chatId: frame.chatId, message: frame.message });
-        } else if (frame.kind === "event") {
-          pushFrame({ kind: "event", event: frame.event });
-        } else if (frame.kind === "artifact") {
-          pushFrame({ kind: "artifact", artifact: frame.artifact });
-        } else if (frame.kind === "status") {
-          pushFrame({ kind: "status", message: frame.message });
-        } else if (frame.kind === "run_state") {
-          pushFrame({ kind: "run_state", state: frame.state as Record<string, unknown> });
-        } else if (frame.kind === "usage") {
-          pushFrame({ kind: "usage", usage: frame.usage });
-        } else if (frame.kind === "human_input") {
-          pushFrame({ kind: "human_input", request: frame.request });
-        } else if (frame.kind === "text") {
-          pushFrame({ kind: "text", text: frame.text });
-        } else if (frame.kind === "error") {
-          pushFrame({ kind: "error", message: frame.message });
-          terminalStatus = "failed";
-        } else if (frame.kind === "done") {
-          pushFrame({ kind: "done", status: frame.status });
-          terminalStatus = frame.status;
+          const identity = {
+            runId: frame.runId,
+            chatId: frame.chatId ?? null,
+            turnId: frame.turnId ?? null,
+          };
+          useRuntimeStore.getState().dispatch({
+            type: "run_bound",
+            runId: identity.runId,
+            chatId: identity.chatId ?? "",
+            turnId: identity.turnId ?? "",
+            generationId,
+          });
+          useRuntimeStore.getState().dispatch({
+            type: "stream_opened",
+            runId: identity.runId,
+            streamId: envelope.streamId ?? identity.runId,
+            initialSequence: sequence,
+          });
+          useRuntimeStore.getState().attachStream(identity.runId);
+          if (typeof envelope.checkpointVersion === "number") {
+            useRuntimeStore.getState().dispatch({
+              type: "checkpoint_observed",
+              runId: identity.runId,
+              checkpointVersion: envelope.checkpointVersion,
+            });
+          }
+          callbacks?.onRunBound?.(identity);
+          sseLog("run_bound", { ...identity, sequence });
+          continue;
         }
-      } catch {
-        // Malformed frame — do not corrupt remaining stream
+
+        if (!captureRunId) {
+          sseLog("frame_before_run", { kind: frame.kind });
+          continue;
+        }
+
+        if (frame.kind === "text") {
+          queuedText += frame.text;
+          queueProgress(captureRunId, sequence, envelope.checkpointVersion);
+          continue;
+        }
+
+        if (frame.kind === "chat_created" || frame.kind === "message_persisted") flushNow();
+
+        if (frame.kind === "chat_created") {
+          useRuntimeStore.getState().upsertChat(frame.chat);
+          useRuntimeStore.getState().dispatch({ type: "stream_progressed", runId: captureRunId, sequence, firstSequence: sequence, checkpointVersion: envelope.checkpointVersion });
+        } else if (frame.kind === "message_persisted") {
+          useRuntimeStore.getState().reconcilePersistedMessage(frame.chatId, frame.message, generationId);
+          useRuntimeStore.getState().dispatch({ type: "stream_progressed", runId: captureRunId, sequence, firstSequence: sequence, checkpointVersion: envelope.checkpointVersion });
+        } else if (frame.kind === "done") {
+          flushNow();
+          terminalStatus = frame.status;
+          useRuntimeStore.getState().dispatch({ type: "stream_progressed", runId: captureRunId, sequence, firstSequence: sequence, checkpointVersion: envelope.checkpointVersion });
+          useRuntimeStore.getState().dispatch({ type: "stream_closed", runId: captureRunId, status: frame.status });
+          sseLog("done", { runId: captureRunId, status: frame.status, sequence });
+        } else {
+          queueFrame({
+            type: "frame_received",
+            runId: captureRunId,
+            frame,
+            sequence,
+            checkpointVersion: envelope.checkpointVersion,
+          });
+        }
+      } catch (error) {
+        sseLog("parse_error", { message: error instanceof Error ? error.message : "invalid frame" });
       }
     }
-  }
+  };
 
-  async function readLoop(): Promise<void> {
+  try {
     while (true) {
-      if (streamTimedOut) break;
       const { done, value } = await reader.read();
       if (done) {
-        // Decode and process any remaining bytes — the last chunk may
-        // include the final SSE frame (e.g. the `done` frame) that would
-        // otherwise be lost.
-        buffer += decoder.decode(value, { stream: true });
+        buffer += decoder.decode(value ?? new Uint8Array(), { stream: false });
         processBuffer(true);
         break;
       }
       buffer += decoder.decode(value, { stream: true });
       processBuffer(false);
     }
+  } finally {
+    clearTimeout(streamTimeout);
+    flushNow();
+    if (captureRunId) {
+      useRuntimeStore.getState().detachStream(captureRunId);
+      await useRuntimeStore.getState().restoreRun(captureRunId, { force: true });
+      const restoredStatus = useRuntimeStore.getState().runs[captureRunId]?.runStatus;
+      if (restoredStatus && restoredStatus !== "idle") terminalStatus = restoredStatus;
+    }
   }
 
-  await readLoop();
-
-  // Synchronously flush any remaining frames at stream end
-  if (pendingFrames.length > 0 && writes.isGenerationCurrent(generationId)) {
-    const frames = pendingFrames.splice(0);
-    applyFrames(frames, writes, generationId, onText);
+  const status = terminalStatus ?? (streamTimedOut ? "running" : "failed");
+  if (captureRunId && !terminalStatus && !streamTimedOut) {
+    useRuntimeStore.getState().dispatch({ type: "transport_error", runId: captureRunId, error: "The run stream closed before a terminal frame." });
   }
-
-  clearTimeout(streamTimeout);
-
-  // Phase 2: release stream ownership so realtime reloads resume
-  if (captureRunId) {
-    writes.detachStream(captureRunId);
-  }
-
-  // If the stream closed cleanly (not a timeout) but no `done` frame
-  // was parsed, assume "completed" — the server sent it but it may
-  // have been lost in the final chunk.  Timeouts and explicit error
-  // frames set terminalStatus to "failed" already.
-  if (terminalStatus === null && !streamTimedOut) {
-    terminalStatus = "completed";
-    writes.setRunStatus("completed");
-    writes.setActiveRunId(null);
-  }
-  return { status: terminalStatus ?? "completed", runId: captureRunId };
+  return { status, runId: captureRunId };
 }

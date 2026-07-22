@@ -14,6 +14,7 @@ import {
   Tooltip,
   cn
 } from "@spielos/design-system";
+import { MarkdownContent } from "./markdown-content";
 
 type View = "preview" | "source" | "files";
 
@@ -132,6 +133,38 @@ export function ArtifactWorkbench({ artifact, compact = false, fullscreen = fals
         return <div className="flex min-h-0 flex-1 flex-col">{frame}</div>;
       }
       return frame;
+    }
+    const isMarkdown = artifact.metadata.mimeType === "text/markdown" || /\.md(?:own)?$/i.test(artifact.title);
+    if (isMarkdown) {
+      return (
+        <div className={cn("min-w-0 bg-panel", fullscreen && "flex h-full min-h-0 flex-col")}>
+          <div className="flex items-center gap-1.5 border-b border-border bg-panel-raised px-2.5 py-1.5">
+            {(["preview", "source"] as const).map((item) => (
+              <button
+                aria-pressed={view === item}
+                className={cn(
+                  "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-2xs font-medium capitalize text-muted-foreground transition-colors hover:bg-hover hover:text-foreground",
+                  view === item && "bg-selected text-foreground"
+                )}
+                key={item}
+                onClick={() => setView(item)}
+                type="button"
+              >
+                <Icon name={item === "preview" ? "eye" : "code"} size={11} />
+                {item}
+              </button>
+            ))}
+            <span className="ms-auto text-3xs text-muted-foreground">Markdown</span>
+          </div>
+          {view === "source" ? (
+            <pre className={cn("overflow-auto whitespace-pre p-3 font-mono text-2xs leading-5 text-foreground/90", fullscreen ? "min-h-0 flex-1" : "max-h-[28rem]")}>{artifact.body}</pre>
+          ) : (
+            <div className={cn("overflow-auto p-4", fullscreen ? "min-h-0 flex-1" : compact ? "max-h-72" : "max-h-[28rem]")}>
+              <MarkdownContent text={artifact.body} />
+            </div>
+          )}
+        </div>
+      );
     }
     return <pre className={cn("overflow-auto whitespace-pre-wrap p-3 text-xs leading-5 text-foreground", fullscreen ? "min-h-0 flex-1" : compact ? "max-h-72" : "max-h-[28rem]")}>{artifact.body}</pre>;
   }

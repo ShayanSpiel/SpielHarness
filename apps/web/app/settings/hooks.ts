@@ -14,6 +14,7 @@ export type Integration = {
   baseUrl: string | null;
   logo: string | null;
   account: string | null;
+  credentialHealth: "ready" | "missing" | "corrupted" | null;
   enabled: boolean;
 };
 
@@ -56,6 +57,7 @@ export function useIntegrations() {
           baseUrl: i.baseUrl as string | null ?? null,
           logo: ((i as Record<string, unknown>).config as Record<string, unknown> | null)?.logo as string | null ?? null,
           account: i.account as string | null ?? null,
+          credentialHealth: (i.credentialHealth === "ready" || i.credentialHealth === "missing" || i.credentialHealth === "corrupted" ? i.credentialHealth : null) as Integration["credentialHealth"],
           enabled: Boolean(i.enabled),
         }));
         setIntegrations(enriched);

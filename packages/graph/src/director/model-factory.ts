@@ -1,7 +1,7 @@
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
-import type { ChatGenerationChunk } from "@langchain/core/outputs";
+import type { ChatGenerationChunk, ChatResult } from "@langchain/core/outputs";
 import { ChatOpenAI } from "@langchain/openai";
 import { ChatMistralAI } from "@langchain/mistralai";
 import { ChatAnthropic } from "@langchain/anthropic";
@@ -20,6 +20,7 @@ function baseUrlForProvider(provider: ModelProvider): string | undefined {
  * key of the official LangChain adapter class.
  */
 type LangChainProviderKey = "openai" | "anthropic" | "mistral";
+type OutputTokenParameter = "max_tokens" | "max_completion_tokens";
 
 function providerKey(provider: ModelProvider): LangChainProviderKey {
   switch (provider.provider) {
@@ -42,7 +43,36 @@ function providerKey(provider: ModelProvider): LangChainProviderKey {
  * request. This official-adapter subclass selects the raw representation only
  * at the provider boundary; the agent still consumes normalized native calls.
  */
-class ProviderMetadataChatOpenAI extends ChatOpenAI {
+class ConfiguredTokenChatOpenAI extends ChatOpenAI {
+  private readonly outputTokenParameter: OutputTokenParameter;
+
+  constructor(
+    fields: ConstructorParameters<typeof ChatOpenAI>[0],
+    outputTokenParameter: OutputTokenParameter
+  ) {
+    super(fields);
+    this.outputTokenParameter = outputTokenParameter;
+  }
+
+  override invocationParams(options?: this["ParsedCallOptions"]): ReturnType<ChatOpenAI["invocationParams"]> {
+    const params = super.invocationParams(options);
+    const configured = params as typeof params & Record<string, unknown>;
+    delete configured.max_tokens;
+    delete configured.max_completion_tokens;
+    configured[this.outputTokenParameter] = this.maxTokens === -1 ? undefined : this.maxTokens;
+    return params;
+  }
+}
+
+class ProviderMetadataChatOpenAI extends ConfiguredTokenChatOpenAI {
+  override async _generate(
+    messages: BaseMessage[],
+    options: this["ParsedCallOptions"],
+    runManager?: CallbackManagerForLLMRun
+  ): Promise<ChatResult> {
+    return super._generate(requestMessagesWithProviderToolMetadata(messages), options, runManager);
+  }
+
   override async *_streamResponseChunks(
     messages: BaseMessage[],
     options: this["ParsedCallOptions"],
@@ -60,7 +90,16 @@ export function requestMessagesWithProviderToolMetadata(messages: BaseMessage[])
     }
     return new AIMessage({
       content: message.content,
-      additional_kwargs: message.additional_kwargs,
+      additional_kwargs: {
+        ...message.additional_kwargs,
+        tool_calls: (message.additional_kwargs.tool_calls as Array<Record<string, unknown>>).map((toolCall) => {
+          // `index` belongs to streamed deltas, not persisted assistant history.
+          // Preserve every opaque provider field (for example Gemini thought
+          // signatures) while removing the one transport-only property.
+          const { index: _streamIndex, ...persistedToolCall } = toolCall;
+          return persistedToolCall;
+        }) as typeof message.additional_kwargs.tool_calls
+      },
       response_metadata: message.response_metadata,
       id: message.id,
       name: message.name,
@@ -104,23 +143,28 @@ export function createDirectorModel(provider: ModelProvider, model: Model): Base
 
   switch (providerKey(provider)) {
     case "openai": {
-      const OpenAIAdapter = caps.toolCallMetadata === "provider_raw"
-        ? ProviderMetadataChatOpenAI
-        : ChatOpenAI;
       const modelKwargs: Record<string, unknown> = {
         parallel_tool_calls: caps.parallelToolCalling
       };
       if (caps.reasoningEffort !== "auto") modelKwargs.reasoning_effort = caps.reasoningEffort;
-      return new OpenAIAdapter({
+      const fields: ConstructorParameters<typeof ChatOpenAI>[0] = {
         model: model.model,
         apiKey,
         ...(temperature !== undefined ? { temperature } : {}),
         maxTokens,
-        streaming: true,
+        // Provider-opaque tool metadata must be captured as one authoritative
+        // response object. Streaming can fragment encrypted signatures across
+        // deltas before LangChain persists the assistant tool-call history.
+        // The surrounding DeepAgents values stream remains live (status,
+        // tools, checkpoints); only this provider boundary is atomic.
+        streaming: caps.toolCallMetadata !== "provider_raw",
         streamUsage: true,
         modelKwargs,
         ...(baseUrl ? { configuration: { baseURL: baseUrl } } : {})
-      }) as BaseChatModel;
+      };
+      return (caps.toolCallMetadata === "provider_raw"
+        ? new ProviderMetadataChatOpenAI(fields, caps.outputTokenParameter)
+        : new ConfiguredTokenChatOpenAI(fields, caps.outputTokenParameter)) as BaseChatModel;
     }
     case "mistral": {
       return new ChatMistralAI({

@@ -38,8 +38,6 @@ For existing Supabase projects, run `supabase/manual_harness_merge.sql` in the S
 - `docs/design-system.md` — visual source of truth
 - `docs/interaction-design.md` — behavioral source of truth
 - `docs/langgraph-runtime.md` — graph runtime semantics
-- `docs/plans/` — implementation plans and audit history
-
-## Status
-
-This repository is buildable but not ready for public multi-tenant deployment. Application authentication, durable worker execution, transactional credit enforcement, and server-owned integration credentials remain release blockers.
+- `docs/positioning.md` — product positioning and competitive landscape
+- `docs/plans/` — implementation plans and architecture audits
+- `docs/archive/` — completed or superseded plans

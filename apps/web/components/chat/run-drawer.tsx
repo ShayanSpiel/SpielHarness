@@ -22,7 +22,7 @@ import {
 } from "@spielos/design-system";
 import { useRunContext, type ContextItem } from "../../lib/run-context";
 import { useWorkspaceStore } from "../../lib/use-workspace-store";
-import { capabilitiesForModel, type SseFrame } from "@spielos/core";
+import { capabilitiesForModel, normalizeBudget } from "@spielos/core";
 import { reasoningLabel, type ReasoningEffort } from "../reasoning-effort-control";
 import { ToolCallCard } from "./tool-call";
 import { ArtifactFullscreenButton, ArtifactWorkbench } from "./artifact-workbench";
@@ -35,6 +35,8 @@ import {
   runtimeEventIcon
 } from "../../lib/run-events";
 import { useUiStore } from "../../lib/use-ui-store";
+import { useRuntimeStore } from "../../lib/runtime-store";
+import { consumeSseStream } from "../../lib/sse-stream-consumer";
 
 type Section = "context" | "events" | "output";
 
@@ -201,14 +203,34 @@ function RuntimeCapacity({ run }: { run: ReturnType<typeof useRunContext> }) {
   const effort = (typeof activeChat?.metadata?.reasoningEffort === "string" ? activeChat.metadata.reasoningEffort : run.pendingReasoningEffort) as ReasoningEffort;
   const usage = run.liveUsage;
   const budget = run.durableState?.budget;
-  const inputTokens = usage?.inputTokens ?? budget?.inputTokens ?? 0;
-  const outputTokens = usage?.outputTokens ?? budget?.outputTokens ?? 0;
-  const contextTotal = inputTokens + outputTokens;
-  const contextWindow = capabilities?.contextWindow ?? 0;
+  const normalizedBudget = normalizeBudget(budget);
+  const currentContextTokens = (usage?.contextInputTokens ?? normalizedBudget.contextInputTokens)
+    + (usage?.contextOutputTokens ?? normalizedBudget.contextOutputTokens);
+  const contextWindow = run.durableState?.context?.maxInputTokens ?? capabilities?.contextWindow ?? 0;
+  const cleanupThreshold = capabilities ? Math.floor(contextWindow * capabilities.compactionThreshold) : 0;
+  const cleanupPercent = capabilities ? Math.round(capabilities.compactionThreshold * 100) : 0;
+  const toolCallsUsed = usage?.toolCalls ?? budget?.toolCalls ?? 0;
+  const subagentsUsed = new Set(
+    run.events.flatMap((event) => {
+      if (event.type !== "tool_call_started") return [];
+      const isSubagent = event.payload?.category === "delegating"
+        || (typeof event.payload?.roleId === "string" && typeof event.payload?.agentId === "string");
+      if (!isSubagent) return [];
+      const id = event.payload?.agentId ?? event.payload?.callId ?? event.id;
+      return typeof id === "string" ? [id] : [];
+    })
+  ).size;
   const compaction = activeChat?.metadata?.compaction && typeof activeChat.metadata.compaction === "object"
     ? activeChat.metadata.compaction as Record<string, unknown>
     : null;
-  const compactedMessages = typeof compaction?.compactedMessageCount === "number" ? compaction.compactedMessageCount : 0;
+  const liveCompaction = [...run.events].reverse().find((event) =>
+    event.type === "status" && event.payload?.category === "compaction"
+  )?.payload;
+  const compactedMessages = typeof liveCompaction?.compactedMessageCount === "number"
+    ? liveCompaction.compactedMessageCount
+    : typeof compaction?.compactedMessageCount === "number"
+      ? compaction.compactedMessageCount
+      : 0;
 
   return (
     <section className="grid gap-3 rounded-md bg-panel-raised p-3">
@@ -227,19 +249,22 @@ function RuntimeCapacity({ run }: { run: ReturnType<typeof useRunContext> }) {
       </div>
       {capabilities ? (
         <>
-          <CapacityMeter icon={CONTEXT_ICON} label="Context" maximum={contextWindow} value={contextTotal} />
+          <CapacityMeter icon={CONTEXT_ICON} label="Context" maximum={contextWindow} value={currentContextTokens} />
           <div className="grid grid-cols-3 gap-1.5">
             <div className="rounded-md bg-panel px-2 py-1.5">
-              <div className="text-3xs text-muted-foreground">Tools</div>
-              <div className="mt-0.5 text-xs font-medium tabular-nums text-foreground">{usage || budget ? `${usage?.toolCalls ?? budget?.toolCalls ?? 0} / ${budget?.maxToolCalls ?? "∞"}` : "Ready"}</div>
+              <div className="text-3xs text-muted-foreground">Automatic cleanup</div>
+              <div className="mt-0.5 text-xs font-medium tabular-nums text-foreground">At {compactTokens(cleanupThreshold)} tokens</div>
+              <div className="mt-0.5 text-3xs text-muted-foreground">{cleanupPercent}% · {compactedMessages > 0 ? `${compactedMessages} summarized last time` : "Keeps recent work ready"}</div>
             </div>
             <div className="rounded-md bg-panel px-2 py-1.5">
-              <div className="text-3xs text-muted-foreground">Compaction</div>
-              <div className="mt-0.5 text-xs font-medium tabular-nums text-foreground">{compactedMessages > 0 ? `${compactedMessages} msgs` : `at ${compactTokens(Math.floor(contextWindow * capabilities.compactionThreshold))}`}</div>
+              <div className="text-3xs text-muted-foreground">Tool calls</div>
+              <div className="mt-0.5 text-xs font-medium tabular-nums text-foreground">{toolCallsUsed} used</div>
+              <div className="mt-0.5 text-3xs text-muted-foreground">Full details in Events</div>
             </div>
             <div className="rounded-md bg-panel px-2 py-1.5">
-              <div className="text-3xs text-muted-foreground">Counter</div>
-              <div className="mt-0.5 truncate text-xs font-medium capitalize text-foreground">{capabilities.tokenCounter}</div>
+              <div className="text-3xs text-muted-foreground">Subagents</div>
+              <div className="mt-0.5 text-xs font-medium tabular-nums text-foreground">{subagentsUsed} used</div>
+              <div className="mt-0.5 text-3xs text-muted-foreground">Roles delegated this run</div>
             </div>
           </div>
         </>
@@ -282,7 +307,11 @@ function ContextSection({ run }: { run: ReturnType<typeof useRunContext> }) {
             <div className="mt-2 border-t border-border pt-2">
               <div className="mb-1 text-3xs font-medium uppercase tracking-wider text-muted-foreground">Active agents</div>
               <div className="flex flex-wrap gap-1">
-                {run.activeActors.map((actor) => <Pill key={actor.agentId} tone="info">{actor.roleName} · {actor.nodeTitle}</Pill>)}
+                {run.activeActors.map((actor) => (
+                  <Pill key={actor.agentId} tone="info">
+                    {actor.roleName}{actor.nodeTitle !== actor.roleName ? ` · ${actor.nodeTitle}` : ""}
+                  </Pill>
+                ))}
               </div>
             </div>
           ) : null}
@@ -410,7 +439,6 @@ function OutputSection({ run }: { run: ReturnType<typeof useRunContext> }) {
 
 export function RunDrawer() {
   const run = useRunContext();
-  const workspaceStore = useWorkspaceStore();
   const ui = useUiStore();
   const section: Section = ui.inspectorSection;
   const [controlBusy, setControlBusy] = useState(false);
@@ -426,11 +454,16 @@ export function RunDrawer() {
     setControlError(null);
     try {
       if (action === "pause" || action === "cancel") {
+        if (action === "cancel") useRuntimeStore.getState().dispatch({ type: "cancel_requested", runId: run.activeRunId });
+        else useRuntimeStore.getState().setActivity("Pausing at the next durable checkpoint…");
         const response = await fetch(`/api/runs/${run.activeRunId}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: action === "pause" ? JSON.stringify({ reason: "Paused from the run inspector." }) : undefined });
         if (!response.ok) throw new Error(`${action === "pause" ? "Pause" : "Cancel"} failed (${response.status}).`);
         run.setRunStatus(action === "pause" ? "waiting_human" : "cancelled");
+        await useRuntimeStore.getState().restoreRun(run.activeRunId, { force: true });
         return;
       }
+      const generationId = crypto.randomUUID();
+      useRuntimeStore.getState().dispatch({ type: "human_input_submitted", runId: run.activeRunId, generationId });
       const response = await fetch(`/api/runs/${run.activeRunId}/reply`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -440,39 +473,12 @@ export function RunDrawer() {
         const payload = await response.json().catch(() => ({})) as { error?: string };
         throw new Error(payload.error ?? `${action === "resume" ? "Resume" : "Retry"} failed (${response.status}).`);
       }
-      run.setRunStatus("running");
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split("\n\n");
-        buffer = frames.pop() ?? "";
-        for (const frame of frames) {
-          const line = frame.split("\n").find((entry) => entry.startsWith("data: "));
-          if (!line) continue;
-          const item = JSON.parse(line.slice(6)) as SseFrame;
-          if (item.kind === "message_persisted") {
-            workspaceStore.upsertMessage(item.chatId, item.message);
-          } else if (item.kind === "chat_created") {
-            workspaceStore.upsertChat(item.chat);
-          } else if (item.kind === "event" && item.event) run.appendEvent(item.event);
-          if (item.kind === "artifact" && item.artifact) run.appendArtifact(item.artifact);
-          if (item.kind === "human_input" && item.request) run.setHumanInputRequest(item.request);
-          if (item.kind === "text" && item.text) run.appendContinuationText(item.text);
-          if (item.kind === "status" && item.message) run.setActivity(item.message);
-          if (item.kind === "run_state" && item.state) {
-            run.setDurableState(item.state);
-            if (item.state.budget) {
-              run.setLiveUsage({ inputTokens: item.state.budget.inputTokens, outputTokens: item.state.budget.outputTokens, toolCalls: item.state.budget.toolCalls });
-            }
-          }
-          if (item.kind === "usage" && item.usage) run.setLiveUsage(item.usage);
-          if (item.kind === "done" && item.status && ["running", "waiting_human", "completed", "failed", "cancelled"].includes(item.status)) run.setRunStatus(item.status as import("@spielos/core").RunStatus);
-        }
-      }
+      const chatId = useRuntimeStore.getState().activeChatId;
+      await consumeSseStream(response, generationId, {
+        onText: (text, runId) => {
+          if (chatId) useRuntimeStore.getState().appendStreamText(chatId, runId, generationId, text);
+        },
+      });
     } catch (cause) {
       setControlError(cause instanceof Error ? cause.message : "Run control failed.");
     } finally {

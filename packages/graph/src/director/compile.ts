@@ -73,13 +73,34 @@ export type DirectorCompileOutput = {
   subagents: SubAgent[];
 };
 
-export function directorCompactionTrigger(input: Pick<DirectorCompileInput, "model" | "maxInputTokens">): number {
-  if (!input.model) return 0;
+export function directorCompactionConfig(input: Pick<DirectorCompileInput, "model" | "maxInputTokens">): {
+  inputLimit: number;
+  triggerTokens: number;
+  keepMessages: number;
+  summarySourceTokens: number;
+} {
+  if (!input.model) return { inputLimit: 0, triggerTokens: 0, keepMessages: 0, summarySourceTokens: 0 };
   const capabilities = capabilitiesForModel(input.model);
   const inputLimit = input.maxInputTokens && input.maxInputTokens > 0
     ? input.maxInputTokens
-    : capabilities.contextWindow - capabilities.maxOutputTokens;
-  return Math.max(1, Math.floor(inputLimit * capabilities.compactionThreshold));
+    : capabilities.contextWindow;
+  return {
+    inputLimit: Math.max(1, inputLimit),
+    triggerTokens: Math.max(1, Math.floor(inputLimit * capabilities.compactionThreshold)),
+    // Always retain the current request and immediately preceding response.
+    // DeepAgents' token retention can preserve zero messages when the newest
+    // request alone exceeds the target, causing an empty summary and losing
+    // the instruction that triggered cleanup.
+    keepMessages: 2,
+    // DeepAgents deliberately overestimates tokens. Give its summary-source
+    // trimmer enough headroom for a single large historical message while the
+    // active conversation remains bounded by inputLimit and triggerTokens.
+    summarySourceTokens: Math.max(1, inputLimit * 4),
+  };
+}
+
+export function directorCompactionTrigger(input: Pick<DirectorCompileInput, "model" | "maxInputTokens">): number {
+  return directorCompactionConfig(input).triggerTokens;
 }
 
 export function buildDirectorSystemPrompt(role: Role | null, fallback: string): string {
@@ -89,6 +110,18 @@ export function buildDirectorSystemPrompt(role: Role | null, fallback: string): 
   if (role.inputContract?.body) sections.push(`# Input contract (${role.inputContract.name})\n\n${role.inputContract.body}`);
   if (role.outputContract?.body) sections.push(`# Output contract (${role.outputContract.name})\n\n${role.outputContract.body}`);
   return sections.length > 0 ? sections.join("\n\n") : fallback;
+}
+
+/** Stable executable name for a file-backed role. The readable slug keeps
+ * native task traces understandable; the short id prevents collisions. */
+export function directorRoleSubagentName(role: Pick<Role, "id" | "name">): string {
+  const slug = role.name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40) || "specialist";
+  const identity = role.id.replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, 8) || "agent";
+  return `role_${slug}_${identity}`;
 }
 
 /**
@@ -121,7 +154,7 @@ export function buildRoleSubagents(
         .map((skill) => [directorSkillToolName(skill), { allowedDecisions: ["approve", "reject"] as ("approve" | "reject")[] }])
     );
     out.push({
-      name: `role_${role.id}`,
+      name: directorRoleSubagentName(role),
       description: role.description?.trim() || role.name,
       systemPrompt: buildDirectorSystemPrompt(role, ""),
       tools: roleTools,
@@ -317,7 +350,7 @@ export function compileDirector(input: DirectorCompileInput): DirectorCompileOut
     throw new Error("Director runtime requires a configured provider and model.");
   }
   const model = createDirectorModel(input.provider, input.model);
-  const compactionTrigger = directorCompactionTrigger(input);
+  const compaction = directorCompactionConfig(input);
   const basePrompt = buildDirectorSystemPrompt(input.directorRole, input.fallbackPrompt ?? "");
   const suggestionPrompt = suggestedCapabilityPrompt(input.suggestedHarnessRefs, input.roles, input.skills, input.workflows, input.evals);
   const systemPrompt = [basePrompt, suggestionPrompt].filter(Boolean).join("\n\n");
@@ -390,7 +423,11 @@ export function compileDirector(input: DirectorCompileInput): DirectorCompileOut
     middleware: [createSummarizationMiddleware({
       model,
       backend: new StateBackend(),
-      trigger: { type: "tokens", value: compactionTrigger }
+      trigger: { type: "tokens", value: compaction.triggerTokens },
+      keep: { type: "messages", value: compaction.keepMessages },
+      // DeepAgents defaults to a 4K summary slice. If a single old message is
+      // larger than that, its backwards trim can produce an empty summary.
+      trimTokensToSummarize: compaction.summarySourceTokens,
     })]
   });
   return { agent, systemPrompt, model, tools, subagents };

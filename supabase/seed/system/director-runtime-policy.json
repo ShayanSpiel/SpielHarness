@@ -1,5 +1,4 @@
 {
-  "maxInputTokens": 48000,
   "maxOutputTokens": 8192,
   "maxDurationMs": 900000,
   "maxToolCalls": 18,

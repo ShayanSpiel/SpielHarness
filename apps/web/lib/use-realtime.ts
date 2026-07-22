@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { DomainEvent, Topic } from "./realtime";
 
 // Phase 4: client-side subscriber. Opens a streaming `fetch` to
@@ -17,6 +17,8 @@ export function useRealtimeSubscription(
   orgId: string | null,
   listener: (event: DomainEvent) => void
 ): void {
+  const listenerRef = useRef(listener);
+  listenerRef.current = listener;
   useEffect(() => {
     if (!topic || !orgId || typeof window === "undefined") return;
     let closed = false;
@@ -75,7 +77,7 @@ export function useRealtimeSubscription(
             try {
               const event = JSON.parse(payload) as DomainEvent;
               if (event.orgId !== orgId) continue;
-              listener(event);
+              listenerRef.current(event);
             } catch {
               /* malformed frame, skip */
             }
@@ -100,5 +102,5 @@ export function useRealtimeSubscription(
       closed = true;
       controller?.abort();
     };
-  }, [topic, orgId, listener]);
+  }, [topic, orgId]);
 }

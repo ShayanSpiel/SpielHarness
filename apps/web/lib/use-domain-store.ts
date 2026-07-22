@@ -23,7 +23,7 @@ import type {
 import { toast } from "@spielos/design-system";
 import { fileRecordToItem, type WorkspaceItem } from "./workspace-data";
 import { fetchJsonWithRetry } from "./fetch-json";
-import { useRealtimeSubscription } from "./use-realtime";
+import { onRealtimeEvent } from "./realtime-hub";
 import type { DomainEvent } from "./realtime";
 
 
@@ -301,30 +301,26 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
   const reloadRef = useRef<(() => Promise<void>) | null>(null);
   const mountTime = useRef(Date.now());
 
-  // Phase 4: subscribe to org-scoped domain events. File mutations
-  // published by the server trigger a fresh `reload()` so the UI sees
-  // the canonical state without polling. The store stays unaware of
-  // the transport; `useRealtimeSubscription` is the only thing that
-  // knows about EventSource.
-  const orgCookie = typeof document === "undefined" ? null : document.cookie
-    .split("; ")
-    .find((row) => row.startsWith("spielos.org="))
-    ?.split("=")[1] ?? null;
-  const realtimeListener = useCallback((event: DomainEvent) => {
-    // The relay sends `context.invalidated` as a greeting on every new
-    // SSE connection. Skip it during the first 3s — the data was just
-    // loaded by the mount effect.
-    if (event.type === "context.invalidated" && Date.now() - mountTime.current < 3_000) return;
-    if (
-      event.type === "file.created" ||
-      event.type === "file.updated" ||
-      event.type === "file.deleted" ||
-      event.type === "context.invalidated"
-    ) {
-      void reloadRef.current?.();
-    }
+  // Subscribe to realtime events via the org-level hub mounted in
+  // AppProviders. File mutations trigger a fresh reload so the UI sees
+  // the canonical state without polling.
+  useEffect(() => {
+    const unsub = onRealtimeEvent((event: DomainEvent) => {
+      // The relay sends `context.invalidated` as a greeting on every new
+      // SSE connection. Skip it during the first 3s — the data was just
+      // loaded by the mount effect.
+      if (event.type === "context.invalidated" && Date.now() - mountTime.current < 3_000) return;
+      if (
+        event.type === "file.created" ||
+        event.type === "file.updated" ||
+        event.type === "file.deleted" ||
+        event.type === "context.invalidated"
+      ) {
+        void reloadRef.current?.();
+      }
+    });
+    return unsub;
   }, []);
-  useRealtimeSubscription(orgCookie ? `org:${orgCookie}` : null, orgCookie, realtimeListener);
 
   const reload = useCallback(async () => {
     reloadRef.current = reload;
@@ -789,21 +785,36 @@ export function DomainStoreProvider({ children }: { children: ReactNode }) {
     await reload();
   }, [reload]);
 
-  const items = files
-    .map(fileRecordToItem)
-    .filter((item): item is WorkspaceItem => item !== null);
+  const items = useMemo(
+    () => files
+      .map(fileRecordToItem)
+      .filter((item): item is WorkspaceItem => item !== null),
+    [files],
+  );
 
-  const skills = files.filter((f) => f.fileType === "harness_skill").map(parseSkill);
-  const skillIdBySlug = new Map(skills.map((skill) => [skill.slug, skill.id]));
-  const roles = files
-    .filter((f) => f.fileType === "harness_role")
-    .map(parseRole)
-    .map((role) => ({
-      ...role,
-      skillIds: role.skillIds.map((idOrSlug) => skillIdBySlug.get(idOrSlug) ?? idOrSlug)
-    }));
-  const workflows = files.filter((f) => f.fileType === "harness_workflow" || f.fileType === "harness_workstream").map(parseWorkflow);
-  const evalFiles = files.filter((f) => f.fileType === "harness_eval").map(parseEval);
+  const skills = useMemo(
+    () => files.filter((f) => f.fileType === "harness_skill").map(parseSkill),
+    [files],
+  );
+  const skillIdBySlug = useMemo(() => new Map(skills.map((skill) => [skill.slug, skill.id])), [skills]);
+  const roles = useMemo(
+    () => files
+      .filter((f) => f.fileType === "harness_role")
+      .map(parseRole)
+      .map((role) => ({
+        ...role,
+        skillIds: role.skillIds.map((idOrSlug) => skillIdBySlug.get(idOrSlug) ?? idOrSlug)
+      })),
+    [files, skillIdBySlug],
+  );
+  const workflows = useMemo(
+    () => files.filter((f) => f.fileType === "harness_workflow" || f.fileType === "harness_workstream").map(parseWorkflow),
+    [files],
+  );
+  const evalFiles = useMemo(
+    () => files.filter((f) => f.fileType === "harness_eval").map(parseEval),
+    [files],
+  );
 
   const store = useMemo<DomainStore>(
     () => ({

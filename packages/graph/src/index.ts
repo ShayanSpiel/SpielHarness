@@ -203,8 +203,11 @@ export type RunRequest = {
   model: Model | null;
   goal?: RunGoal;
   budget?: Partial<Pick<RunBudget, "maxInputTokens" | "maxOutputTokens" | "maxDurationMs" | "maxToolCalls">>;
+  /** Workspace context envelope. Separate from the cumulative run budget. */
+  contextLimits?: { maxInputTokens?: number | null; maxOutputTokens?: number | null };
   previousCompaction?: ConversationCompaction | null;
   chatMetadata?: Record<string, unknown>;
+  conversationHistory?: ChatMessage[];
   onUsage?: (usage: ChatUsage) => void;
   onModelUsage?: (update: ModelUsageUpdate) => void;
   onToolUsage?: (count: number) => void;
@@ -293,6 +296,10 @@ const RunStateAnnotation = Annotation.Root({
   resume: Annotation<Record<string, unknown> | undefined>(),
   checkControl: Annotation<(() => "cancel" | "pause" | null) | undefined>(),
   chatMetadata: Annotation<Record<string, unknown> | undefined>(),
+  conversationHistory: Annotation<ChatMessage[]>({
+    reducer: (_current, update) => update ?? [],
+    default: () => []
+  }),
   longHorizon: Annotation<LongHorizonCheckpoint>({
     reducer: (current, update) => mergeLongHorizonCheckpoints(current, update),
     default: () => ({ pinnedState: emptyPinnedState(), milestones: [] })
@@ -479,6 +486,10 @@ async function assembleNodeLongHorizon(args: {
 }> {
   const currentUserMessage: ChatMessage = { role: "user", content: args.input };
   const current = args.state.longHorizon;
+  const conversationHistory = args.state.conversationHistory.at(-1)?.role === "user"
+    && args.state.conversationHistory.at(-1)?.content === args.input
+    ? args.state.conversationHistory.slice(0, -1)
+    : args.state.conversationHistory;
   const completedHistory: ChatMessage[] = args.state.completedNodes.flatMap((nodeId) => {
     const value = args.state.outputs[nodeId];
     if (!value || value === args.input) return [];
@@ -494,7 +505,7 @@ async function assembleNodeLongHorizon(args: {
     fallbackModel: null,
     state: current.pinnedState,
     previousMilestone: current.milestones.at(-1) ?? null,
-    history: completedHistory,
+    history: [...conversationHistory, ...completedHistory],
     systemPrompt: args.system,
     currentUserMessage,
     inputLimit: Math.max(1024, capabilitiesForModel(args.state.model!).contextWindow - capabilitiesForModel(args.state.model!).maxOutputTokens),
@@ -509,7 +520,7 @@ async function assembleNodeLongHorizon(args: {
     messages: [{ role: "system", content: longHorizon.system }, ...longHorizon.history, currentUserMessage],
     checkpoint,
     inputTokens: longHorizon.finalTokens,
-    removedMessages: Math.max(0, completedHistory.length - longHorizon.history.length),
+    removedMessages: Math.max(0, conversationHistory.length + completedHistory.length - longHorizon.history.length),
     compacted: longHorizon.compacted,
     milestone: longHorizon.newMilestones.at(-1) ?? null,
     newMilestones: longHorizon.newMilestones,
@@ -980,6 +991,11 @@ function outputArtifactTitle(output: string, fallback: string): string {
   return heading && heading.length <= 140 ? heading : fallback;
 }
 
+function requestedArtifactFilename(prompt: string): string | null {
+  const match = prompt.match(/\b(?:named|called|filename(?:\s+is)?)\s+["'`]?([^\s"'`]+\.(?:md|markdown|html|json|pdf))["'`]?/i);
+  return match?.[1]?.replace(/[.,;:!?]+$/, "") ?? null;
+}
+
 async function executeHttpCall(
   state: NodeState,
   skill: Skill,
@@ -992,7 +1008,13 @@ async function executeHttpCall(
     if (binding) return connection.id === binding.connectionId;
     return connection.operations.some((operation) => operation.id === skill.slug);
   });
-  const connection = candidates[0];
+  // Seeded provider shells and account-specific OAuth connections may expose
+  // the same operation. Prefer the actually credentialed account; an explicit
+  // file-backed binding still wins because it narrows `candidates` above.
+  const connection = candidates.find((candidate) =>
+    typeof candidate.config?.oauthCredential === "string"
+      && candidate.config.oauthCredential.length > 0
+  ) ?? candidates[0];
   if (!connection) {
     throw new Error(`Skill "${skill.name}" needs a configured connection with operation "${binding?.operation ?? skill.slug}".`);
   }
@@ -1328,7 +1350,6 @@ async function reactLoop(
       baseAssembled = true;
       lastContextTokens = contextAssembly.inputTokens;
     }
-    const writer = getWriter();
     let response = "";
     const stream = streamChat(state.provider, state.model, messages, {
       signal,
@@ -1337,10 +1358,6 @@ async function reactLoop(
     });
     for await (const delta of stream) {
       response += delta;
-      // Stream deltas during generation so the UI sees text as it
-      // arrives, rather than receiving the entire response only at the
-      // end of the ReAct iteration.
-      writer?.({ kind: "text_delta", text: delta });
     }
     // Avoid retaining unused state from the prior iteration.
     void lastContextTokens;
@@ -1375,6 +1392,11 @@ async function reactLoop(
       const disposition: NodeOutputDisposition = usesTools
         ? { kind: "tool_evidence", persist: false }
         : { kind: "assistant_text" };
+      // A ReAct response is semantically ambiguous until parsing finishes:
+      // it may be a tool invocation rather than user-visible prose. Publish
+      // only the classified final answer; tool calls and results are rendered
+      // from their native events in the inspector.
+      getWriter()?.({ kind: "text_delta", text: response });
       return { text: response, disposition, longHorizon: longHorizonCheckpoint };
     }
     missingRequiredToolAttempts = 0;
@@ -1449,6 +1471,34 @@ async function reactLoop(
     if (runnable.length === 0 && calls.length > 0) {
       blockedToolBatches++;
       if (blockedToolBatches >= 2) {
+        const missingRequiredTools = (node.requiredToolCalls ?? [])
+          .filter((slug) => (callsByTool.get(slug) ?? 0) === 0);
+        if (toolEvidence.length > 0 && missingRequiredTools.length === 0) {
+          const boundedEvidence = toolEvidence.map((entry, index) => [
+            `Evidence ${index + 1} — ${entry.tool} (${entry.success ? "success" : "failure"})`,
+            entry.result,
+          ].join("\n")).join("\n\n---\n\n");
+          emitEvent(makeEvent(
+            state.orgId,
+            state.runId,
+            "status",
+            `${node.title} reached its file-backed tool limits and continued with the bounded evidence already collected.`,
+            {
+              nodeId: node.id,
+              nodeTitle: node.title,
+              payload: {
+                category: "tool_limit",
+                disposition: "bounded_evidence",
+                evidenceCount: toolEvidence.length,
+              },
+            }
+          ));
+          return {
+            text: boundedEvidence,
+            disposition: { kind: "tool_evidence", persist: false },
+            longHorizon: longHorizonCheckpoint,
+          };
+        }
         throw new Error(`File-backed tool limits were repeatedly exceeded in "${node.title}". Narrow the role instructions or increase the node limits.`);
       }
       continue;
@@ -1719,7 +1769,9 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
           role,
           skill,
           output,
-          isTerminalNode && llmCallSkills.indexOf(skill) === llmCallSkills.length - 1,
+          isTerminalNode
+            && workflowNode.outputDisposition !== "artifact"
+            && llmCallSkills.indexOf(skill) === llmCallSkills.length - 1,
           emitEvent,
           signal
         );
@@ -2126,6 +2178,9 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
     // dispositions (artifact, harness_file, eval_report) follow the existing
     // persistence path.
     const hasHumanInputSkill = nodeSkills.some((skill) => skill.kind === "human_input");
+    if (workflowNode.outputDisposition === "artifact") {
+      nodeOutputDisposition = { kind: "artifact", artifactType: "artifact" };
+    }
     const isAssistantText = nodeOutputDisposition.kind === "assistant_text";
     const isToolEvidenceWithoutPersist = nodeOutputDisposition.kind === "tool_evidence" && nodeOutputDisposition.persist === false;
     const suppressArtifact = hasHumanInputSkill || isAssistantText || isToolEvidenceWithoutPersist;
@@ -2142,9 +2197,17 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
         state.orgId,
         state.runId,
         artifactType,
-        outputArtifactTitle(output, workflowNode.title),
+        workflowNode.outputDisposition === "artifact"
+          ? requestedArtifactFilename(state.prompt) ?? outputArtifactTitle(output, workflowNode.title)
+          : outputArtifactTitle(output, workflowNode.title),
         output,
-        { nodeId: workflowNode.id, nodeTitle: workflowNode.title, roleId: role.id, roleName: role.name }
+        {
+          nodeId: workflowNode.id,
+          nodeTitle: workflowNode.title,
+          roleId: role.id,
+          roleName: role.name,
+          mimeType: "text/markdown"
+        }
       );
       artifacts.push(artifact);
       emitEvent(makeEvent(
@@ -2154,6 +2217,9 @@ function makeNodeExecutor(workflowNode: WorkflowNode, signal?: AbortSignal, bran
         `${artifact.title} created.`,
         { nodeId: workflowNode.id, nodeTitle: workflowNode.title, payload: { artifactId: artifact.id, artifactType: artifact.type } }
       ));
+      if (workflowNode.outputDisposition === "artifact") {
+        writer?.({ kind: "text_delta", text: `${artifact.title} created and saved to Outputs.` });
+      }
     }
 
     const nodeCompleted = makeEvent(
@@ -2336,6 +2402,7 @@ function buildInitialState(req: RunRequest) {
     resume: req.resume,
     checkControl: req.checkControl,
     chatMetadata: req.chatMetadata,
+    conversationHistory: req.conversationHistory ?? [],
     longHorizon,
     completedNodes: cp?.completedNodes ?? [],
     outputs: cp?.outputs ?? {},
@@ -2763,7 +2830,7 @@ export async function* streamChatRun(
     if (assembly.compacted && assembly.compaction) {
       yield {
         kind: "event",
-        event: makeEvent(req.orgId, req.runId, "status", `Compacted ${assembly.removedMessages} older conversation messages.`, {
+        event: makeEvent(req.orgId, req.runId, "status", "Context cleaned up.", {
           payload: { category: "compaction", ...assembly.compaction, removedMessages: assembly.removedMessages }
         })
       };
@@ -2862,13 +2929,14 @@ export async function* streamChatRun(
 import {
   compileDirector,
   directorEvalToolName,
+  directorRoleSubagentName,
   directorSkillToolName,
   historyToMessages
 } from "./director/compile.ts";
 import { mapDirectorInterrupts, type DirectorStateSnapshot } from "./director/events.ts";
 import { DirectorUsageTracker } from "./director/usage.ts";
 import { noopToolContext } from "./director/tools.ts";
-import { artifactsFromDirectorFiles, buildDirectorFiles, mapDirectorValues, type DirectorToolPresentation } from "./director/values.ts";
+import { artifactsFromDirectorFiles, buildDirectorFiles, mapDirectorValues, type DirectorSubagentPresentation, type DirectorToolPresentation } from "./director/values.ts";
 import { directorResumePayload } from "./director/interrupt.ts";
 import { Command } from "@langchain/langgraph";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
@@ -2922,6 +2990,7 @@ export async function* streamDirectorRun(
 
   const directorRole = findDirectorRole(req);
   if (!directorRole) {
+    yield { kind: "text", text: "Director could not start because the file-backed Orchestrator role is unavailable." };
     yield {
       kind: "event",
       event: makeEvent(req.orgId, req.runId, "run_failed", "Director requires an active file-backed orchestrator role.", {
@@ -2952,6 +3021,11 @@ export async function* streamDirectorRun(
   for (const evalFile of Object.values(req.directorEvals ?? {})) {
     toolPresentation[directorEvalToolName(evalFile)] = { label: evalFile.name };
   }
+  const subagentPresentation: Record<string, DirectorSubagentPresentation> = {};
+  for (const role of Object.values(req.roles ?? {})) {
+    if (role.status !== "active" || role.id === directorRole.id || role.metadata?.systemRole === "orchestrator") continue;
+    subagentPresentation[directorRoleSubagentName(role)] = { roleId: role.id, roleName: role.name };
+  }
   // Native Director lifecycle begins before model construction. This lets the
   // timeline account for real checkpointer and agent-setup latency.
   yield {
@@ -2975,7 +3049,7 @@ export async function* streamDirectorRun(
     toolContext: req.directorToolContext ?? noopToolContext(),
     checkpointer: req.directorCheckpointer ?? null,
     signal: req.signal,
-    maxInputTokens: req.budget?.maxInputTokens ?? null
+    maxInputTokens: req.contextLimits?.maxInputTokens ?? null
   });
   const history: ChatMessage[] = [...(req.history ?? [])];
   if (history.at(-1)?.role !== "user" || history.at(-1)?.content !== req.prompt) {
@@ -3077,6 +3151,7 @@ export async function* streamDirectorRun(
         );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Director failed.";
+    yield { kind: "text", text: `Director stopped before completing: ${message}` };
     yield { kind: "event", event: makeEvent(req.orgId, req.runId, "run_failed", message) };
     yield {
       kind: "checkpoint",
@@ -3119,7 +3194,8 @@ export async function* streamDirectorRun(
       skipRootMessages,
       toolPresentation,
       req.onModelUsage,
-      req.budget
+      req.budget,
+      subagentPresentation
     );
     while (true) {
       const next = await mapped.next();
@@ -3158,6 +3234,7 @@ export async function* streamDirectorRun(
       return;
     }
     const message = err instanceof Error ? err.message : "Director stream failed.";
+    yield { kind: "text", text: `${assistantText.trim() ? "\n\n" : ""}Director stopped before completing: ${message}` };
     yield { kind: "event", event: makeEvent(req.orgId, req.runId, "run_failed", message) };
     // Errors raised while consuming the native Deep Agents stream happen
     // after `agent.stream()` has successfully returned. Persist the same

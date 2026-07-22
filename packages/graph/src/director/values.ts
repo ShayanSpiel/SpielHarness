@@ -8,6 +8,7 @@ import type { DirectorUsageTracker } from "./usage.ts";
 
 type NativeToolCall = { id?: string; name?: string; args?: unknown };
 export type DirectorToolPresentation = { label?: string; icon?: string; logo?: string; integrationName?: string };
+export type DirectorSubagentPresentation = { roleId: string; roleName: string };
 type NativeState = {
   messages?: unknown[];
   todos?: unknown[];
@@ -74,6 +75,17 @@ function isNativeSummarizationMessage(message: unknown): boolean {
   );
 }
 
+function nativeSummaryText(message: unknown): string | null {
+  if (!message || typeof message !== "object") return null;
+  const content = textFromProviderContent((message as { content?: unknown }).content).trim();
+  if (!content) return null;
+  const tagged = content.match(/<summary>\s*([\s\S]*?)\s*<\/summary>/i)?.[1]?.trim();
+  if (tagged) return tagged;
+  return content
+    .replace(/^Here is a summary of the conversation to date:\s*/i, "")
+    .trim();
+}
+
 function toolActivity(name: string, presentation?: DirectorToolPresentation): { message: string; category: string } {
   if (presentation?.label) return { message: `${presentation.label}…`, category: "integration" };
   if (name === "write_todos") return { message: "Planning…", category: "planning" };
@@ -116,6 +128,7 @@ export async function* mapDirectorValues(
   toolPresentation: Record<string, DirectorToolPresentation> = {},
   onModelUsage?: (update: ModelUsageUpdate) => void,
   tokenBudget?: { maxInputTokens?: number | null; maxOutputTokens?: number | null },
+  subagentPresentation: Record<string, DirectorSubagentPresentation> = {},
 ): AsyncGenerator<RunYield, DirectorValueState, void> {
   const yieldedTextLen = new Map<string, number>();
   const yieldedToolCalls = new Set<string>();
@@ -152,9 +165,10 @@ export async function* mapDirectorValues(
       if (summaryIdentity && !yieldedCompactions.has(summaryIdentity)) {
         yieldedCompactions.add(summaryIdentity);
         const createdAt = new Date().toISOString();
+        const summary = nativeSummaryText(nativeSummary);
         yield {
           kind: "event",
-          event: event(target, "status", "Context compacted.", {
+          event: event(target, "status", "Context cleaned up.", {
             category: "compaction",
             previousMessageCount: maxRootMessageCount,
             compactedMessageCount: typeof state._summarizationEvent?.cutoffIndex === "number"
@@ -163,6 +177,7 @@ export async function* mapDirectorValues(
             summaryMessageId: summaryIdentity,
             cutoffIndex: state._summarizationEvent?.cutoffIndex,
             historyPath: state._summarizationEvent?.filePath ?? undefined,
+            ...(summary ? { summary } : {}),
             createdAt
           })
         };
@@ -195,12 +210,6 @@ export async function* mapDirectorValues(
         if (metadata && !yieldedUsage.has(identity)) {
           yieldedUsage.add(identity);
           usage.record(metadata);
-          if (tokenBudget?.maxInputTokens && usage.snapshot().input > tokenBudget.maxInputTokens) {
-            throw new Error(`Director input-token budget exceeded (${tokenBudget.maxInputTokens}).`);
-          }
-          if (tokenBudget?.maxOutputTokens && usage.snapshot().output > tokenBudget.maxOutputTokens) {
-            throw new Error(`Director output-token budget exceeded (${tokenBudget.maxOutputTokens}).`);
-          }
           const scope = decoded.namespace.length === 0 ? "root" : "subagent";
           onModelUsage?.({
             inputTokens: metadata.input_tokens ?? 0,
@@ -209,6 +218,12 @@ export async function* mapDirectorValues(
             scope,
             updatesContext: scope === "root",
           });
+          if (tokenBudget?.maxInputTokens && usage.snapshot().input > tokenBudget.maxInputTokens) {
+            throw new Error(`Director cumulative input-token budget exceeded (${tokenBudget.maxInputTokens}).`);
+          }
+          if (tokenBudget?.maxOutputTokens && usage.snapshot().output > tokenBudget.maxOutputTokens) {
+            throw new Error(`Director cumulative output-token budget exceeded (${tokenBudget.maxOutputTokens}).`);
+          }
         }
         for (const [callIndex, call] of nativeToolCalls(message).entries()) {
           const callId = call.id ?? `${identity}:call-${callIndex}`;
@@ -221,8 +236,9 @@ export async function* mapDirectorValues(
             ? call.args as Record<string, unknown>
             : {};
           const subagentType = name === "task" && typeof args.subagent_type === "string" ? args.subagent_type : null;
-          const roleId = subagentType?.startsWith("role_") ? subagentType.slice("role_".length) : subagentType;
-          const roleName = subagentType?.replace(/^role_/, "").replace(/[_-]+/g, " ").trim();
+          const subagent = subagentType ? subagentPresentation[subagentType] : undefined;
+          const roleId = subagent?.roleId ?? subagentType;
+          const roleName = subagent?.roleName ?? subagentType?.replace(/^role_/, "").replace(/[_-]+/g, " ").trim();
           yield {
             kind: "event",
             event: event(target, "tool_call_started", activity.message, {

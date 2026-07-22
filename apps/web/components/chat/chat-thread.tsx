@@ -12,8 +12,6 @@ import {
   useExternalStoreRuntime,
   useMessagePartText
 } from "@assistant-ui/react";
-import { usePathname } from "next/navigation";
-import { activeRunStreams } from "../../lib/chat-adapter";
 import {
   type FormEvent,
   type KeyboardEvent,
@@ -25,7 +23,6 @@ import {
   useState
 } from "react";
 import { createPortal } from "react-dom";
-import ReactMarkdown from "react-markdown";
 import { ArtifactFullscreenButton, ArtifactWorkbench } from "./artifact-workbench";
 import {
   Button,
@@ -38,32 +35,36 @@ import {
   cn,
   toast
 } from "@spielos/design-system";
-import remarkGfm from "remark-gfm";
-import { buildExternalStoreAdapter } from "../../lib/external-store-adapter";
+import { useRuntimeAdapter } from "../../lib/external-store-adapter";
 import { consumeSseStream } from "../../lib/sse-stream-consumer";
-import { useRunContext } from "../../lib/run-context";
-import { useWorkspaceStore } from "../../lib/use-workspace-store";
+import { useRuntimeStore } from "../../lib/runtime-store";
+import { useDomainStore } from "../../lib/use-domain-store";
 import { useUiStore } from "../../lib/use-ui-store";
 import { buildObjectReferences, mentionText, type ObjectReference } from "../../lib/object-references";
 import { getTextAroundCursor } from "../mention-textarea";
 import { MentionDropdown } from "../mention-dropdown";
 import { ContextChips } from "./context-chips";
 import { ContextPicker } from "./context-picker";
+import { MarkdownContent } from "./markdown-content";
 import { capabilitiesForModel, type Artifact, type ExecutionMode, type HumanInputQuestion, type HumanInputRequest, type RunEvent, type RunStatus } from "@spielos/core";
 import { ReasoningEffortControl, type ReasoningEffort } from "../reasoning-effort-control";
 import { ChatModelPicker } from "../chat-model-picker";
 import {
+  compactRunEvents,
+  isFailureEvent,
   isStartEvent,
+  isSuccessEvent,
+  isWaitingEvent,
   orderRunEvents,
+  runtimeEventIcon,
 } from "../../lib/run-events";
 
 function ComposerAddContext({ count }: { count: number }) {
-  const run = useRunContext();
   return (
     <Button
       aria-label="Open context deck"
       icon={CONTEXT_ICON}
-      onClick={() => run.setPickerOpen(true)}
+      onClick={() => useRuntimeStore.getState().setPickerOpen(true)}
       size="sm"
       type="button"
       variant="subtle"
@@ -96,10 +97,11 @@ function readActiveProject(value: unknown): ActiveProjectMetadata | null {
 }
 
 function ActiveProjectChip() {
-  const store = useWorkspaceStore();
-  const run = useRunContext();
-  const activeChat = store.chats.find((chat) => chat.id === store.activeChatId) ?? null;
+  const activeChatId = useRuntimeStore((s) => s.activeChatId);
+  const chats = useRuntimeStore((s) => s.chats);
+  const activeChat = chats.find((chat) => chat.id === activeChatId) ?? null;
   const project = readActiveProject(activeChat?.metadata?.activeProject);
+  const store = useRuntimeStore.getState();
   if (!project) return null;
   return (
     <div className="mb-2 flex flex-wrap items-center gap-1.5" aria-label="Active project">
@@ -107,7 +109,7 @@ function ActiveProjectChip() {
       <span className="text-3xs text-muted-foreground">{project.artifactId ? "Revision mode" : project.status}</span>
       {project.workflowId ? (
         <Button
-          onClick={() => run.addContext({ id: project.workflowId!, kind: "workflow", title: `Run ${project.title} again` })}
+          onClick={() => store.addContext({ id: project.workflowId!, kind: "workflow", title: `Run ${project.title} again` })}
           size="sm"
           type="button"
           variant="ghost"
@@ -118,8 +120,8 @@ function ActiveProjectChip() {
       <Button
         onClick={() => {
           void store.createChat("New project");
-          run.reset();
-          run.clearContext();
+          store.resetRun();
+          store.clearContext();
         }}
         size="sm"
         type="button"
@@ -151,23 +153,10 @@ function ComposerSend() {
 }
 
 function ComposerCancel() {
-  const run = useRunContext();
-  const cancelRun = () => {
-    if (!run.activeRunId) return;
-    fetch(`/api/runs/${run.activeRunId}/cancel`, {
-      method: "POST",
-      keepalive: true
-    }).then((response) => {
-      if (response.ok) run.setRunStatus("cancelled");
-    }).catch(() => {
-      // The durable cancellation flag is best effort from this control; the
-      // inspector keeps the run available for another attempt.
-    });
-  };
   return (
     <Tooltip content="Stop" side="top">
       <ComposerPrimitive.Cancel asChild>
-        <Button aria-label="Stop generating" onPointerDown={cancelRun} size="icon">
+        <Button aria-label="Stop generating" size="icon" type="button">
           <Icon name="square" className="fill-current" size={14} />
         </Button>
       </ComposerPrimitive.Cancel>
@@ -198,7 +187,6 @@ function useHumanInputFlow(
   request: HumanInputRequest | null,
   textareaRef: React.RefObject<HTMLTextAreaElement | null>
 ) {
-  const run = useRunContext();
   const [answers, setAnswers] = useState<Record<string, unknown>>({});
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState("");
@@ -252,16 +240,18 @@ function useHumanInputFlow(
   }, [clearDraft, question]);
 
   const submitAnswers = useCallback(async (finalAnswers: Record<string, unknown>) => {
-    if (!request || !run.activeRunId) return;
+    const store = useRuntimeStore.getState();
+    const activeRunId = store.activeRunId;
+    if (!request || !activeRunId) return;
     setSubmitting(true);
     setError(null);
-    run.clearContinuationText();
-    run.setHumanInputRequest(null);
-    run.setRunStatus("running");
-    run.setActivity("Saving input and resuming the workflow…");
+    const generationId = crypto.randomUUID();
+    store.dispatch({ type: "human_input_submitted", runId: activeRunId, generationId });
+    store.setActivity("Saving input and resuming the workflow\u2026");
+    const chatId = store.activeChatId;
     let responseStarted = false;
     try {
-      const response = await fetch(`/api/runs/${run.activeRunId}/reply`, {
+      const response = await fetch(`/api/runs/${activeRunId}/reply`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ requestId: request.id, answers: finalAnswers })
@@ -278,51 +268,33 @@ function useHumanInputFlow(
       }
 
       responseStarted = true;
-      const generationId = run.beginRunAttempt();
-      run.setActivity("Resuming from the durable checkpoint…");
+      store.setActivity("Resuming from the durable checkpoint\u2026");
       clearDraft();
 
-      const sseResult = await consumeSseStream(response, {
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        upsertChat: (_chat: unknown) => {},
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        upsertMessage: (_cid: unknown, _msg: unknown) => {},
-        setRunStatus: (s) => run.setRunStatus(s),
-        setRunType: (t) => run.setRunType(t as import("@spielos/core").RunType | null),
-        setActiveRunId: (rid) => run.setActiveRunId(rid),
-        setActivity: (a) => run.setActivity(a),
-        attachStream: (rid) => { run.attachStream(rid); activeRunStreams.add(rid); },
-        detachStream: (rid) => { run.detachStream(rid); activeRunStreams.delete(rid); },
-        appendEvent: (e) => run.appendEvent(e),
-        clearEvents: () => run.clearEvents(),
-        clearArtifacts: () => run.clearArtifacts(),
-        appendArtifact: (a) => run.appendArtifact(a),
-        setDurableState: (s) => run.setDurableState(s as import("../../lib/run-context").DurableRunState | null),
-        setLiveUsage: (u) => run.setLiveUsage(u),
-        setHumanInputRequest: (r) => run.setHumanInputRequest(r),
-        recordCheckpointVersion: (v) => run.recordCheckpointVersion(v),
-        beginRunAttempt: () => run.beginRunAttempt(),
-        activateRunProjection: (rid) => run.activateRunProjection(rid),
-        isGenerationCurrent: (gid: string) => run.isGenerationCurrent(gid)
-      }, generationId, (text) => run.appendContinuationText(text));
+      await consumeSseStream(response, generationId, {
+        onText: (text, runId) => {
+          if (chatId) useRuntimeStore.getState().appendStreamText(chatId, runId, generationId, text);
+        },
+      });
 
-      if (!sseResult.status || sseResult.status === "failed") {
-        run.setRunStatus("failed");
+      const finalStatus = useRuntimeStore.getState().runStatus;
+      if (!finalStatus || finalStatus === "failed") {
+        useRuntimeStore.getState().setRunStatus("failed");
       }
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Unable to resume the run.";
       setError(message);
       if (responseStarted) {
-        run.setRunStatus("failed");
+        useRuntimeStore.getState().setRunStatus("failed");
       } else {
-        run.setHumanInputRequest(request);
-        run.setRunStatus("waiting_human");
+        useRuntimeStore.getState().setHumanInputRequest(request);
+        useRuntimeStore.getState().setRunStatus("waiting_human");
       }
       toast.error("The run could not continue", { description: message });
     } finally {
       setSubmitting(false);
     }
-  }, [clearDraft, request, run]);
+  }, [clearDraft, request]);
 
   const advance = useCallback(async () => {
     if (!request || !question || !canAdvance || submitting) return;
@@ -481,42 +453,51 @@ function HumanInputPrompt({ flow }: { flow: HumanInputFlow }) {
 
 function Composer() {
   const isRunning = useAuiState((s) => s.thread.isRunning);
-  const run = useRunContext();
-  const terminal = run.status === "failed" || run.status === "cancelled" || run.status === "completed";
-  const durablyRunning = !terminal && (isRunning || (run.status === "running" && Boolean(run.activeRunId)));
-  const store = useWorkspaceStore();
+  const runStatus = useRuntimeStore((s) => s.runStatus);
+  const activeRunId = useRuntimeStore((s) => s.activeRunId);
+  const humanInputRequest = useRuntimeStore((s) => s.humanInputRequest);
+  const contextItems = useRuntimeStore((s) => s.contextItems);
+  const pendingModelId = useRuntimeStore((s) => s.pendingModelId);
+  const pendingReasoningEffort = useRuntimeStore((s) => s.pendingReasoningEffort);
+  const pendingExecutionMode = useRuntimeStore((s) => s.pendingExecutionMode);
+  const activeChatId = useRuntimeStore((s) => s.activeChatId);
+  const chats = useRuntimeStore((s) => s.chats);
+  const { models: domainModels } = useDomainStore();
+  const terminal = runStatus === "failed" || runStatus === "cancelled" || runStatus === "completed";
+  const durablyRunning = !terminal && (isRunning || (runStatus === "running" && Boolean(activeRunId)));
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composerShellRef = useRef<HTMLDivElement>(null);
   const mentionPortalRef = useRef<HTMLDivElement>(null);
-  const human = useHumanInputFlow(run.humanInputRequest, textareaRef);
-  const activeChat = store.chats.find((chat) => chat.id === store.activeChatId) ?? null;
-  const enabledModels = store.models.filter((model) => model.enabled);
+  const human = useHumanInputFlow(humanInputRequest, textareaRef);
+  const activeChat = chats.find((chat) => chat.id === activeChatId) ?? null;
+  const enabledModels = domainModels.filter((model) => model.enabled);
   const selectedModelId = typeof activeChat?.metadata?.modelId === "string"
     ? activeChat.metadata.modelId
-    : run.pendingModelId ?? enabledModels[0]?.id ?? "";
+    : pendingModelId ?? enabledModels[0]?.id ?? "";
   const selectedModel = enabledModels.find((model) => model.id === selectedModelId) ?? enabledModels[0] ?? null;
   const selectedEffort: ReasoningEffort = typeof activeChat?.metadata?.reasoningEffort === "string"
     ? activeChat.metadata.reasoningEffort as ReasoningEffort
-    : run.pendingReasoningEffort !== "auto"
-      ? run.pendingReasoningEffort as ReasoningEffort
+    : pendingReasoningEffort !== "auto"
+      ? pendingReasoningEffort as ReasoningEffort
       : selectedModel ? capabilitiesForModel(selectedModel).reasoningEffort : "auto";
   const executionMode: ExecutionMode = typeof activeChat?.metadata?.executionMode === "string"
     ? activeChat.metadata.executionMode as ExecutionMode
-    : run.pendingExecutionMode as ExecutionMode;
+    : pendingExecutionMode as ExecutionMode;
 
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionAtIndex, setMentionAtIndex] = useState(-1);
 
+  const domainStore = useDomainStore();
   const allItems = useMemo(
     () => buildObjectReferences({
-      items: store.items,
-      roles: store.roles,
-      skills: store.skills,
-      evalFiles: store.evalFiles,
-      workstreams: store.workflows
+      items: domainStore.items,
+      roles: domainStore.roles,
+      skills: domainStore.skills,
+      evalFiles: domainStore.evalFiles,
+      workstreams: domainStore.workflows
     }),
-    [store.items, store.roles, store.skills, store.evalFiles, store.workflows]
+    [domainStore.items, domainStore.roles, domainStore.skills, domainStore.evalFiles, domainStore.workflows]
   );
 
   const filteredItems = useMemo(() => {
@@ -577,11 +558,9 @@ function Composer() {
         return;
       }
     }
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
-      const form = event.currentTarget.closest("form") as HTMLFormElement | null;
-      form?.requestSubmit();
-    }
+    // Normal Enter submission is handled by ComposerPrimitive internally.
+    // We must NOT call form.requestSubmit() here — that would trigger
+    // a second onNew call via assistant-ui's form submit handler.
   }, [human, mentionOpen, closeMention]);
 
   const handleComposerClick = useCallback((event: React.MouseEvent<HTMLTextAreaElement>) => {
@@ -597,9 +576,14 @@ function Composer() {
   }, [human.request, openMention, closeMention]);
 
   const handleSubmit = useCallback((event: FormEvent<HTMLFormElement>) => {
-    if (!human.request) return;
-    event.preventDefault();
-    void human.advance();
+    if (human.request) {
+      // Human-input: prevent page navigation and advance the flow.
+      event.preventDefault();
+      void human.advance();
+    }
+    // Normal chat: let assistant-ui's ComposerPrimitive handle submission.
+    // Calling event.preventDefault() here would prevent ComposerPrimitive
+    // from processing the submit, which breaks Enter-key sending.
   }, [human]);
 
   const insertMention = useCallback((ref: ObjectReference) => {
@@ -638,7 +622,7 @@ function Composer() {
     <ComposerPrimitive.Root className="aui-composer relative flex w-full flex-col gap-1.5" onSubmit={handleSubmit}>
       <HumanInputPrompt flow={human} />
       <ActiveProjectChip />
-      <ContextChips items={run.contextItems} onRemove={run.removeContext} isSuggestion={executionMode === "director"} />
+      <ContextChips items={contextItems} onRemove={(id) => useRuntimeStore.getState().removeContext(id)} isSuggestion={executionMode === "director"} />
       <div
         ref={composerShellRef}
         data-slot="aui-composer-shell"
@@ -669,7 +653,7 @@ function Composer() {
             <Pill tone="warning"><Icon name="user" size={10} /> Awaiting input</Pill>
           ) : (
             <div className="flex min-w-0 items-center gap-1.5">
-              <ComposerAddContext count={run.contextItems.length} />
+              <ComposerAddContext count={contextItems.length} />
               <Tooltip content={executionMode === "director" ? "Switch to direct mode" : "Switch to director mode"}>
                 <Button
                   aria-label="Toggle Director mode"
@@ -677,9 +661,9 @@ function Composer() {
                   onClick={() => {
                     const next = executionMode === "director" ? "direct" : "director";
                     if (activeChat) {
-                      void store.updateChatMetadata(activeChat.id, { executionMode: next });
+                      void useRuntimeStore.getState().updateChatMetadata(activeChat.id, { executionMode: next });
                     }
-                    run.setPendingExecutionMode(next);
+                    useRuntimeStore.getState().setPendingExecutionMode(next);
                   }}
                   size="sm"
                   type="button"
@@ -692,12 +676,13 @@ function Composer() {
                 <ChatModelPicker
                   models={enabledModels}
                   onChange={(modelId) => {
+                    const store = useRuntimeStore.getState();
                     if (activeChat) {
                       void store.updateChatMetadata(activeChat.id, { modelId });
                     } else {
-                      run.setPendingModelId(modelId);
-                      const model = enabledModels.find((entry) => entry.id === modelId);
-                      if (model) run.setPendingReasoningEffort(capabilitiesForModel(model).reasoningEffort);
+                      store.setPendingModelId(modelId);
+                      const model = enabledModels.find((entry: { id: string }) => entry.id === modelId);
+                      if (model) store.setPendingReasoningEffort(capabilitiesForModel(model).reasoningEffort);
                     }
                   }}
                   value={selectedModelId}
@@ -706,10 +691,11 @@ function Composer() {
               {selectedModel ? (
                 <ReasoningEffortControl
                   onChange={(reasoningEffort) => {
+                    const store = useRuntimeStore.getState();
                     if (activeChat) {
                       void store.updateChatMetadata(activeChat.id, { reasoningEffort });
                     } else {
-                      run.setPendingReasoningEffort(reasoningEffort);
+                      store.setPendingReasoningEffort(reasoningEffort);
                     }
                   }}
                   running={durablyRunning}
@@ -859,7 +845,7 @@ function UserMessageText() {
 
 function UserMessage() {
   return (
-    <MessagePrimitive.Root className="group fade-in slide-in-from-bottom-1 relative grid w-full grid-cols-[1fr_auto] gap-x-3 animate-in duration-[var(--duration)]">
+    <MessagePrimitive.Root className="group relative grid w-full grid-cols-[1fr_auto] gap-x-3">
       <div className="min-w-0 max-w-[85%] overflow-hidden rounded-md bg-panel-strong px-3 py-2 text-sm leading-relaxed text-foreground">
         <MessagePrimitive.Parts components={{ Text: UserMessageText }} />
         <div className="mt-1.5 flex items-center justify-end gap-1 text-muted-foreground opacity-40 transition-opacity group-hover:opacity-100">
@@ -875,57 +861,12 @@ function UserMessage() {
 
 function MarkdownPart() {
   const { text } = useMessagePartText();
-
-  return (
-    <ReactMarkdown
-      className="prose-chat min-w-0 max-w-full text-sm leading-7 text-foreground"
-      remarkPlugins={[remarkGfm]}
-      components={{
-        h1: ({ children }) => <h1 className="mb-3 mt-1 text-2xl font-semibold leading-tight text-foreground-strong">{children}</h1>,
-        h2: ({ children }) => <h2 className="mb-2 mt-5 text-lg font-semibold leading-tight text-foreground-strong">{children}</h2>,
-        h3: ({ children }) => <h3 className="mb-2 mt-4 text-base font-semibold leading-snug text-foreground-strong">{children}</h3>,
-        h4: ({ children }) => <h4 className="mb-1.5 mt-3 text-sm font-semibold leading-snug text-foreground-strong">{children}</h4>,
-        p: ({ children }) => <p className="my-2 text-sm leading-7 text-foreground">{children}</p>,
-        strong: ({ children }) => <strong className="font-semibold text-foreground-strong">{children}</strong>,
-        em: ({ children }) => <em className="italic text-foreground">{children}</em>,
-        ul: ({ children }) => <ul className="my-2 ms-5 list-disc space-y-1 text-sm leading-6">{children}</ul>,
-        ol: ({ children }) => <ol className="my-2 ms-5 list-decimal space-y-1 text-sm leading-6">{children}</ol>,
-        li: ({ children }) => <li className="ps-1 text-foreground">{children}</li>,
-        blockquote: ({ children }) => (
-          <blockquote className="my-3 border-s-2 border-border ps-3 text-sm text-muted-foreground">{children}</blockquote>
-        ),
-        a: ({ children, href }) => (
-          <a className="font-medium text-foreground-strong underline underline-offset-4" href={href} rel="noreferrer" target="_blank">
-            {children}
-          </a>
-        ),
-        table: ({ children }) => (
-          <div className="my-3 max-w-full overflow-x-auto">
-            <table className="w-full border-collapse text-start text-sm">{children}</table>
-          </div>
-        ),
-        th: ({ children }) => <th className="border border-border bg-panel-raised px-2 py-1.5 font-semibold text-foreground-strong">{children}</th>,
-        td: ({ children }) => <td className="border border-border px-2 py-1.5 align-top text-foreground">{children}</td>,
-        code: ({ children }) => (
-          <code className="rounded-sm border border-border bg-panel-raised px-1 py-0.5 font-mono text-xs text-foreground">
-            {children}
-          </code>
-        ),
-        pre: ({ children }) => (
-          <pre className="my-3 overflow-auto rounded-md border border-border bg-panel-raised p-3 text-xs leading-5">
-            {children}
-          </pre>
-        )
-      }}
-    >
-      {text}
-    </ReactMarkdown>
-  );
+  return <MarkdownContent text={text} />;
 }
 
 function RoleAvatar({ roleId, roleName }: { roleId: string; roleName: string }) {
-  const store = useWorkspaceStore();
-  const role = store.roles.find((entry) => entry.id === roleId);
+  const { roles } = useDomainStore();
+  const role = roles.find((entry) => entry.id === roleId);
   const configuredIcon = role?.metadata?.icon;
   const initials = roleName
     .split(/\s+/)
@@ -953,14 +894,17 @@ type RunActivitySnapshot = {
 };
 
 function RunActivityTimeline({ snapshot }: { snapshot?: RunActivitySnapshot } = {}) {
-  const run = useRunContext();
+  const runType = useRuntimeStore((s) => s.runType);
+  const runStatus = useRuntimeStore((s) => s.runStatus);
+  const activity = useRuntimeStore((s) => s.activity);
+  const events = useRuntimeStore((s) => s.events);
   const ui = useUiStore();
   const current: RunActivitySnapshot = snapshot ?? {
-    runType: run.runType,
-    status: run.status,
-    running: run.running,
-    activity: run.activity,
-    events: run.events
+    runType,
+    status: runStatus,
+    running: runStatus === "running",
+    activity,
+    events
   };
   const terminalProblem = current.status === "failed" || current.status === "cancelled";
   const ordered = orderRunEvents(current.events);
@@ -988,6 +932,9 @@ function RunActivityTimeline({ snapshot }: { snapshot?: RunActivitySnapshot } = 
     : current.running
       ? current.activity ?? latestNativeActivity?.message ?? "Thinking…"
       : latestTerminal?.message ?? current.activity ?? "Completed.";
+  const recentActivity = compactRunEvents(ordered)
+    .filter((event) => event.message !== message)
+    .slice(-3);
   return (
     <div className="mb-2 max-w-xl" aria-live="polite">
       <button
@@ -1007,6 +954,36 @@ function RunActivityTimeline({ snapshot }: { snapshot?: RunActivitySnapshot } = 
         {current.events.length > 0 ? <span className="text-3xs opacity-0 transition-opacity group-hover:opacity-60 group-focus-visible:opacity-60">{current.events.length}</span> : null}
         <Icon className="opacity-0 transition-all group-hover:translate-x-0.5 group-hover:opacity-100 group-focus-visible:opacity-100" name={ui.inspectorOpen && ui.inspectorSection === "events" ? "chevron-down" : "chevron-right"} size={11} />
       </button>
+      {recentActivity.length > 0 ? (
+        <ol aria-label="Recent run activity" className="ms-1.5 border-s border-border ps-3 pb-1">
+          {recentActivity.map((event) => {
+            const failure = isFailureEvent(event);
+            const success = isSuccessEvent(event);
+            const waiting = isWaitingEvent(event);
+            return (
+              <li key={event.id}>
+                <button
+                  aria-label={`${event.message} Open event inspector`}
+                  className="group flex min-h-6 w-full min-w-0 items-center gap-2 text-start text-2xs text-muted-foreground transition-colors hover:text-foreground"
+                  onClick={() => ui.openInspector("events")}
+                  type="button"
+                >
+                  <Icon
+                    className={cn(
+                      "shrink-0",
+                      failure ? "text-destructive" : success ? "text-success" : waiting ? "text-warning" : "text-muted-foreground"
+                    )}
+                    name={failure ? "x" : success ? "check" : waiting ? "user" : runtimeEventIcon(event)}
+                    size={9}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{event.message}</span>
+                  {event.nodeTitle ? <span className="hidden max-w-36 shrink-0 truncate text-3xs opacity-50 sm:block">{event.nodeTitle}</span> : null}
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      ) : null}
       {todos.length > 0 && !terminalProblem ? (
         <ol className="pl-5 py-1.5">
           {todos.map((todo, index) => {
@@ -1022,6 +999,37 @@ function RunActivityTimeline({ snapshot }: { snapshot?: RunActivitySnapshot } = 
         </ol>
       ) : null}
     </div>
+  );
+}
+
+function ContextCleanupBoundary({ events }: { events: RunEvent[] }) {
+  const cleanup = [...orderRunEvents(events)].reverse().find((event) =>
+    event.type === "status" && event.payload?.category === "compaction"
+  );
+  if (!cleanup) return null;
+  const summary = typeof cleanup.payload?.summary === "string" ? cleanup.payload.summary.trim() : "";
+  return (
+    <section aria-label="Context cleanup summary" className="mb-3 max-w-xl">
+      <div className="flex items-center gap-2 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <span className="h-px flex-1 bg-border" />
+        <Icon className="text-info" name="archive" size={11} />
+        <span>Context cleaned up</span>
+        <span className="h-px flex-1 bg-border" />
+      </div>
+      {summary ? (
+        <div className="mt-2 rounded-md border border-border bg-panel-raised px-3 py-2.5">
+          <div className="mb-1 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">Summary</div>
+          <div className="text-xs text-foreground">
+            <MarkdownContent text={summary} />
+          </div>
+        </div>
+      ) : null}
+      <div className="mt-2 flex items-center gap-2 text-3xs text-muted-foreground">
+        <span className="h-px flex-1 bg-border" />
+        <span>Conversation continues</span>
+        <span className="h-px flex-1 bg-border" />
+      </div>
+    </section>
   );
 }
 
@@ -1118,12 +1126,18 @@ function toPersistedRunSnapshot(payload: {
   };
 }
 
-function RunTurnCard({ runId }: { runId: string }) {
-  const run = useRunContext();
+function RunTurnCard({ runId, children }: { runId: string; children?: ReactNode }) {
+  const activeRunId = useRuntimeStore((s) => s.activeRunId);
+  const runEvents = useRuntimeStore((s) => s.events);
+  const runArtifacts = useRuntimeStore((s) => s.artifacts);
+  const runType = useRuntimeStore((s) => s.runType);
+  const runStatus = useRuntimeStore((s) => s.runStatus);
+  const running = useRuntimeStore((s) => s.runStatus === "running");
+  const activity = useRuntimeStore((s) => s.activity);
   const [persisted, setPersisted] = useState<PersistedRunSnapshot | null>(null);
 
   useEffect(() => {
-    if (run.activeRunId === runId) return;
+    if (activeRunId === runId) return;
     const controller = new AbortController();
     fetch(`/api/runs/${runId}`, { cache: "no-store", signal: controller.signal })
       .then((response) => response.ok ? response.json() : null)
@@ -1134,71 +1148,68 @@ function RunTurnCard({ runId }: { runId: string }) {
         if (error instanceof DOMException && error.name === "AbortError") return;
       });
     return () => controller.abort();
-  }, [run.activeRunId, runId]);
+  }, [activeRunId, runId]);
 
-  const live = run.activeRunId === runId;
+  const live = activeRunId === runId;
   const snapshot: RunActivitySnapshot | null = live
-    ? { runType: run.runType, status: run.status, running: run.running, activity: run.activity, events: run.events }
+    ? { runType, status: runStatus, running, activity, events: runEvents }
     : persisted
       ? { runType: persisted.type, status: persisted.status, running: persisted.status === "running", activity: null, events: persisted.events }
       : null;
-  const artifacts = live ? run.artifacts : persisted?.artifacts ?? [];
+  const artifacts = live ? runArtifacts : persisted?.artifacts ?? [];
   if (!snapshot) {
     return (
-      <div className="flex h-6 items-center gap-2 text-2xs text-muted-foreground" aria-live="polite">
-        <StatusIcon busy icon="circle-dot" tone="info" size={11} />
-        <span className="sr-only">Loading execution history</span>
+      <div>
+        <div className="flex h-6 items-center gap-2 text-2xs text-muted-foreground" aria-live="polite">
+          <StatusIcon busy icon="circle-dot" tone="info" size={11} />
+          <span className="sr-only">Loading execution history</span>
+        </div>
+        {children}
       </div>
     );
   }
   return (
-    <div className="mt-2 min-w-0">
+    <div className="min-w-0">
+      <ContextCleanupBoundary events={snapshot.events} />
       <RunActivityTimeline snapshot={snapshot} />
+      {children}
       <InlineRunArtifacts artifacts={artifacts} />
     </div>
   );
 }
 
 function AssistantMessage() {
-  const run = useRunContext();
-  const store = useWorkspaceStore();
+  const activeChatId = useRuntimeStore((s) => s.activeChatId);
+  const activeRunId = useRuntimeStore((s) => s.activeRunId);
+  const rawMessages = useRuntimeStore((s) => s.messages);
+  const messages = useMemo(() => (activeChatId ? rawMessages[activeChatId] ?? [] : []), [activeChatId, rawMessages]);
+  const chats = useRuntimeStore((s) => s.chats);
+  const runStatus = useRuntimeStore((s) => s.runStatus);
+  const pendingExecutionMode = useRuntimeStore((s) => s.pendingExecutionMode);
   const messageId = useAuiState((s) => s.message.id);
   const isLatest = useAuiState((s) => s.thread.messages.at(-1)?.id === s.message.id);
-  const activeChatId = store.activeChatId;
-  const persistedMessage = (activeChatId ? store.messages[activeChatId] : [])?.find((message) => message.id === messageId);
-  const metadata = persistedMessage?.metadata ?? {};
-  const activeChat = store.chats.find((chat) => chat.id === activeChatId) ?? null;
+  const persistedMessage = messages.find((message) => message.id === messageId);
+  const activeChat = chats.find((chat) => chat.id === activeChatId) ?? null;
   const directorMode = (typeof activeChat?.metadata?.executionMode === "string"
     ? activeChat.metadata.executionMode
-    : run.pendingExecutionMode) === "director";
-  const anchorRunId = metadata.kind === "execution_anchor" && typeof metadata.runId === "string"
-    ? metadata.runId
-    : null;
-  const actor = isLatest && run.running ? run.activeActor : null;
-  const actorRole = actor ? store.roles.find((role) => role.id === actor.roleId) : null;
+    : pendingExecutionMode) === "director";
+  const running = runStatus === "running";
+  const events = useRuntimeStore((s) => s.events);
+  const ordered = orderRunEvents(events);
+  const latestStart = [...ordered].reverse().find(isStartEvent);
+  const actor = isLatest && running && latestStart?.payload?.roleId ? { roleId: latestStart.payload.roleId as string, roleName: (latestStart.payload.roleName as string) ?? "Assistant" } : null;
+  const { roles: domainRoles } = useDomainStore();
+  const actorRole = actor ? domainRoles.find((role) => role.id === actor.roleId) : null;
   const actorName = actorRole?.name ?? actor?.roleName ?? (directorMode ? "Director" : "Assistant");
-  const working = isLatest && (run.running || run.status === "waiting_human");
-  if (anchorRunId) {
-    return (
-      <MessagePrimitive.Root className="grid w-full grid-cols-[auto_1fr] gap-x-3">
-        {actor ? <RoleAvatar roleId={actor.roleId} roleName={actorName} /> : (
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-panel-raised text-foreground">
-            <Icon name={directorMode ? "intellect" : ENTITY_ICONS.assistant} size={14} />
-          </div>
-        )}
-        <div className="min-w-0">
-          <div className="text-2xs font-medium text-muted-foreground">{actorName}</div>
-          <RunTurnCard runId={anchorRunId} />
-        </div>
-      </MessagePrimitive.Root>
-    );
-  }
-  // Submission activity is real local runtime state and starts before the
-  // execute endpoint returns a durable run id or its first native event.
-  // Keep that state inline so Send always has immediate visual feedback.
-  const showLiveRun = isLatest && !persistedMessage && run.running;
+  const working = isLatest && (running || runStatus === "waiting_human");
+  const persistedRunId = typeof persistedMessage?.metadata?.runId === "string"
+    ? persistedMessage.metadata.runId
+    : null;
+  const inlineRunId = isLatest
+    ? persistedRunId ?? ((running || runStatus === "waiting_human") ? activeRunId : null)
+    : null;
   return (
-    <MessagePrimitive.Root className="group fade-in slide-in-from-bottom-1 relative grid w-full grid-cols-[auto_1fr] gap-x-3 animate-in duration-[var(--duration)]">
+    <MessagePrimitive.Root className="group relative grid w-full grid-cols-[auto_1fr] gap-x-3">
       {actor ? <RoleAvatar roleId={actor.roleId} roleName={actorName} /> : (
         <div className="flex h-7 w-7 items-center justify-center rounded-md bg-panel-raised text-foreground">
           <Icon name={directorMode ? "intellect" : ENTITY_ICONS.assistant} size={14} />
@@ -1209,13 +1220,12 @@ function AssistantMessage() {
           <span>{actorName}</span>
         </div>
         <div className="mt-1">
-          <MessagePrimitive.Parts components={{ Text: MarkdownPart }} />
+          {inlineRunId ? (
+            <RunTurnCard runId={inlineRunId}>
+              <MessagePrimitive.Parts components={{ Text: MarkdownPart }} />
+            </RunTurnCard>
+          ) : <MessagePrimitive.Parts components={{ Text: MarkdownPart }} />}
         </div>
-        {showLiveRun ? (
-          run.activeRunId
-            ? <RunTurnCard runId={run.activeRunId} />
-            : <div className="mt-2"><RunActivityTimeline /></div>
-        ) : null}
         {!working ? (
           <div className="mt-2 flex items-center gap-1 text-muted-foreground opacity-40 transition-opacity group-hover:opacity-100">
             <ActionBar />
@@ -1226,27 +1236,6 @@ function AssistantMessage() {
         </MessagePrimitive.Error>
       </div>
     </MessagePrimitive.Root>
-  );
-}
-
-function ContinuationResponse() {
-  const run = useRunContext();
-  if (!run.continuationText) return null;
-  // Only show live text while the run is active. Once the run completes,
-  // the persisted assistant message replaces this live projection.
-  if (run.status !== "running" && run.status !== "waiting_human") return null;
-  return (
-    <div className="grid w-full grid-cols-[auto_1fr] gap-x-3">
-      <div className="flex h-7 w-7 items-center justify-center rounded-md bg-panel-raised text-foreground">
-        <Icon name={ENTITY_ICONS.assistant} size={14} />
-      </div>
-      <div className="min-w-0">
-        <div className="mb-1 text-2xs font-medium text-muted-foreground">Assistant</div>
-        <ReactMarkdown className="prose-chat text-sm leading-7 text-foreground" remarkPlugins={[remarkGfm]}>
-          {run.continuationText}
-        </ReactMarkdown>
-      </div>
-    </div>
   );
 }
 
@@ -1281,60 +1270,33 @@ function WelcomeScreen() {
 }
 
 export function ChatRuntimeProvider({ children }: { children: ReactNode }) {
-  const store = useWorkspaceStore();
-  const run = useRunContext();
+  const { models } = useDomainStore();
+  const activeRunId = useRuntimeStore((state) => state.activeRunId);
+  const runStatus = useRuntimeStore((state) => state.runStatus);
+  const ownsActiveStream = useRuntimeStore((state) => Boolean(state.activeRunId && state.activeStreams.has(state.activeRunId)));
   const instanceIdRef = useRef<string | null>(null);
   if (instanceIdRef.current === null) {
     instanceIdRef.current = crypto.randomUUID();
   }
 
-  // Phase 4: ExternalStoreRuntime — the external adapter is the source of
-  // truth for messages. No runtime.reset(), no generation workarounds,
-  // no pending-commit lifecycle needed.
-  const adapter = useMemo(
-    () => buildExternalStoreAdapter(store, run),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [store, run, store.activeChatId, run.status]
-  );
-
-  const runtime = useExternalStoreRuntime(adapter);
-  const prevIsRunning = useRef(run.status === "running");
-
-  // Phase 3: lazy-load messages for the activated chat if not yet fetched
-  const messagesFetchedRef = useRef<Set<string>>(new Set());
+  // Reload chats from server on mount
   useEffect(() => {
-    const chatId = store.activeChatId;
-    if (chatId && !messagesFetchedRef.current.has(chatId)) {
-      messagesFetchedRef.current.add(chatId);
-      void store.fetchChatMessages(chatId);
-    }
-    // Phase 4: When the run transitions running → not-running and no active
-    // chat is set yet (new chat created by the run), navigate to it.
-    // IMPORTANT: The commit may be set AFTER the `done`-frame re-render has
-    // already reset prevIsRunning, so we must ALSO check for a pending
-    // commit unconditionally (consumePendingCommit is idempotent — it
-    // returns null when no commit is waiting).
-    const isNowRunning = run.status === "running";
-    const wasRunning = prevIsRunning.current;
-    prevIsRunning.current = isNowRunning;
-    if (!store.activeChatId) {
-      const commit = run.consumePendingCommit();
-      if (commit) {
-        store.setActiveChat(commit.chatId);
-        if (typeof window !== "undefined") {
-          window.history.replaceState(null, "", `/runs/${commit.runId}`);
-        }
-      }
-    } else if (wasRunning && !isNowRunning) {
-      const commit = run.consumePendingCommit();
-      if (commit) {
-        store.setActiveChat(commit.chatId);
-        if (typeof window !== "undefined") {
-          window.history.replaceState(null, "", `/runs/${commit.runId}`);
-        }
-      }
-    }
-  });
+    void useRuntimeStore.getState().reloadChats();
+  }, []);
+
+  // Realtime is a low-latency hint, not a correctness dependency. A run that
+  // outlives its original HTTP reader (reload, tab switch, proxy timeout, or a
+  // different server replica) is reconciled against the durable checkpoint.
+  useEffect(() => {
+    if (!activeRunId || runStatus !== "running" || ownsActiveStream) return;
+    const restore = () => void useRuntimeStore.getState().restoreRun(activeRunId);
+    restore();
+    const interval = window.setInterval(restore, 2_000);
+    return () => window.clearInterval(interval);
+  }, [activeRunId, ownsActiveStream, runStatus]);
+
+  const adapter = useRuntimeAdapter(models);
+  const runtime = useExternalStoreRuntime(adapter);
 
   return (
     <>
@@ -1344,150 +1306,52 @@ export function ChatRuntimeProvider({ children }: { children: ReactNode }) {
   );
 }
 
+function RuntimeStats() {
+  const contextItems = useRuntimeStore((s) => s.contextItems);
+  const events = useRuntimeStore((s) => s.events);
+  return (
+    <span>
+      {contextItems.length > 0
+        ? `${contextItems.length} attached · ${events.length} events`
+        : "0 attached"}
+    </span>
+  );
+}
+
 function ChatThreadInner() {
-  const run = useRunContext();
-  const store = useWorkspaceStore();
-  const pathname = usePathname();
-  const isDedicatedRunPage = pathname.startsWith("/runs/");
-  const restoredChatId = useRef<string | null>(null);
-  const restoreStoreRef = useRef(store);
-  const restoreRunRef = useRef(run);
-  restoreStoreRef.current = store;
-  restoreRunRef.current = run;
-  const activeChatId = store.activeChatId;
-  const updateChatMetadata = store.updateChatMetadata;
+  const activeChatId = useRuntimeStore((s) => s.activeChatId);
+  const chats = useRuntimeStore((s) => s.chats);
+  const contextItems = useRuntimeStore((s) => s.contextItems);
+  const hydratedContextChatId = useRef<string | null>(null);
+  const activeChat = chats.find((chat) => chat.id === activeChatId) ?? null;
   const isEmpty = useAuiState(
     (s) => s.thread.messages.length === 0 && !s.thread.isRunning
   );
 
   useEffect(() => {
-    const currentStore = restoreStoreRef.current;
-    const currentRun = restoreRunRef.current;
-    const active = currentStore.chats.find((chat) => chat.id === activeChatId) ?? null;
-    const saved = Array.isArray(active?.metadata?.contextItems)
-      ? active.metadata.contextItems.filter((item): item is import("../../lib/run-context").ContextItem => {
+    if (!activeChatId || !activeChat || hydratedContextChatId.current === activeChatId) return;
+    const store = useRuntimeStore.getState();
+    const saved = Array.isArray(activeChat.metadata?.contextItems)
+      ? activeChat.metadata.contextItems.filter((item): item is import("../../lib/runtime-store").ContextItem => {
           if (!item || typeof item !== "object") return false;
           const value = item as Record<string, unknown>;
           return typeof value.id === "string" && typeof value.kind === "string" && typeof value.title === "string";
         })
       : [];
-    currentRun.setContextItems(saved);
-
-    // Only clear run data when switching between existing chats or
-    // landing on the neutral home page.  Do not clear on new chat
-    // creation (null → non-null), so the events and artifacts from a
-    // just-completed run are preserved.
-    const wasChatActive = restoredChatId.current !== null;
-    restoredChatId.current = active?.id ?? null;
-    if (wasChatActive) {
-      currentRun.setDurableState(null);
-      currentRun.setLiveUsage(null);
-      currentRun.setHumanInputRequest(null);
-      currentRun.clearEvents();
-      currentRun.clearArtifacts();
-    }
-
-    const isRoot = pathname === "/";
-    const urlRunId = isDedicatedRunPage ? pathname.split("/runs/")[1]?.split("/")[0] : null;
-    const metadataRunId = isRoot ? null : (typeof active?.metadata?.activeRunId === "string"
-      ? active.metadata.activeRunId
-      : typeof active?.metadata?.lastRunId === "string"
-        ? active.metadata.lastRunId
-        : null);
-    const restorableRunId = urlRunId ?? metadataRunId;
-    if (!restorableRunId) {
-      // If the run status hasn't reached a terminal state, or
-      // if a non-idle status exists, don't reset — a run may be
-      // in progress or just completing. Only reset on true idle
-      // root landing.
-      if (currentRun.status === "idle") {
-        currentRun.reset();
-      }
-      return;
-    }
-
-    const restorationController = new AbortController();
-    let timer: number | null = null;
-    const restore = () => {
-      // Phase 2: monotonic restoration — use highest checkpoint version
-      // known to the client to discard stale server responses.
-      const sinceVersion = restoreRunRef.current.highestCheckpointVersion;
-      currentRun.setActiveRunId(restorableRunId);
-      fetch(`/api/runs/${restorableRunId}?since=${sinceVersion}`, { cache: "no-store", signal: restorationController.signal })
-        .then((response) => {
-          if (response.status === 304) return null; // Not modified
-          return response.ok ? response.json() : null;
-        })
-        .then((payload: null | { checkpointVersion?: number; run: { type: string; status: RunStatus; state: Record<string, unknown>; inputs: Record<string, unknown> }; usage: { inputTokens: number; outputTokens: number; toolCalls: number }; events: Array<{ id: string; org_id: string; run_id: string; event_type: string; sequence: number; node_id: string | null; node_title: string | null; skill_id: string | null; skill_name: string | null; message: string; payload: Record<string, unknown>; event_key: string | null; created_at: string }>; artifacts: import("@spielos/core").Artifact[] }) => {
-          if (!payload) return;
-          const latestStore = restoreStoreRef.current;
-          const latestRun = restoreRunRef.current;
-          if (latestStore.activeChatId !== activeChatId) return;
-          if (latestRun.activeRunId && latestRun.activeRunId !== restorableRunId) return;
-          // Discard if server checkpoint is not newer than what we have
-          if (typeof payload.checkpointVersion === "number" && payload.checkpointVersion <= latestRun.highestCheckpointVersion) return;
-          latestRun.setRunType(payload.run.type as import("@spielos/core").RunType);
-          const restoredState = payload.run.state as import("../../lib/run-context").DurableRunState;
-          const inputBudget = payload.run.inputs?.budget;
-          const restoredBudget = restoredState.budget ?? (inputBudget && typeof inputBudget === "object"
-            ? inputBudget as import("@spielos/core").RunBudget
-            : undefined);
-          latestRun.setDurableState(restoredBudget === restoredState.budget ? restoredState : { ...restoredState, budget: restoredBudget });
-          latestRun.setLiveUsage(payload.usage ?? (restoredBudget ? {
-            inputTokens: restoredBudget.inputTokens,
-            outputTokens: restoredBudget.outputTokens,
-            toolCalls: restoredBudget.toolCalls
-          } : null));
-          const pending = payload.run.state?.pendingHumanInput;
-          latestRun.setHumanInputRequest(
-            payload.run.status === "waiting_human" && pending && typeof pending === "object"
-              ? pending as HumanInputRequest
-              : null
-          );
-          for (const event of payload.events) {
-            latestRun.appendEvent({
-              id: event.event_key ?? event.id, orgId: event.org_id, runId: event.run_id, type: event.event_type as RunEvent["type"], sequence: Number(event.sequence),
-              nodeId: event.node_id ?? undefined, nodeTitle: event.node_title ?? undefined, skillId: event.skill_id ?? undefined, skillName: event.skill_name ?? undefined,
-              message: event.message, payload: event.payload ?? {}, createdAt: event.created_at
-            });
-          }
-          for (const artifact of payload.artifacts) latestRun.appendArtifact(artifact);
-          latestRun.setRunStatus(payload.run.status);
-          if (typeof payload.checkpointVersion === "number") {
-            latestRun.recordCheckpointVersion(payload.checkpointVersion);
-          }
-        })
-        .catch((err: unknown) => {
-          if (err instanceof DOMException && err.name === "AbortError") return;
-        });
-    };
-    let realtimeRefreshTimer: number | null = null;
-    const handleRunUpdate = (event: Event) => {
-      const detail = (event as CustomEvent<{ runId?: string }>).detail;
-      if (detail?.runId !== restorableRunId) return;
-      // Phase 1: suppress same-run restore while SSE stream owns it
-      if (currentRun.hasActiveStream(restorableRunId)) return;
-      if (realtimeRefreshTimer !== null) window.clearTimeout(realtimeRefreshTimer);
-      realtimeRefreshTimer = window.setTimeout(restore, 350);
-    };
-    window.addEventListener("spielos:run-update", handleRunUpdate);
-    if (isDedicatedRunPage) restore();
-    else timer = window.setTimeout(restore, 100);
-    return () => {
-      if (timer !== null) window.clearTimeout(timer);
-      if (realtimeRefreshTimer !== null) window.clearTimeout(realtimeRefreshTimer);
-      window.removeEventListener("spielos:run-update", handleRunUpdate);
-      restorationController.abort();
-    };
-  }, [activeChatId, isDedicatedRunPage, pathname]);
+    hydratedContextChatId.current = activeChatId;
+    store.setContextItems(saved);
+  }, [activeChatId, activeChat]);
 
   useEffect(() => {
-    if (!activeChatId || restoredChatId.current !== activeChatId) return;
+    if (!activeChatId || hydratedContextChatId.current !== activeChatId) return;
+    const saved = Array.isArray(activeChat?.metadata?.contextItems) ? activeChat.metadata.contextItems : [];
+    if (JSON.stringify(saved) === JSON.stringify(contextItems)) return;
     const timer = window.setTimeout(() => {
-      void updateChatMetadata(activeChatId, { contextItems: run.contextItems });
-    }, 200);
+      void useRuntimeStore.getState().updateChatMetadata(activeChatId, { contextItems })
+        .catch(() => toast.error("Chat context could not be saved."));
+    }, 300);
     return () => window.clearTimeout(timer);
-  }, [activeChatId, run.contextItems, updateChatMetadata]);
+  }, [activeChatId, activeChat, contextItems]);
 
   return (
     <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col">
@@ -1505,7 +1369,6 @@ function ChatThreadInner() {
                 </div>
               )}
             </ThreadPrimitive.Messages>
-            <ContinuationResponse />
           </div>
         </div>
       </ThreadPrimitive.Viewport>
@@ -1514,13 +1377,7 @@ function ChatThreadInner() {
           <Composer />
           <div className="mt-2 flex items-center justify-between text-2xs text-muted-foreground">
             <div className="flex items-center gap-1.5">
-              {run.contextItems.length > 0 ? (
-                <span>
-                  {run.contextItems.length} attached · {run.events.length} events
-                </span>
-              ) : (
-                <span>0 attached</span>
-              )}
+              <RuntimeStats />
             </div>
             <div className="flex items-center gap-1.5">
               <kbd className="rounded border border-border bg-panel-raised px-1 py-0.5 font-mono text-3xs">↵</kbd>

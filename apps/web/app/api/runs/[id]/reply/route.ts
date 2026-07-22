@@ -174,17 +174,21 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         // Resumed executions are durable too: a reload detaches this reader,
         // while an explicit /cancel request remains the cancellation authority.
         let clientConnected = !request.signal.aborted;
+        let streamSequence = 0;
         const send = (frame: SseFrame) => {
           if (!clientConnected) return;
           try {
-            controller.enqueue(encodeSseFrame(frame, checkpointVersion));
+            controller.enqueue(encodeSseFrame(frame, checkpointVersion, {
+              streamId: runId,
+              streamSequence: streamSequence++,
+            }));
           } catch {
             clientConnected = false;
           }
         };
         const disconnectClient = () => { clientConnected = false; };
         request.signal.addEventListener("abort", disconnectClient, { once: true });
-        send({ kind: "run", runId, type: target.type ?? "chat" });
+        send({ kind: "run", runId, type: target.type ?? "chat", chatId: run.chat_id, turnId: run.turn_id });
         // Send accumulated budget from prior turns so the client
         // doesn't show zero usage on resume.
         if (checkpoint.budget) {
@@ -196,11 +200,28 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         let errorMessage: string | null = null;
         let latestCheckpoint: RunCheckpoint = checkpoint;
         const priorUsage = {
-          input: checkpoint.budget?.inputTokens ?? 0,
-          output: checkpoint.budget?.outputTokens ?? 0,
-          tools: checkpoint.budget?.toolCalls ?? 0
+          input: checkpoint.budget?.totalInputTokens ?? checkpoint.budget?.inputTokens ?? 0,
+          output: checkpoint.budget?.totalOutputTokens ?? checkpoint.budget?.outputTokens ?? 0,
+          contextInput: checkpoint.budget?.contextInputTokens ?? checkpoint.budget?.inputTokens ?? 0,
+          contextOutput: checkpoint.budget?.contextOutputTokens ?? checkpoint.budget?.outputTokens ?? 0,
+          contextModelId: checkpoint.budget?.contextModelId ?? null,
+          tools: checkpoint.budget?.toolCalls ?? 0,
         };
-        const usage = { input: 0, output: 0, tools: 0 };
+        const usage = { input: 0, output: 0, contextInput: 0, contextOutput: 0, contextModelId: null as string | null, tools: 0 };
+        const checkpointWithUsage = (state: RunCheckpoint): RunCheckpoint => state.budget ? {
+          ...state,
+          budget: {
+            ...state.budget,
+            inputTokens: priorUsage.input + usage.input,
+            outputTokens: priorUsage.output + usage.output,
+            contextInputTokens: usage.contextInput || priorUsage.contextInput,
+            contextOutputTokens: usage.contextOutput || priorUsage.contextOutput,
+            totalInputTokens: priorUsage.input + usage.input,
+            totalOutputTokens: priorUsage.output + usage.output,
+            contextModelId: usage.contextModelId ?? priorUsage.contextModelId,
+            toolCalls: priorUsage.tools + usage.tools
+          }
+        } : state;
         const queuedEventIds = new Set<string>();
         const queuedEvents: RunEventInput[] = [];
         const shouldPersistImmediately = (event: import("@spielos/core").RunEvent) =>
@@ -222,13 +243,23 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             usage: {
               inputTokens: priorUsage.input + usage.input,
               outputTokens: priorUsage.output + usage.output,
-              toolCalls: priorUsage.tools + usage.tools
+              toolCalls: priorUsage.tools + usage.tools,
+              contextInputTokens: usage.contextInput || priorUsage.contextInput,
+              contextOutputTokens: usage.contextOutput || priorUsage.contextOutput,
+              totalInputTokens: priorUsage.input + usage.input,
+              totalOutputTokens: priorUsage.output + usage.output,
+              contextModelId: usage.contextModelId ?? priorUsage.contextModelId,
             }
           });
         };
         const onModelUsage = (update: ModelUsageUpdate) => {
           usage.input += update.inputTokens;
           usage.output += update.outputTokens;
+          if (update.updatesContext) {
+            usage.contextInput = update.inputTokens;
+            usage.contextOutput = update.outputTokens;
+            usage.contextModelId = update.modelId;
+          }
           publishBudgetState();
         };
         const onToolUsage = (count: number) => {
@@ -241,7 +272,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             usage: {
               inputTokens: priorUsage.input + usage.input,
               outputTokens: priorUsage.output + usage.output,
-              toolCalls: priorUsage.tools + usage.tools
+              toolCalls: priorUsage.tools + usage.tools,
+              contextInputTokens: usage.contextInput || priorUsage.contextInput,
+              contextOutputTokens: usage.contextOutput || priorUsage.contextOutput,
+              totalInputTokens: priorUsage.input + usage.input,
+              totalOutputTokens: priorUsage.output + usage.output,
+              contextModelId: usage.contextModelId ?? priorUsage.contextModelId,
             }
           });
         };
@@ -385,7 +421,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               terminalStatus = "waiting_human";
               send({ kind: "human_input", request: item.request });
             } else if (item.kind === "checkpoint") {
-              latestCheckpoint = item.state;
+              latestCheckpoint = checkpointWithUsage(item.state);
               await flushAtomicCheckpoint(latestCheckpoint);
               send({
                 kind: "run_state",
@@ -430,19 +466,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             ? new Date().toISOString()
             : null;
 
-        if (latestCheckpoint.budget) {
-          latestCheckpoint = {
-            ...latestCheckpoint,
-            budget: {
-              ...latestCheckpoint.budget,
-              inputTokens: priorUsage.input + usage.input,
-              outputTokens: priorUsage.output + usage.output,
-              toolCalls: priorUsage.tools + usage.tools
-            }
-          };
-        }
+        latestCheckpoint = checkpointWithUsage(latestCheckpoint);
 
         // ── Atomic finalization ───────────────────────────────────────────
+        if (terminalStatus === "failed" && !outputText.trim()) {
+          const label = resolved.runRequest.workflow?.name
+            ?? resolved.runRequest.singleNode?.title
+            ?? (previousInputs.executionMode === "director" && target.type === "chat" ? "Director" : "Run");
+          outputText = `${label} failed${errorMessage ? `: ${errorMessage}` : "."}`;
+        }
         let finalTurnResult: {
           run: RunRow;
           messages: ChatMessageRow[];
@@ -455,13 +487,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
               org.sql, org.orgId, runId, run.chat_id, run.turn_id, checkpointVersion,
               {
                 outputText: outputText ?? "",
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                events: queuedEvents.splice(0, queuedEvents.length) as any,
+                events: queuedEvents.splice(0, queuedEvents.length),
                 state: latestCheckpoint,
                 status: terminalStatus,
                 error: errorMessage,
                 completedAt: terminalStatus === "waiting_human" ? null : completedAt,
-                isDirectorChat: false,
+                isDirectorChat: previousInputs.executionMode === "director" && target.type === "chat",
                 resumedFrom: body.requestId
               }
             );
@@ -469,7 +500,34 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             terminalStatus = finalTurnResult.run.status as RunStatus;
           } catch (finalizeErr) {
             console.error("[runs/reply] finalizeRunTurn failed:", finalizeErr);
-            throw finalizeErr;
+            errorMessage = finalizeErr instanceof Error ? finalizeErr.message : "Run finalization failed.";
+            const durable = await getRun(org.sql, org.orgId, runId);
+            if (durable?.status === "cancelled") {
+              terminalStatus = "cancelled";
+              checkpointVersion = Number(durable.checkpoint_version ?? checkpointVersion);
+            } else if (durable) {
+              const failed = await atomicCheckpoint(org.sql, org.orgId, runId, {
+                status: "failed",
+                error: errorMessage,
+                completedAt: new Date().toISOString(),
+                state: { ...(durable.state ?? {}), status: "failed", error: errorMessage },
+                events: [{
+                  event_type: "run_failed",
+                  node_id: null,
+                  node_title: null,
+                  skill_id: null,
+                  skill_name: null,
+                  message: "Run finalization failed.",
+                  payload: { phase: "finalization" },
+                }],
+                expectedCheckpointVersion: Number(durable.checkpoint_version ?? 0),
+              });
+              checkpointVersion = failed.checkpointVersion;
+              terminalStatus = "failed";
+            } else {
+              terminalStatus = "failed";
+            }
+            send({ kind: "error", message: errorMessage });
           }
         }
 
@@ -555,6 +613,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
         send({ kind: "done", runId, status: terminalStatus });
         if (clientConnected) {
+          // Yield so the enqueued done frame flushes before close()
+          await new Promise((r) => setTimeout(r, 200));
           try { controller.close(); } catch { /* reader detached */ }
         }
       }
@@ -564,7 +624,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       headers: {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive"
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+        "X-Content-Type-Options": "nosniff"
       }
     });
   } catch (err) {

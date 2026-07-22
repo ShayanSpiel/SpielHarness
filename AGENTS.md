@@ -22,6 +22,13 @@ npm run lint
 
 Use `npm run build` before shipping larger changes.
 
+## Documentation
+
+- `docs/` — active reference docs (architecture, data model, design system, etc.)
+- `docs/plans/` — implementation plans and architecture audits
+- `docs/archive/` — completed or superseded plans and session statuses
+- `docs/positioning.md` — product positioning and competitive landscape
+
 ## UI System
 
 - Use `.agents/skills/spielos-ui/SKILL.md` for UI work.

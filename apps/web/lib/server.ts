@@ -1,7 +1,8 @@
 import { cookies, headers } from "next/headers";
-import { createSql, getUserOrgs, type OrgWithMembership, type Sql } from "@spielos/db";
+import { getUserOrgs, type OrgWithMembership, type Sql } from "@spielos/db";
 import { auth } from "./auth";
 import { makeReqLogger } from "./logger";
+import { getDbManager, classifyConnectionError } from "./db-manager";
 
 export class HttpError extends Error {
   constructor(public status: number, message: string) {
@@ -9,19 +10,12 @@ export class HttpError extends Error {
   }
 }
 
-const getCached = <T>(key: string, init: () => T): T => {
-  const g = globalThis as unknown as Record<string, T | undefined>;
-  if (!g[key]) g[key] = init();
-  return g[key]!;
-};
-
 function getSql(): Sql | null {
-  const url = process.env.DATABASE_URL;
-  if (!url) return null;
-  return getCached("__sql_pool", () => createSql(url));
+  return getDbManager().getClient();
 }
 
 export { getSql };
+export { classifyConnectionError } from "./db-manager";
 
 export type OrgContext = {
   sql: Sql;
@@ -257,15 +251,9 @@ export function errorResponse(err: unknown): Response {
   if (err instanceof HttpError) {
     return Response.json({ error: err.message }, { status: err.status });
   }
-  const message = err instanceof Error ? err.message : "Unknown error";
   if (err instanceof SessionDatabaseError) {
     return Response.json({ error: "Authentication service is temporarily unavailable. Please retry." }, { status: 503 });
   }
-  if (/CONNECT_TIMEOUT|ETIMEDOUT|connection timed out|timeout/i.test(message)) {
-    return Response.json({ error: "The database connection timed out. Please retry the request." }, { status: 503 });
-  }
-  if (/ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|ENOTFOUND/i.test(message)) {
-    return Response.json({ error: "The database could not be reached. Please check your connection configuration." }, { status: 503 });
-  }
-  return Response.json({ error: message }, { status: 500 });
+  const { status, message } = classifyConnectionError(err);
+  return Response.json({ error: message }, { status });
 }

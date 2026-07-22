@@ -4,6 +4,7 @@ import { defaultInputContract, defaultOutputContract, type Model, type Role, typ
 import {
   buildDirectorSystemPrompt,
   compileDirector,
+  directorCompactionConfig,
   directorCompactionTrigger,
   historyToMessages
 } from "@spielos/graph/director/compile";
@@ -58,10 +59,36 @@ test("buildDirectorSystemPrompt falls back when no role is provided", () => {
   assert.equal(buildDirectorSystemPrompt(null, "fallback"), "fallback");
 });
 
-test("director compaction follows the resolved run budget instead of the model maximum", () => {
+test("director compaction follows the resolved context limit instead of the model maximum", () => {
   const model = fakeModel();
   assert.equal(directorCompactionTrigger({ model, maxInputTokens: 48_000 }), 38_400);
-  assert.equal(directorCompactionTrigger({ model, maxInputTokens: null }), 2_457);
+  assert.equal(directorCompactionTrigger({ model, maxInputTokens: null }), 3_276);
+  assert.deepEqual(directorCompactionConfig({ model, maxInputTokens: 32_768 }), {
+    inputLimit: 32_768,
+    triggerTokens: 26_214,
+    keepMessages: 2,
+    summarySourceTokens: 131_072,
+  });
+});
+
+test("director cleanup does not collapse when output cap equals context window", () => {
+  const model: Model = {
+    ...fakeModel(),
+    config: {
+      capabilities: {
+        contextWindow: 32_768,
+        maxOutputTokens: 32_768,
+        compactionThreshold: 0.6,
+        toolCalling: true,
+      },
+    },
+  };
+  assert.deepEqual(directorCompactionConfig({ model, maxInputTokens: null }), {
+    inputLimit: 32_768,
+    triggerTokens: 19_660,
+    keepMessages: 2,
+    summarySourceTokens: 131_072,
+  });
 });
 
 test("historyToMessages converts user/system/assistant/tool into LangChain messages", () => {
@@ -167,7 +194,7 @@ test("mapDirectorValues yields per-message deltas and native tool activity witho
     yield ["values", { messages: [second, result], todos: [{ content: "Read evidence", status: "completed" }] }];
     const summary = new HumanMessage({
       id: "summary-1",
-      content: "Here is a summary of the conversation to date: evidence was read.",
+      content: "You are in the middle of a conversation that has been summarized.\n<summary>Evidence was read and the durable decision was preserved.</summary>",
       additional_kwargs: { lc_source: "summarization" }
     });
     yield ["values", {
@@ -184,7 +211,9 @@ test("mapDirectorValues yields per-message deltas and native tool activity witho
   assert.equal(emitted.filter((event) => event.type === "tool_call_started").length, 1);
   assert.equal(emitted.filter((event) => event.type === "tool_call_result").length, 1);
   assert.ok(emitted.some((event) => event.type === "status" && event.payload?.category === "planning"));
-  assert.ok(emitted.some((event) => event.type === "status" && event.payload?.category === "compaction"));
+  const cleanup = emitted.find((event) => event.type === "status" && event.payload?.category === "compaction");
+  assert.equal(cleanup?.message, "Context cleaned up.");
+  assert.equal(cleanup?.payload?.summary, "Evidence was read and the durable decision was preserved.");
   assert.ok(!collected.join("").includes("private child synthesis"));
   assert.deepEqual(tracker.snapshot(), { input: 3, output: 4 });
 });
@@ -215,6 +244,47 @@ test("mapDirectorValues does not mistake a shorter values snapshot for compactio
     // Drain native values.
   }
   assert.equal(emitted.filter((event) => event.payload?.category === "compaction").length, 0);
+});
+
+test("mapDirectorValues presents delegated file-backed roles by their saved names", async () => {
+  const emitted: import("@spielos/core").RunEvent[] = [];
+  const target = {
+    orgId,
+    runId: "run-1",
+    emitEvent: (event: import("@spielos/core").RunEvent) => {
+      emitted.push(event);
+      return event;
+    },
+    buildCheckpoint: () => { throw new Error("not used"); }
+  };
+  const task = new AIMessage({
+    id: "delegate-1",
+    content: "",
+    tool_calls: [{
+      id: "task-1",
+      name: "task",
+      args: { subagent_type: "role_notion_admin_a4e1da28", description: "Inspect the workspace" },
+      type: "tool_call"
+    }]
+  });
+  const source = (async function* () {
+    yield ["values", { messages: [task] }];
+  })();
+  const tracker = new DirectorUsageTracker();
+  for await (const _ of mapDirectorValues(
+    target,
+    source,
+    tracker,
+    () => null,
+    0,
+    {},
+    undefined,
+    undefined,
+    { role_notion_admin_a4e1da28: { roleId: "a4e1da28-dc76-45f5-984a-12c129f98ef6", roleName: "Notion Admin" } }
+  )) { /* collect emitted events */ }
+  const delegation = emitted.find((entry) => entry.type === "tool_call_started");
+  assert.equal(delegation?.payload?.roleId, "a4e1da28-dc76-45f5-984a-12c129f98ef6");
+  assert.equal(delegation?.payload?.roleName, "Notion Admin");
 });
 
 test("mapDirectorInterrupts converts a LangGraph interrupt payload into a HumanInputRequest", () => {

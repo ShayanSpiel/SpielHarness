@@ -5,6 +5,40 @@ import {
   softDeleteConnection,
 } from "@spielos/db";
 import { loadIntegrationCatalog } from "../../../lib/integration-catalog";
+import { decryptConnectionSecret } from "../../../lib/connection-secrets";
+
+type CredentialHealth = "ready" | "missing" | "corrupted" | null;
+
+function credentialHealth(kind: string, config: Record<string, unknown>): CredentialHealth {
+  if (kind !== "oauth") return null;
+  const encrypted = config.oauthCredential;
+  if (typeof encrypted !== "string" || encrypted.length === 0) return "missing";
+  try {
+    const credential = decryptConnectionSecret(encrypted);
+    return typeof credential.accessToken === "string" && credential.accessToken.length > 0 ? "ready" : "missing";
+  } catch {
+    return "corrupted";
+  }
+}
+
+function publicConnection(connection: Awaited<ReturnType<typeof listConnections>>[number]) {
+  const { oauthCredential: _secret, ...safeConfig } = connection.config;
+  void _secret;
+  return {
+    id: connection.id,
+    name: connection.name,
+    kind: connection.kind,
+    status: connection.status,
+    baseUrl: connection.base_url,
+    secretEnvKey: connection.secret_env_key,
+    config: safeConfig,
+    operations: connection.operations,
+    enabled: connection.enabled,
+    account: typeof safeConfig.account === "string" ? safeConfig.account : null,
+    credentialHealth: credentialHealth(connection.kind, connection.config),
+    secretConfigured: computeSecretConfigured(connection.secret_env_key),
+  };
+}
 
 function computeSecretConfigured(secretEnvKey: string | null): boolean | null {
   return secretEnvKey ? Boolean(process.env[secretEnvKey]) : null;
@@ -22,10 +56,7 @@ export async function GET() {
     const connections = await listConnections(org.sql, org.orgId);
     const presets = await loadIntegrationCatalog();
     return Response.json({
-      integrations: connections.map((c) => ({
-        ...c,
-        secretConfigured: computeSecretConfigured(c.secret_env_key),
-      })),
+      integrations: connections.map(publicConnection),
       presets: presets.map((p) => ({
         ...p,
         oauthReady: computeOAuthReady(p),
@@ -65,8 +96,7 @@ export async function POST(request: Request) {
       });
       return Response.json({
         integration: {
-          ...conn,
-          secretConfigured: computeSecretConfigured(preset.secretEnvKey ?? null),
+          ...publicConnection(conn),
         },
       }, { status: 201 });
     }
@@ -86,8 +116,7 @@ export async function POST(request: Request) {
     });
     return Response.json({
       integration: {
-        ...conn,
-        secretConfigured: computeSecretConfigured(secretEnvKey),
+        ...publicConnection(conn),
       },
     }, { status: 201 });
   } catch (err) {

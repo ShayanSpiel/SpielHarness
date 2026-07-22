@@ -13,6 +13,7 @@ import {
   inferWorkflowTopology,
   validateWorkflowDAG,
   resolveExplicitExecutor,
+  resolveDirectorRunBudget,
   type ExecutionMode,
   type DirectorRuntimePolicy,
   type Model,
@@ -130,20 +131,6 @@ export type ResolvedExecution = {
   directorRuntimePolicy: DirectorRuntimePolicy | null;
 };
 
-function restrictBudgetToPolicy(
-  requested: ExecuteBody["budget"],
-  policy: DirectorRuntimePolicy
-): ExecuteBody["budget"] {
-  const capped = (value: number | undefined, maximum: number) =>
-    typeof value === "number" ? Math.min(value, maximum) : maximum;
-  return {
-    maxInputTokens: capped(requested?.maxInputTokens ?? undefined, policy.maxInputTokens),
-    maxOutputTokens: capped(requested?.maxOutputTokens ?? undefined, policy.maxOutputTokens),
-    maxDurationMs: capped(requested?.maxDurationMs ?? undefined, policy.maxDurationMs),
-    maxToolCalls: capped(requested?.maxToolCalls ?? undefined, policy.maxToolCalls)
-  };
-}
-
 // ── Main resolver ─────────────────────────────────────────────
 export async function resolveExecution(
   org: OrgContext,
@@ -183,19 +170,24 @@ export async function resolveExecution(
     // Fast path: plain chat loads only models and the orchestrator prompt.
     // It skips the full harness index, role/skill/workflow/eval parsing, and
     // connections resolution — those are never used for a plain chat turn.
-    modelRows = await listModelsWithEnvironmentDefaults(org.sql, org.orgId);
-    const orchestratorFile = await getOrchestratorPrompt(org.sql, org.orgId);
+    const [modelRowsResult, orchestratorFile] = await Promise.all([
+      listModelsWithEnvironmentDefaults(org.sql, org.orgId),
+      getOrchestratorPrompt(org.sql, org.orgId),
+    ]);
+    modelRows = modelRowsResult;
     if (orchestratorFile) files = [orchestratorFile];
   } else {
-    const [harnessFiles, modelRowsResult] = await Promise.all([
+    const [harnessFiles, modelRowsResult, connectionRows] = await Promise.all([
       listHarnessFiles(org.sql, org.orgId),
-      listModelsWithEnvironmentDefaults(org.sql, org.orgId)
+      listModelsWithEnvironmentDefaults(org.sql, org.orgId),
+      listConnections(org.sql, org.orgId),
     ]);
     files = harnessFiles;
     modelRows = modelRowsResult;
-    if (executionMode === "director") {
-      connections = await listConnections(org.sql, org.orgId);
-    }
+    // Every harness execution can invoke file-backed tools. Direct workflow
+    // nodes and Director tools therefore resolve from the same tenant-scoped
+    // connection authority.
+    connections = connectionRows;
   }
 
   let roles: Record<string, Role> = {};
@@ -423,6 +415,8 @@ export async function resolveExecution(
   // Resolve model — prefer explicit user choice, then workspace settings default,
   // then orchestrator role's modelId, then fallback.
   const settingsDefaultModelId = settingsRow?.default_model_id ?? null;
+  const configuredContextInput = Number(settingsRow?.context_limits?.maxInputTokens);
+  const configuredContextOutput = Number(settingsRow?.context_limits?.maxOutputTokens);
   const orchestratorModelId = Object.values(roles).find(
     (r) => r.metadata?.systemRole === "orchestrator"
   )?.modelId ?? null;
@@ -631,7 +625,13 @@ export async function resolveExecution(
       provider: model?.provider ?? null,
       model: model?.model ?? null,
       goal: body.goal,
-      budget: directorRuntimePolicy ? restrictBudgetToPolicy(body.budget, directorRuntimePolicy) : body.budget,
+      budget: directorRuntimePolicy
+        ? resolveDirectorRunBudget(body.budget, directorRuntimePolicy)
+        : body.budget,
+      contextLimits: executionMode === "director" ? {
+        maxInputTokens: Number.isFinite(configuredContextInput) && configuredContextInput > 0 ? configuredContextInput : null,
+        maxOutputTokens: Number.isFinite(configuredContextOutput) && configuredContextOutput > 0 ? configuredContextOutput : null,
+      } : undefined,
       previousCompaction: body.previousCompaction ?? null,
       harnessFileAction,
       memoryProposalAction,

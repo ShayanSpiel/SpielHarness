@@ -114,10 +114,14 @@ test("createDirectorModel respects maxOutputTokens from model config", () => {
 
 test("provider-raw tool metadata survives the normalized LangChain tool-call boundary", () => {
   const rawToolCalls = [{
+    index: 0,
     id: "call-1",
     type: "function",
     function: { name: "read_file", arguments: "{}" },
-    extra_content: { provider: { opaque_signature: "signed" } }
+    extra_content: {
+      provider: { opaque_signature: "signed" },
+      google: { thought_signature: "gemini-signed" }
+    }
   }];
   const source = new AIMessage({
     content: "",
@@ -126,9 +130,53 @@ test("provider-raw tool metadata survives the normalized LangChain tool-call bou
   });
   const [requestMessage] = requestMessagesWithProviderToolMetadata([source]);
   assert.ok(AIMessage.isInstance(requestMessage));
-  assert.deepEqual(requestMessage.additional_kwargs.tool_calls, rawToolCalls);
+  assert.deepEqual(requestMessage.additional_kwargs.tool_calls, [{
+    id: "call-1",
+    type: "function",
+    function: { name: "read_file", arguments: "{}" },
+    extra_content: {
+      provider: { opaque_signature: "signed" },
+      google: { thought_signature: "gemini-signed" }
+    }
+  }]);
   assert.deepEqual(requestMessage.tool_calls, []);
   assert.equal(source.tool_calls.length, 1, "the native agent message remains executable");
+  assert.equal((source.additional_kwargs.tool_calls as typeof rawToolCalls)[0]?.index, 0, "source history is immutable");
+});
+
+test("provider-raw Director responses stay atomic so opaque signatures cannot fragment", () => {
+  const provider = makeProvider({ secretEnvKey: "SPIELOS_TEST_LLM_KEY" });
+  const model = makeModel({
+    config: {
+      capabilities: {
+        contextWindow: 65536,
+        maxOutputTokens: 8192,
+        toolCalling: true,
+        toolCallMetadata: "provider_raw"
+      }
+    }
+  });
+  const llm = createDirectorModel(provider, model) as ChatOpenAI;
+  assert.equal(llm.streaming, false);
+});
+
+test("OpenAI-compatible Director honors the configured output token parameter", () => {
+  const provider = makeProvider({ secretEnvKey: "SPIELOS_TEST_LLM_KEY" });
+  const model = makeModel({
+    model: "qwen3-coder-plus",
+    config: {
+      capabilities: {
+        contextWindow: 128000,
+        maxOutputTokens: 65536,
+        outputTokenParameter: "max_completion_tokens",
+        toolCalling: true
+      }
+    }
+  });
+  const llm = createDirectorModel(provider, model) as ChatOpenAI;
+  const params = llm.invocationParams();
+  assert.equal(params.max_completion_tokens, 65536);
+  assert.equal(params.max_tokens, undefined);
 });
 
 test("createDirectorModel uses env-based API key resolution", () => {

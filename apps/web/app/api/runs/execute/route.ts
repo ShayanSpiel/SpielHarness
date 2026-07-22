@@ -1,22 +1,22 @@
 import {
-  appendChatMessages,
   appendProjectRevision,
   atomicCheckpoint,
   CheckpointVersionMismatch,
+  createInitialTurn,
   createProjectSession,
-  createChat,
   createFile,
-  createRun,
   finalizeRunTurn,
+  findRunByIdempotency,
   getChat,
   getProjectSession,
   getRun,
   instrumentSql,
   linkRunInputFiles,
   linkRunOutputFile,
+  listChatMessages,
   recordUsage,
-  updateChatMetadata,
   upsertRunMetrics,
+  updateChatMetadata,
   type ChatMessageRow,
   type ChatRow,
   type InstrumentedSql,
@@ -32,8 +32,70 @@ import { registerRun, onRunSignal } from "../../../../lib/run-registry";
 import { publishDomainEvent } from "../../../../lib/realtime";
 import { buildDirectorToolContext, workflowsForDirector } from "../../../../lib/director-tools";
 import { chatRowToChat, messageRowToChatMessage, encodeSseFrame } from "@spielos/core";
-import type { ModelUsageUpdate, RunEvent, RunStatus, ExecutionMode, SseFrame } from "@spielos/core";
+import type { ModelUsageUpdate, RunEvent, RunStatus, RunType, ExecutionMode, SseFrame } from "@spielos/core";
 import { makeReqLogger, generateRequestId } from "../../../../lib/logger";
+import { getDbManager, classifyConnectionError } from "../../../../lib/db-manager";
+
+function replayRunResponse(
+  run: RunRow,
+  chat: ChatRow | null,
+  messages: ChatMessageRow[],
+): Response {
+  const checkpointVersion = Number(run.checkpoint_version ?? 0);
+  let streamSequence = 0;
+  const stream = new ReadableStream({
+    start(controller) {
+      const send = (frame: SseFrame) => controller.enqueue(encodeSseFrame(frame, checkpointVersion, {
+        streamId: run.id,
+        streamSequence: streamSequence++,
+      }));
+      send({ kind: "run", runId: run.id, type: run.type as RunType, chatId: run.chat_id, turnId: run.turn_id });
+      if (chat) send({ kind: "chat_created", chatId: chat.id, chat: chatRowToChat(chat) });
+      for (const message of messages) {
+        send({ kind: "message_persisted", chatId: message.chat_id, message: messageRowToChatMessage(message), runId: run.id });
+      }
+      if (run.state && Object.keys(run.state).length > 0) send({ kind: "run_state", state: run.state });
+      const status = ["running", "waiting_human", "completed", "failed", "cancelled"].includes(run.status)
+        ? run.status as RunStatus
+        : "failed";
+      send({ kind: "done", runId: run.id, status });
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
+function contextUsageFromChat(
+  metadata: Record<string, unknown> | null | undefined,
+  selectedModelId: string | null,
+): { inputTokens: number; outputTokens: number; modelId: string | null } {
+  const value = metadata?.contextUsage;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { inputTokens: 0, outputTokens: 0, modelId: selectedModelId };
+  }
+  const record = value as Record<string, unknown>;
+  const savedModelId = typeof record.modelId === "string" ? record.modelId : null;
+  if (selectedModelId && savedModelId && selectedModelId !== savedModelId) {
+    return { inputTokens: 0, outputTokens: 0, modelId: selectedModelId };
+  }
+  return {
+    inputTokens: typeof record.inputTokens === "number" && Number.isFinite(record.inputTokens)
+      ? Math.max(0, Math.floor(record.inputTokens))
+      : 0,
+    outputTokens: typeof record.outputTokens === "number" && Number.isFinite(record.outputTokens)
+      ? Math.max(0, Math.floor(record.outputTokens))
+      : 0,
+    modelId: selectedModelId ?? savedModelId,
+  };
+}
 
 export async function POST(request: Request) {
   const reqStart = performance.now();
@@ -50,41 +112,31 @@ export async function POST(request: Request) {
     const body = (await request.json()) as ExecuteBody;
     if (!body.prompt?.trim()) throw new HttpError(400, "prompt is required");
 
+    const chatId: string | null = body.chatId ?? null;
+    const turnId = chatId ? crypto.randomUUID() : null;
     const idempotencyKey = request.headers.get("idempotency-key") ?? body.idempotencyKey ?? null;
+    const instrumentedOrg = { ...org, sql };
+
     if (idempotencyKey) {
-      const existing = await sql<{ id: string; status: string }[]>`
-        select id, status from runs
-        where org_id = ${org.orgId} and idempotency_key = ${idempotencyKey}
-        limit 1
-      `;
-      if (existing.length > 0) {
-        throw new HttpError(409, `Run already exists (${existing[0].id}, ${existing[0].status}).`);
+      const replay = await findRunByIdempotency(sql, org.orgId, idempotencyKey);
+      if (replay) {
+        const replayChat = replay.chat_id ? await getChat(sql, org.orgId, replay.chat_id) : null;
+        const replayMessages = replay.chat_id ? await listChatMessages(sql, org.orgId, replay.chat_id, { limit: 200 }) : [];
+        return replayRunResponse(replay, replayChat, replayMessages);
       }
     }
 
-    const chatId: string | null = body.chatId ?? null;
-    // A turn id is created before execution and persists on the user request,
-    // execution anchor, run, artifacts, and final reply. It is deliberately
-    // distinct from a chat message id: a single turn can own several messages
-    // and child runs while still rendering as one compact activity surface.
-    const turnId = chatId ? crypto.randomUUID() : null;
-    const instrumentedOrg = { ...org, sql };
-    let chatRow: ChatRow | null = null;
-    const [resolved] = await Promise.all([
-      resolveExecution(instrumentedOrg, body),
-      chatId
-        ? createChat(sql, org.orgId, chatId, body.prompt.trim().slice(0, 80) || "New chat").then((r) => { chatRow = r; return r; })
-        : Promise.resolve(null)
-    ]);
-    if (chatId && !chatRow) {
-      chatRow = await getChat(sql, org.orgId, chatId);
-    }
+    // Resolve execution using reads only (no partial writes)
+    const resolved = await resolveExecution(instrumentedOrg, body);
     const harnessResolutionMs = performance.now() - reqStart - authMs;
+
     let project = body.projectId
       ? await getProjectSession(sql, org.orgId, body.projectId)
       : null;
     if (body.projectId && !project) throw new HttpError(404, "Active project not found.");
     if (!project && chatId && resolved.type === "workflow" && resolved.runRequest.workflow) {
+      // Ensure chat exists before creating project session (FK constraint)
+      await sql`insert into chats (id, org_id, title) values (${chatId}, ${org.orgId}, ${body.prompt.trim().slice(0, 80) || "New chat"}) on conflict (id) do nothing`;
       const revisionRoleSlug = typeof resolved.runRequest.workflow.metadata?.revisionRoleSlug === "string"
         ? resolved.runRequest.workflow.metadata.revisionRoleSlug
         : null;
@@ -96,106 +148,103 @@ export async function POST(request: Request) {
       });
     }
 
-    const run = await createRun(sql, org.orgId, {
-      chatId,
-      workflowId: resolved.target.type === "workflow" ? resolved.target.id : null,
-      turnId,
-      executionKind: resolved.type === "workflow" ? "workflow" : "orchestrator",
-      projectId: project?.id ?? null,
-      type: resolved.type,
-      prompt: body.prompt,
-      inputs: {
-        target: resolved.target,
-        contextFileIds: resolved.contextFileIds,
-        modelId: body.modelId ?? null,
-        reasoningEffort: body.reasoningEffort ?? null,
-        goal: body.goal ?? { objective: body.prompt, constraints: [], successCriteria: ["Return a grounded result."] },
-        budget: resolved.runRequest.budget ?? {},
-        projectId: project?.id ?? null,
-        executionMode: resolved.executionMode,
-        suggestedHarnessRefs: resolved.suggestedHarnessRefs
-      },
-      definitionSnapshot: {
-        version: 1,
-        target: resolved.target,
-        executionMode: resolved.executionMode,
-        provider: resolved.runRequest.provider,
-        model: resolved.runRequest.model,
-        directorRuntimePolicy: resolved.directorRuntimePolicy,
-        // ── Reachable entities only ──────────────────────────
-        // Only persist the entities directly referenced by this run.
-        // Broad harness caching is handled by the in-memory store; the
-        // snapshot is the load-bearing record for exact reproduction.
-        workflow: resolved.runRequest.workflow,
-        singleNode: resolved.runRequest.singleNode,
-        roles: resolved.runRequest.workflow
-          ? filterReachableRoles(resolved.runRequest.roles, resolved.runRequest.workflow)
-          : resolved.runRequest.singleNode && resolved.runRequest.singleNode.role
-            ? { [resolved.runRequest.singleNode.role.id]: resolved.runRequest.singleNode.role }
-            : {},
-        skills: resolved.runRequest.workflow
-          ? filterReachableSkills(resolved.runRequest.skills, resolved.runRequest.workflow)
-          : resolved.runRequest.singleNode && resolved.runRequest.singleNode.skill
-            ? { [resolved.runRequest.singleNode.skill.id]: resolved.runRequest.singleNode.skill }
-            : {},
-        workflows: resolved.executionMode === "director"
-          ? resolved.workflows
-          : {},
-        evals: resolved.runRequest.singleNode?.kind === "eval" && resolved.runRequest.singleNode.evalFile
-          ? { [resolved.runRequest.singleNode.evalFile.id]: resolved.runRequest.singleNode.evalFile }
-          : {},
-        files: resolved.runRequest.files,
-        workspaceInstructions: resolved.runRequest.workspaceInstructions,
-        memories: resolved.runRequest.memories,
-        connections: resolved.runRequest.connections,
-      },
-      idempotencyKey
-    });
-    const runCreationMs = performance.now() - reqStart - authMs - harnessResolutionMs;
-    const chat = chatId ? await getChat(sql, org.orgId, chatId) : null;
-
-    if (resolved.contextFileIds.length > 0) {
-      await linkRunInputFiles(sql, org.orgId, run.id, resolved.contextFileIds);
-    }
-    let initialMessagesResult: ChatMessageRow[] = [];
+    // Atomic initial turn — chat, run, user message, and metadata in one
+    // transaction. No execution-anchor assistant message is persisted.
+    let initialTurn: import("@spielos/db").InitialTurnResult | null = null;
     if (chatId && turnId) {
-      initialMessagesResult = await appendChatMessages(sql, org.orgId, chatId, [
-        { role: "user", body: body.prompt, metadata: { runId: run.id, turnId, kind: "user_request" } },
-        // This renderer-owned assistant message is a durable UI anchor, not
-        // model text. It deliberately has non-empty content because the chat
-        // runtime drops empty messages while hydrating a saved conversation.
-        // The chat renderer recognizes its envelope and mounts the compact
-        // native run card under this exact turn after a reload.
-        { role: "assistant", body: "[execution_anchor]", metadata: { runId: run.id, turnId, kind: "execution_anchor" } }
-      ]);
-      await updateChatMetadata(sql, org.orgId, chatId, {
-        activeRunId: run.id,
-        lastRunId: run.id,
-        executionMode: resolved.executionMode,
-        modelId: body.modelId ?? null,
-        reasoningEffort: body.reasoningEffort ?? "auto",
-        contextItems: Array.isArray(body.chatContextItems)
-          ? body.chatContextItems.flatMap((item) => {
-              if (!item || typeof item.id !== "string" || typeof item.kind !== "string" || typeof item.title !== "string") return [];
-              return [{ id: item.id, kind: item.kind, title: item.title }];
-            })
-          : [],
-        ...(project ? {
-          activeProject: {
-            id: project.id,
-            title: project.title,
-            workflowId: project.workflow_id,
-            revisionRoleSlug: typeof project.working_state?.revisionRoleSlug === "string"
-              ? project.working_state.revisionRoleSlug
-              : null,
-            artifactId: project.active_artifact_id,
-            revisionId: project.active_revision_id,
-            status: project.status,
-            version: project.version
-          }
-        } : {})
+      initialTurn = await createInitialTurn(sql, org.orgId, {
+        chatId,
+        title: body.prompt.trim().slice(0, 80) || "New chat",
+        prompt: body.prompt,
+        type: resolved.type,
+        executionKind: resolved.type === "workflow" ? "workflow" : "orchestrator",
+        turnId,
+        inputs: {
+          target: resolved.target,
+          contextFileIds: resolved.contextFileIds,
+          modelId: body.modelId ?? null,
+          reasoningEffort: body.reasoningEffort ?? null,
+          goal: body.goal ?? { objective: body.prompt, constraints: [], successCriteria: ["Return a grounded result."] },
+          budget: resolved.runRequest.budget ?? {},
+          contextLimits: resolved.runRequest.contextLimits ?? {},
+          projectId: project?.id ?? null,
+          executionMode: resolved.executionMode,
+          suggestedHarnessRefs: resolved.suggestedHarnessRefs
+        },
+        definitionSnapshot: {
+          version: 1,
+          target: resolved.target,
+          executionMode: resolved.executionMode,
+          provider: resolved.runRequest.provider,
+          model: resolved.runRequest.model,
+          directorRuntimePolicy: resolved.directorRuntimePolicy,
+          workflow: resolved.runRequest.workflow,
+          singleNode: resolved.runRequest.singleNode,
+          roles: resolved.runRequest.workflow
+            ? filterReachableRoles(resolved.runRequest.roles, resolved.runRequest.workflow)
+            : resolved.runRequest.singleNode && resolved.runRequest.singleNode.role
+              ? { [resolved.runRequest.singleNode.role.id]: resolved.runRequest.singleNode.role }
+              : {},
+          skills: resolved.runRequest.workflow
+            ? filterReachableSkills(resolved.runRequest.skills, resolved.runRequest.workflow)
+            : resolved.runRequest.singleNode && resolved.runRequest.singleNode.skill
+              ? { [resolved.runRequest.singleNode.skill.id]: resolved.runRequest.singleNode.skill }
+              : {},
+          workflows: resolved.executionMode === "director" ? resolved.workflows : {},
+          evals: resolved.runRequest.singleNode?.kind === "eval" && resolved.runRequest.singleNode.evalFile
+            ? { [resolved.runRequest.singleNode.evalFile.id]: resolved.runRequest.singleNode.evalFile }
+            : {},
+          files: resolved.runRequest.files,
+          workspaceInstructions: resolved.runRequest.workspaceInstructions,
+          memories: resolved.runRequest.memories,
+          connections: resolved.runRequest.connections,
+        },
+        idempotencyKey,
+        workflowId: resolved.target.type === "workflow" ? resolved.target.id : null,
+        projectId: project?.id ?? null,
+        chatMetadata: {
+          executionMode: resolved.executionMode,
+          modelId: body.modelId ?? null,
+          reasoningEffort: body.reasoningEffort ?? "auto",
+          contextItems: Array.isArray(body.chatContextItems)
+            ? body.chatContextItems.flatMap((item) => {
+                if (!item || typeof item.id !== "string" || typeof item.kind !== "string" || typeof item.title !== "string") return [];
+                return [{ id: item.id, kind: item.kind, title: item.title }];
+              })
+            : [],
+          ...(project ? {
+            activeProject: {
+              id: project.id,
+              title: project.title,
+              workflowId: project.workflow_id,
+              revisionRoleSlug: typeof project.working_state?.revisionRoleSlug === "string"
+                ? project.working_state.revisionRoleSlug
+                : null,
+              artifactId: project.active_artifact_id,
+              revisionId: project.active_revision_id,
+              status: project.status,
+              version: project.version
+            }
+          } : {})
+        }
       });
     }
+    const runCreationMs = performance.now() - reqStart - authMs - harnessResolutionMs;
+    const run = initialTurn?.run ?? (await getRun(sql, org.orgId, body.runId ?? ""));
+    if (!run) throw new HttpError(500, "Run could not be created.");
+    const chat = initialTurn?.chat ?? (chatId ? await getChat(sql, org.orgId, chatId) : null);
+    const selectedModelId = resolved.runRequest.model?.id ?? null;
+    const priorContextUsage = contextUsageFromChat(chat?.metadata, selectedModelId);
+
+    if (initialTurn && !initialTurn.created) {
+      const replayMessages = run.chat_id ? await listChatMessages(sql, org.orgId, run.chat_id, { limit: 200 }) : [];
+      return replayRunResponse(run, chat, replayMessages);
+    }
+
+    if (resolved.contextFileIds.length > 0 && run) {
+      await linkRunInputFiles(sql, org.orgId, run.id, resolved.contextFileIds);
+    }
+
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -204,10 +253,14 @@ export async function POST(request: Request) {
         // execution. Explicit cancellation travels through /cancel instead.
         let clientConnected = !request.signal.aborted;
         let checkpointVersion = Number(run.checkpoint_version ?? 0);
+        let streamSequence = 0;
         const send = (frame: SseFrame) => {
           if (!clientConnected) return;
           try {
-            controller.enqueue(encodeSseFrame(frame, checkpointVersion));
+            controller.enqueue(encodeSseFrame(frame, checkpointVersion, {
+              streamId: run.id,
+              streamSequence: streamSequence++,
+            }));
           } catch {
             clientConnected = false;
           }
@@ -215,7 +268,7 @@ export async function POST(request: Request) {
         const disconnectClient = () => { clientConnected = false; };
         request.signal.addEventListener("abort", disconnectClient, { once: true });
         let firstByteSent = false;
-        send({ kind: "run", runId: run.id, type: resolved.type });
+        send({ kind: "run", runId: run.id, type: resolved.type, chatId: run.chat_id, turnId: run.turn_id });
         send({ kind: "status", message: "Thinking\u2026" });
         const startedAt = new Date().toISOString();
         const maxDurationMs = resolved.runRequest.budget?.maxDurationMs ?? null;
@@ -232,26 +285,40 @@ export async function POST(request: Request) {
               maxToolCalls: resolved.runRequest.budget?.maxToolCalls ?? null,
               inputTokens: 0,
               outputTokens: 0,
+              contextInputTokens: priorContextUsage.inputTokens,
+              contextOutputTokens: priorContextUsage.outputTokens,
+              totalInputTokens: 0,
+              totalOutputTokens: 0,
+              contextModelId: priorContextUsage.modelId,
               toolCalls: 0,
               startedAt,
               deadlineAt: maxDurationMs ? new Date(Date.parse(startedAt) + maxDurationMs).toISOString() : null
-            }
+            },
+            context: {
+              maxInputTokens: resolved.runRequest.contextLimits?.maxInputTokens ?? null,
+              maxOutputTokens: resolved.runRequest.contextLimits?.maxOutputTokens ?? null,
+            },
           }
         });
 
-        if (chatId && chatRow) {
-          send({ kind: "chat_created", chatId, chat: chatRowToChat(chatRow) });
-        }
-        for (const msg of initialMessagesResult) {
-          send({ kind: "message_persisted", chatId: chatId!, message: messageRowToChatMessage(msg), runId: run.id });
+        if (initialTurn) {
+          send({ kind: "chat_created", chatId: initialTurn.chat.id, chat: chatRowToChat(initialTurn.chat) });
+          send({ kind: "message_persisted", chatId: initialTurn.chat.id, message: messageRowToChatMessage(initialTurn.userMessage), runId: run.id });
         }
 
+        // Force HTTP chunk flush before the provider begins.  Without this,
+        // Next.js's dev-server proxy may buffer all initial frames and only
+        // deliver them when the stream ends, which prevents the client from
+        // seeing any intermediate frames until the run is complete.
+        try { controller.enqueue(new TextEncoder().encode(":flush\n\n")); } catch { /* */ }
+
         let outputText = "";
-        let terminalStatus: RunStatus = "completed";
+        let terminalStatus: RunStatus | null = null;
         let errorMessage: string | null = null;
         const outputFiles: Array<{ id: string; isProject: boolean }> = [];
         let checkpoint: RunCheckpoint | null = null;
         let longHorizon: Record<string, unknown> | null = null;
+        let latestCompaction: Record<string, unknown> | null = null;
         let compactionMs = 0;
         let inputTokensEstimate = 0;
         let systemPromptTokensEstimate = 0;
@@ -259,12 +326,42 @@ export async function POST(request: Request) {
         let firstProviderByteAt: number | null = null;
         let firstClientByteAt: number | null = null;
         let eventPersistMs = 0;
-        const usage = { input: 0, output: 0, tools: 0 };
+        const usage = {
+          input: 0,
+          output: 0,
+          tools: 0,
+          contextInput: priorContextUsage.inputTokens,
+          contextOutput: priorContextUsage.outputTokens,
+          contextModelId: priorContextUsage.modelId,
+        };
         const billableUsage = { input: 0, output: 0 };
+        const checkpointWithUsage = (state: RunCheckpoint): RunCheckpoint => state.budget ? {
+          ...state,
+          budget: {
+            ...state.budget,
+            inputTokens: usage.input,
+            outputTokens: usage.output,
+            contextInputTokens: usage.contextInput,
+            contextOutputTokens: usage.contextOutput,
+            totalInputTokens: usage.input,
+            totalOutputTokens: usage.output,
+            contextModelId: usage.contextModelId,
+            toolCalls: usage.tools
+          }
+        } : state;
         const publishBudgetState = () => {
           send({
             kind: "usage",
-            usage: { inputTokens: usage.input, outputTokens: usage.output, toolCalls: usage.tools }
+            usage: {
+              inputTokens: usage.input,
+              outputTokens: usage.output,
+              toolCalls: usage.tools,
+              contextInputTokens: usage.contextInput,
+              contextOutputTokens: usage.contextOutput,
+              totalInputTokens: usage.input,
+              totalOutputTokens: usage.output,
+              contextModelId: usage.contextModelId,
+            }
           });
         };
         const onModelUsage = (update: ModelUsageUpdate) => {
@@ -273,6 +370,11 @@ export async function POST(request: Request) {
           billableUsage.output += update.outputTokens;
           usage.input += update.inputTokens;
           usage.output += update.outputTokens;
+          if (update.updatesContext) {
+            usage.contextInput = update.inputTokens;
+            usage.contextOutput = update.outputTokens;
+            usage.contextModelId = update.modelId === "unknown" ? selectedModelId : update.modelId;
+          }
           publishBudgetState();
           publishDomainEvent(`run:${run.id}`, {
             type: "run.usage.updated",
@@ -294,7 +396,16 @@ export async function POST(request: Request) {
           usage.tools = next;
           send({
             kind: "usage",
-            usage: { inputTokens: usage.input, outputTokens: usage.output, toolCalls: usage.tools }
+            usage: {
+              inputTokens: usage.input,
+              outputTokens: usage.output,
+              toolCalls: usage.tools,
+              contextInputTokens: usage.contextInput,
+              contextOutputTokens: usage.contextOutput,
+              totalInputTokens: usage.input,
+              totalOutputTokens: usage.output,
+              contextModelId: usage.contextModelId,
+            }
           });
         };
         const liveEventIds = new Set<string>();
@@ -485,7 +596,19 @@ export async function POST(request: Request) {
                 signal: executionController.signal,
                 checkControl
               })
-            : streamRun({ ...resolved.runRequest, runId: run.id, chatMetadata: chat?.metadata ?? {}, goal: body.goal, budget: resolved.runRequest.budget, onModelUsage, onToolUsage, onEvent, signal: executionController.signal, checkControl });
+            : streamRun({
+              ...resolved.runRequest,
+              runId: run.id,
+              chatMetadata: chat?.metadata ?? {},
+              conversationHistory: body.messages,
+              goal: body.goal,
+              budget: resolved.runRequest.budget,
+              onModelUsage,
+              onToolUsage,
+              onEvent,
+              signal: executionController.signal,
+              checkControl,
+            });
 
           for await (const item of gen) {
             if (!firstByteSent) {
@@ -506,6 +629,13 @@ export async function POST(request: Request) {
               if (item.event.type === "status" && item.event.payload?.category === "compaction") {
                 const compactionEventStart = performance.now();
                 compactionMs = Math.max(compactionMs, compactionEventStart - providerStart);
+                latestCompaction = {
+                  compactedMessageCount: item.event.payload.compactedMessageCount ?? null,
+                  summary: item.event.payload.summary ?? null,
+                  cutoffIndex: item.event.payload.cutoffIndex ?? null,
+                  historyPath: item.event.payload.historyPath ?? null,
+                  updatedAt: item.event.payload.createdAt ?? new Date().toISOString(),
+                };
               }
               if (item.event.type === "status" && item.event.payload?.category === "long_horizon") {
                 longHorizon = item.event.payload as Record<string, unknown>;
@@ -546,8 +676,18 @@ export async function POST(request: Request) {
               terminalStatus = "waiting_human";
               send({ kind: "human_input", request: item.request });
             } else if (item.kind === "checkpoint") {
-              checkpoint = item.state;
-              await flushAtomicCheckpoint(checkpoint);
+              checkpoint = checkpointWithUsage(item.state);
+              // Plain Direct chat and Director chat already persist their
+              // assistant turn atomically during finalization. Flushing the
+              // same checkpoint here creates a second remote transaction on
+              // the critical streaming path without improving recovery:
+              // Direct chat has no resumable intermediate step, while
+              // DeepAgents owns Director's native per-step checkpointer.
+              // Graph workflows keep their intermediate checkpoints because
+              // their nodes are independently resumable.
+              if (resolved.type !== "chat" || resolved.runRequest.singleNode) {
+                await flushAtomicCheckpoint(checkpoint);
+              }
               send({
                 kind: "run_state",
                 state: {
@@ -558,14 +698,10 @@ export async function POST(request: Request) {
                 }
               });
             } else if (item.kind === "done") {
-              const incoming = item.status as RunStatus;
-              // The provider's `done` status describes whether the PRODUCER
-              // stream finished, not the overall run outcome. Accept only
-              // `waiting_human` (a genuine state) and `completed` (the
-              // default); never downgrade from `completed` to `failed` or
-              // `cancelled` based on the provider's self-report. Actual
-              // failures are caught by the outer try/catch.
-              if (incoming === "waiting_human") terminalStatus = "waiting_human";
+              const doneAllowed = ["completed", "failed", "cancelled", "waiting_human"] as const;
+              terminalStatus = doneAllowed.includes(item.status as (typeof doneAllowed)[number])
+                ? (item.status as (typeof doneAllowed)[number])
+                : "completed";
               log.info("provider stream done", { terminalStatus, runId: run.id });
             }
           }
@@ -588,7 +724,9 @@ export async function POST(request: Request) {
           signalListener();
           // Best-effort drain. The final atomic checkpoint below is the
           // durable write; if this throws we still attempt the final one.
-          try { await flushAtomicCheckpoint(); } catch { /* logged inside */ }
+          if (resolved.type !== "chat" || resolved.runRequest.singleNode) {
+            try { await flushAtomicCheckpoint(); } catch { /* logged inside */ }
+          }
         }
 
         // Wrap remaining work so controller.close() always executes.
@@ -596,7 +734,7 @@ export async function POST(request: Request) {
         // client receives a clean stream-end signal instead of hanging.
         try {
         const completedAt =
-          terminalStatus === "completed" || terminalStatus === "failed" || terminalStatus === "cancelled"
+          terminalStatus && ["completed", "failed", "cancelled"].includes(terminalStatus)
             ? new Date().toISOString()
             : null;
 
@@ -607,6 +745,11 @@ export async function POST(request: Request) {
               ...checkpoint.budget,
               inputTokens: usage.input || checkpoint.budget.inputTokens,
               outputTokens: usage.output || checkpoint.budget.outputTokens,
+              contextInputTokens: usage.contextInput || checkpoint.budget.contextInputTokens,
+              contextOutputTokens: usage.contextOutput || checkpoint.budget.contextOutputTokens,
+              totalInputTokens: usage.input || checkpoint.budget.totalInputTokens,
+              totalOutputTokens: usage.output || checkpoint.budget.totalOutputTokens,
+              contextModelId: usage.contextModelId ?? checkpoint.budget.contextModelId,
               toolCalls: Math.max(usage.tools, checkpoint.budget.toolCalls)
             }
           };
@@ -631,6 +774,12 @@ export async function POST(request: Request) {
         };
 
         // ── Atomic finalization ───────────────────────────────────────────
+        if (terminalStatus === "failed" && !outputText.trim()) {
+          const label = resolved.runRequest.workflow?.name
+            ?? resolved.runRequest.singleNode?.title
+            ?? (isDirectorChat ? "Director" : "Run");
+          outputText = `${label} failed${errorMessage ? `: ${errorMessage}` : "."}`;
+        }
         let finalTurnResult: {
           run: RunRow;
           messages: ChatMessageRow[];
@@ -643,24 +792,59 @@ export async function POST(request: Request) {
               sql, org.orgId, run.id, chatId, turnId, checkpointVersion,
               {
                 outputText: outputText ?? "",
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                events: queuedEvents.splice(0, queuedEvents.length) as any,
+                events: queuedEvents.splice(0, queuedEvents.length),
                 state: { ...(checkpoint ?? {}), _timings: timings },
-                status: terminalStatus,
+                status: terminalStatus ?? "failed",
                 error: errorMessage,
                 completedAt: terminalStatus === "waiting_human" ? null : completedAt,
                 isDirectorChat,
                 longHorizon: checkpoint?.longHorizon ?? (longHorizon ? {
                   pinnedState: longHorizon.pinnedState,
                   milestones: longHorizon.milestones
-                } : null)
+                } : null),
+                chatMetadata: {
+                  contextUsage: {
+                    inputTokens: usage.contextInput,
+                    outputTokens: usage.contextOutput,
+                    modelId: usage.contextModelId ?? selectedModelId,
+                    updatedAt: new Date().toISOString(),
+                  },
+                  ...(latestCompaction ? { compaction: latestCompaction } : {}),
+                },
               }
             );
             checkpointVersion = Number(finalTurnResult.run.checkpoint_version ?? checkpointVersion);
             terminalStatus = finalTurnResult.run.status as RunStatus;
           } catch (finalizeErr) {
             console.error("[runs/execute] finalizeRunTurn failed:", finalizeErr);
-            throw finalizeErr;
+            errorMessage = finalizeErr instanceof Error ? finalizeErr.message : "Run finalization failed.";
+            const durable = await getRun(sql, org.orgId, run.id);
+            if (durable?.status === "cancelled") {
+              terminalStatus = "cancelled";
+              checkpointVersion = Number(durable.checkpoint_version ?? checkpointVersion);
+            } else if (durable) {
+              const failed = await atomicCheckpoint(sql, org.orgId, run.id, {
+                status: "failed",
+                error: errorMessage,
+                completedAt: new Date().toISOString(),
+                state: { ...(durable.state ?? {}), status: "failed", error: errorMessage },
+                events: [{
+                  event_type: "run_failed",
+                  node_id: null,
+                  node_title: null,
+                  skill_id: null,
+                  skill_name: null,
+                  message: "Run finalization failed.",
+                  payload: { phase: "finalization" },
+                }],
+                expectedCheckpointVersion: Number(durable.checkpoint_version ?? 0),
+              });
+              checkpointVersion = failed.checkpointVersion;
+              terminalStatus = "failed";
+            } else {
+              terminalStatus = "failed";
+            }
+            send({ kind: "error", message: errorMessage });
           }
         } else {
           // No chat — finalize run state only
@@ -680,7 +864,7 @@ export async function POST(request: Request) {
               events: finalEvents,
               state: { ...(checkpoint ?? {}), _timings: timings },
               outputs: { text: outputText },
-              status: terminalStatus,
+              status: terminalStatus ?? "failed",
               error: errorMessage,
               completedAt,
               expectedCheckpointVersion: finalCheckpointVersion
@@ -753,6 +937,8 @@ export async function POST(request: Request) {
           firstByteToClientMs: Math.round(firstByteToClientMs),
           eventPersistMs: Math.round(eventPersistMs),
           compactionMs: Math.round(compactionMs),
+          systemPromptTokensEstimate,
+          inputTokensEstimate,
           dbQueries: counter?.count ?? 0,
           dbMs: Math.round(counter?.totalMs ?? 0),
           llmInputTokens: billableUsage.input,
@@ -766,7 +952,7 @@ export async function POST(request: Request) {
             run_id: run.id,
             org_id: org.orgId,
             type: resolved.type,
-            status: terminalStatus,
+            status: terminalStatus ?? "failed",
             auth_ms: authMs,
             harness_resolution_ms: harnessResolutionMs,
             run_creation_ms: runCreationMs,
@@ -799,11 +985,8 @@ export async function POST(request: Request) {
         log.info("step_after_complete__send_final_msgs", { ms: Math.round(performance.now() - tSse0) });
 
         const tGetChat = performance.now();
-        if (chatId) {
-          const latestChat = await getChat(sql, org.orgId, chatId);
-          if (latestChat) {
-            send({ kind: "chat_created", chatId, chat: chatRowToChat(latestChat) });
-          }
+        if (chatId && finalTurnResult?.chat) {
+          send({ kind: "chat_created", chatId, chat: chatRowToChat(finalTurnResult.chat) });
         }
         log.info("step_after_complete__getChat", { ms: Math.round(performance.now() - tGetChat) });
 
@@ -824,21 +1007,27 @@ export async function POST(request: Request) {
           type: "run.status.changed",
           orgId: org.orgId,
           runId: run.id,
-          status: terminalStatus,
+          status: terminalStatus ?? "failed",
           checkpointVersion,
           ts: new Date().toISOString()
         });
         log.info("step_after_complete__publish_done", { ms: Math.round(performance.now() - tRunState) });
 
         const tDone = performance.now();
-        send({ kind: "done", runId: run.id, status: terminalStatus });
+        send({ kind: "done", runId: run.id, status: terminalStatus ?? "failed" });
         log.info("step_after_complete__send_done", { ms: Math.round(performance.now() - tDone) });
       } catch (finalizeErr) {
         console.error("[runs/execute] post-provider finalization failed:", finalizeErr);
         terminalStatus = terminalStatus === "running" || !terminalStatus ? "failed" : terminalStatus;
-        send({ kind: "done", runId: run.id, status: terminalStatus });
+        send({ kind: "done", runId: run.id, status: terminalStatus ?? "failed" });
       } finally {
         const tClose = performance.now();
+        // Yield to the event loop so the enqueued done frame flushes through
+        // the HTTP layer before close() signals stream end. Without this
+        // delay, controller.close() can finalize the stream before the last
+        // enqueued chunk is delivered to the consumer, causing the client to
+        // never see the done frame (terminalStatus stays null on the client).
+        await new Promise((r) => setTimeout(r, 200));
         try { controller.close(); } catch { /* reader detached */ }
         log.info("step_after_complete__controller_close", { ms: Math.round(performance.now() - tClose) });
       }
@@ -849,7 +1038,9 @@ export async function POST(request: Request) {
       headers: {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive"
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+        "X-Content-Type-Options": "nosniff"
       }
     });
   } catch (err) {
@@ -858,6 +1049,10 @@ export async function POST(request: Request) {
       log.warn(`${err.status} ${err.message}`, { ms });
     } else {
       log.error(`POST failed: ${err instanceof Error ? err.message : String(err)}`, { ms });
+      const classified = classifyConnectionError(err);
+      if (classified.status === 503) {
+        getDbManager().invalidate();
+      }
     }
     return errorResponse(err);
   }
@@ -888,5 +1083,3 @@ function filterReachableSkills(
   }
   return out;
 }
-
-

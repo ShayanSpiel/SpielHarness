@@ -1,6 +1,21 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { workspaceSettingsSchema, executionModeSchema } from "@spielos/core";
+import {
+  workspaceSettingsSchema,
+  executionModeSchema,
+  resolveDirectorRunBudget,
+  type DirectorRuntimePolicy,
+} from "@spielos/core";
+
+const directorPolicy: DirectorRuntimePolicy = {
+  maxOutputTokens: 8192,
+  maxDurationMs: 900000,
+  maxToolCalls: 18,
+  maxChildRuns: 6,
+  maxParallelChildRuns: 2,
+  maxCallsPerCapability: 2,
+  maxChildInputTokens: 24000,
+};
 
 describe("workspaceSettingsSchema", () => {
   it("parses with defaults when given empty object", () => {
@@ -18,7 +33,7 @@ describe("workspaceSettingsSchema", () => {
       contextLimits: { maxInputTokens: 50000, maxOutputTokens: 200000 },
       retrievalPolicy: { knowledgeSearchLimit: 5, memoryRetrievalLimit: 3 },
       directorRuntimePolicy: {
-        maxInputTokens: 200000, maxOutputTokens: 200000, maxDurationMs: 600000,
+        maxOutputTokens: 200000, maxDurationMs: 600000,
         maxToolCalls: 100, maxChildRuns: 10, maxParallelChildRuns: 3,
         maxCallsPerCapability: 20, maxChildInputTokens: 50000,
       },
@@ -64,5 +79,23 @@ describe("executionModeSchema", () => {
 
   it("rejects unknown modes", () => {
     assert.ok(!executionModeSchema.safeParse("hybrid").success);
+  });
+});
+
+describe("resolveDirectorRunBudget", () => {
+  it("does not impose a cumulative input ceiling by default", () => {
+    const budget = resolveDirectorRunBudget(undefined, directorPolicy);
+    assert.equal(budget.maxInputTokens, null);
+  });
+
+  it("honors an explicitly lower user budget", () => {
+    const budget = resolveDirectorRunBudget({ maxInputTokens: 20000 }, directorPolicy);
+    assert.equal(budget.maxInputTokens, 20000);
+  });
+
+  it("continues to cap the other run resources at workspace policy", () => {
+    const budget = resolveDirectorRunBudget({ maxOutputTokens: 99999, maxToolCalls: 999 }, directorPolicy);
+    assert.equal(budget.maxOutputTokens, 8192);
+    assert.equal(budget.maxToolCalls, 18);
   });
 });

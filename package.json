@@ -27,7 +27,6 @@
     "benchmark:chat": "node --experimental-strip-types scripts/benchmark-chat.ts"
   },
   "devDependencies": {
-    "@next/swc-darwin-x64": "^15.5.20",
     "@playwright/test": "^1.61.1",
     "typescript": "^6.0.0"
   },

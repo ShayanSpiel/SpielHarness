@@ -4,7 +4,7 @@ import { use, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { AppShell } from "../../../components/app-shell";
 import { useRunContext } from "../../../lib/run-context";
-import { useWorkspaceStore } from "../../../lib/use-workspace-store";
+import { useRuntimeStore } from "../../../lib/runtime-store";
 
 const RunsView = dynamic(() => import("../../../components/chat/runs-view").then((m) => m.RunsView), {
   ssr: false,
@@ -21,17 +21,15 @@ const RunDrawer = dynamic(() => import("../../../components/chat/run-drawer").th
 
 function RunLoader({ runId }: { runId: string }) {
   const run = useRunContext();
-  const store = useWorkspaceStore();
 
   useEffect(() => {
     run.setActiveRunId(runId);
-    fetch(`/api/runs/${runId}`, { cache: "no-store" })
-      .then(async (res) => {
-        if (!res.ok) return null;
-        const payload = await res.json() as { run: { chat_id: string | null } };
-        if (payload?.run.chat_id) store.setActiveChat(payload.run.chat_id);
-      })
-      .catch(() => { /* chat-thread.tsx restore() handles failures */ });
+    // A route load starts from an unhydrated projection whose local checkpoint
+    // version is 0. Passing that as `since=0` can legitimately receive 304 for
+    // a newly-created Director run and leave the page looking like a new chat.
+    // The URL is an explicit restoration request, so always fetch its complete
+    // authoritative snapshot once; later realtime restores remain monotonic.
+    void useRuntimeStore.getState().restoreRun(runId, { force: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
 

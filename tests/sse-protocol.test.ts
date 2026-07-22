@@ -115,6 +115,15 @@ test("encodeSseFrame omits checkpointVersion when not provided", () => {
   assert.equal(parsed.checkpointVersion, undefined);
 });
 
+test("encodeSseFrame carries one stream identity and monotonic sequence", () => {
+  const encoded = encodeSseFrame(makeRunFrame(), 7, { streamId: "run-1", streamSequence: 12 });
+  const decoded = new TextDecoder().decode(encoded);
+  const parsed = sseEnvelopeSchema.parse(JSON.parse(decoded.slice(6).trim()));
+  assert.equal(parsed.streamId, "run-1");
+  assert.equal(parsed.streamSequence, 12);
+  assert.equal(parsed.checkpointVersion, 7);
+});
+
 test("sseEnvelopeSchema rejects unsupported protocol version", () => {
   const envelope: SseEnvelope = {
     protocol: "spielos-sse-v0",

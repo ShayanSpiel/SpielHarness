@@ -168,6 +168,9 @@ export function createSql(connectionString: string): Sql {
   } else if (ssl.servername) {
     connection.host = ssl.servername as string;
   }
+  const pgOptions = profile.statementTimeout
+    ? "-c " + profile.statementTimeout.split(",").join(" -c ")
+    : undefined;
   const opts: Record<string, unknown> = {
     max: profile.poolMax,
     min: profile.poolMin,
@@ -180,13 +183,19 @@ export function createSql(connectionString: string): Sql {
     max_lifetime: 300,
     onnotice: () => undefined,
     transform: { undefined: null },
+    query_timeout: positiveIntegerEnv("PG_QUERY_TIMEOUT_MS", 60_000),
+    options: pgOptions,
   };
   const sql = postgres(profile.connectionString, opts as any);
   if (process.env.NODE_ENV !== "production") {
+    const ver = process.env.NEXT_RUNTIME === "nodejs" ? "node" : "edge";
     console.info(
-      `[db] mode=${profile.mode} prepare=${profile.prepareStatements} ` +
-      `poolMax=${profile.poolMax} poolMin=${profile.poolMin} ` +
-      `host=${profile.diagnostic.host} port=${profile.diagnostic.port}`
+      `[db] mode=${profile.mode} runtime=${ver} ` +
+      `host=${profile.diagnostic.host} port=${profile.diagnostic.port} ` +
+      `prepare=${profile.prepareStatements} ` +
+      `pool=${profile.poolMax}/${profile.poolMin} ` +
+      `query_timeout=${opts.query_timeout}ms ` +
+      `connect_timeout=${opts.connect_timeout}s`
     );
   }
   return sql;
@@ -269,26 +278,58 @@ export type FileRow = {
   updated_at: string;
 };
 
+const HARNESS_FILES_CACHE_MS = 30_000;
+const harnessFilesCache = new Map<string, { rows: FileRow[]; expiresAt: number }>();
+const harnessFilesLoads = new Map<string, Promise<FileRow[]>>();
+const orchestratorPromptCache = new Map<string, { row: FileRow | null; expiresAt: number }>();
+
+export function invalidateHarnessFilesCache(orgId?: string): void {
+  if (orgId) {
+    harnessFilesCache.delete(orgId);
+    harnessFilesLoads.delete(orgId);
+    orchestratorPromptCache.delete(orgId);
+    return;
+  }
+  harnessFilesCache.clear();
+  harnessFilesLoads.clear();
+  orchestratorPromptCache.clear();
+}
+
 export async function listHarnessFiles(sql: Sql, orgId: string): Promise<FileRow[]> {
-  return sql<FileRow[]>`
-    select id, org_id, folder_id, file_type, status,
-           lifecycle, enabled, validation_diagnostics,
-           title, body, content_format, metadata,
-           current_version, created_at, updated_at
-    from files
-    where org_id = ${orgId}
-      and deleted_at is null
-      and file_type in (
-        'knowledge','strategy','prompt','artifact','draft','evidence','asset',
-        'eval_report','publish_package',
-        'harness_role','harness_skill','harness_workflow','harness_workstream','harness_eval',
-        'harness_template','harness_chat_message'
-      )
-    order by updated_at desc
-  `;
+  const cached = harnessFilesCache.get(orgId);
+  if (cached && cached.expiresAt > Date.now()) return cached.rows;
+  const inFlight = harnessFilesLoads.get(orgId);
+  if (inFlight) return inFlight;
+  const load = sql<FileRow[]>`
+      select id, org_id, folder_id, file_type, status,
+             lifecycle, enabled, validation_diagnostics,
+             title, body, content_format, metadata,
+             current_version, created_at, updated_at
+      from files
+      where org_id = ${orgId}
+        and deleted_at is null
+        and file_type in (
+          'knowledge','strategy','prompt','artifact','draft','evidence','asset',
+          'eval_report','publish_package',
+          'harness_role','harness_skill','harness_workflow','harness_workstream','harness_eval',
+          'harness_template','harness_chat_message'
+        )
+      order by updated_at desc
+    `
+    .then((rows) => {
+      harnessFilesCache.set(orgId, { rows, expiresAt: Date.now() + HARNESS_FILES_CACHE_MS });
+      const orchestrator = rows.find((row) => row.file_type === "prompt" && row.status === "active" && row.metadata?.systemRole === "orchestrator") ?? null;
+      orchestratorPromptCache.set(orgId, { row: orchestrator, expiresAt: Date.now() + HARNESS_FILES_CACHE_MS });
+      return rows;
+    })
+    .finally(() => harnessFilesLoads.delete(orgId));
+  harnessFilesLoads.set(orgId, load);
+  return load;
 }
 
 export async function getOrchestratorPrompt(sql: Sql, orgId: string): Promise<FileRow | null> {
+  const cached = orchestratorPromptCache.get(orgId);
+  if (cached && cached.expiresAt > Date.now()) return cached.row;
   const rows = await sql<FileRow[]>`
     select id, org_id, folder_id, file_type, status,
            lifecycle, enabled, validation_diagnostics,
@@ -301,7 +342,9 @@ export async function getOrchestratorPrompt(sql: Sql, orgId: string): Promise<Fi
       and metadata ->> 'systemRole' = 'orchestrator'
     limit 1
   `;
-  return rows[0] ?? null;
+  const row = rows[0] ?? null;
+  orchestratorPromptCache.set(orgId, { row, expiresAt: Date.now() + HARNESS_FILES_CACHE_MS });
+  return row;
 }
 
 export async function getFile(sql: Sql, orgId: string, id: string): Promise<FileRow | null> {
@@ -385,7 +428,10 @@ export async function createFile(
               title, body, content_format, metadata,
               current_version, created_at, updated_at
   `;
-  if (rows[0]) return rows[0];
+  if (rows[0]) {
+    invalidateHarnessFilesCache(orgId);
+    return rows[0];
+  }
   if (input.id) {
     const existing = await getFile(sql, orgId, input.id);
     if (existing) return existing;
@@ -424,6 +470,7 @@ export async function updateFile(
               current_version, created_at, updated_at
   `;
   if (rows.length === 0) throw new Error("File not found or already deleted");
+  invalidateHarnessFilesCache(orgId);
   return rows[0];
 }
 
@@ -451,6 +498,7 @@ export async function updateFileIfVersion(
               title, body, content_format, metadata,
               current_version, created_at, updated_at
   `;
+  if (rows[0]) invalidateHarnessFilesCache(orgId);
   return rows[0] ?? null;
 }
 
@@ -461,6 +509,7 @@ export async function softDeleteFile(sql: Sql, orgId: string, id: string): Promi
     where org_id = ${orgId} and id = ${id} and deleted_at is null
     returning id
   `;
+  if (rows.length > 0) invalidateHarnessFilesCache(orgId);
   return rows.length > 0;
 }
 
@@ -490,6 +539,7 @@ export async function deleteEmptyPlaceholderFiles(sql: Sql, orgId: string): Prom
       )
     returning file.id
   `;
+  if (rows.length > 0) invalidateHarnessFilesCache(orgId);
   return rows.length;
 }
 
@@ -542,6 +592,7 @@ export async function deleteLegacySeedDuplicates(sql: Sql, orgId: string): Promi
       and legacy.id in (select id from duplicate_ids)
     returning legacy.id
   `;
+  if (rows.length > 0) invalidateHarnessFilesCache(orgId);
   return rows.length;
 }
 
@@ -560,6 +611,7 @@ export async function organizeUnfolderedGeneratedFiles(sql: Sql, orgId: string):
       and nullif(btrim(file.metadata ->> 'seedFolder'), '') is null
     returning file.id
   `;
+  if (rows.length > 0) invalidateHarnessFilesCache(orgId);
   return rows.length;
 }
 
@@ -706,6 +758,86 @@ export async function getRun(sql: Sql, orgId: string, runId: string): Promise<Ru
     limit 1
   `;
   return rows[0] ?? null;
+}
+
+export type RunRestoreSnapshot = {
+  run: RunRow;
+  chat: ChatRow | null;
+  messages: ChatMessageRow[];
+  events: RunEventRow[];
+  artifacts: FileRow[];
+  usage: RunUsageTotals;
+};
+
+/**
+ * Hydrate a run and its chat projection in one database round trip. Run pages
+ * are latency-sensitive and the database may be remote; composing the snapshot
+ * in SQL avoids serial run -> event/output -> file -> message requests while
+ * keeping `runs` and its checkpoint version as the authoritative boundary.
+ */
+export async function getRunRestoreSnapshot(
+  sql: Sql,
+  orgId: string,
+  runId: string
+): Promise<RunRestoreSnapshot | null> {
+  const rows = await sql<Array<{
+    run: RunRow;
+    chat: ChatRow | null;
+    messages: ChatMessageRow[];
+    events: RunEventRow[];
+    artifacts: FileRow[];
+    usage: RunUsageTotals;
+  }>>`
+    select
+      to_jsonb(r) as run,
+      case when c.id is null then null else to_jsonb(c) end as chat,
+      coalesce((
+        select jsonb_agg(to_jsonb(message_row) order by message_row.sequence_number asc)
+        from (
+          select m.*
+          from chat_messages m
+          where m.org_id = ${orgId} and m.chat_id = r.chat_id
+          order by m.sequence_number asc
+          limit 200
+        ) message_row
+      ), '[]'::jsonb) as messages,
+      coalesce((
+        select jsonb_agg(to_jsonb(e) order by e.sequence asc, e.created_at asc)
+        from run_events e
+        where e.org_id = ${orgId} and e.run_id = r.id
+      ), '[]'::jsonb) as events,
+      coalesce((
+        select jsonb_agg(to_jsonb(f) order by f.created_at asc)
+        from run_output_files ro
+        join files f on f.org_id = ro.org_id and f.id = ro.file_id and f.deleted_at is null
+        where ro.org_id = ${orgId} and ro.run_id = r.id and ro.relationship = 'output'
+      ), '[]'::jsonb) as artifacts,
+      jsonb_build_object(
+        'input_tokens', coalesce((
+          select sum(coalesce(u.actual_input_tokens, u.input_tokens))
+          from usage_ledger u
+          where u.org_id = ${orgId} and u.run_id = r.id
+        ), 0),
+        'output_tokens', coalesce((
+          select sum(coalesce(u.actual_output_tokens, u.output_tokens))
+          from usage_ledger u
+          where u.org_id = ${orgId} and u.run_id = r.id
+        ), 0)
+      ) as usage
+    from runs r
+    left join chats c on c.org_id = r.org_id and c.id = r.chat_id
+    where r.org_id = ${orgId} and r.id = ${runId}
+    limit 1
+  `;
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    ...row,
+    usage: {
+      input_tokens: Number(row.usage?.input_tokens ?? 0),
+      output_tokens: Number(row.usage?.output_tokens ?? 0),
+    },
+  };
 }
 
 export async function listRuns(sql: Sql, orgId: string, limit = 50): Promise<RunRow[]> {
@@ -1954,6 +2086,7 @@ export async function resetWorkspace(
     await sql`delete from run_output_files where org_id = ${orgId} and file_id = any(${ids}::uuid[])`;
     await sql`delete from files where org_id = ${orgId}`;
   }
+  invalidateHarnessFilesCache(orgId);
 }
 
 /**
@@ -2447,15 +2580,226 @@ export async function listRecentRunMetrics(sql: Sql, orgId: string, limit = 50):
   `;
 }
 
+// ── Atomic initial turn creation ──────────────────────────────
+
+export interface InitialTurnResult {
+  chat: ChatRow;
+  run: RunRow;
+  userMessage: ChatMessageRow;
+  turnId: string;
+  checkpointVersion: number;
+  created: boolean;
+}
+
+export interface CreateInitialTurnInput {
+  chatId: string;
+  title: string;
+  prompt: string;
+  type: string;
+  executionKind: string | null;
+  turnId: string;
+  inputs: Record<string, unknown>;
+  definitionSnapshot: Record<string, unknown>;
+  idempotencyKey?: string | null;
+  requestedBy?: string | null;
+  graphVersion?: string | null;
+  chatMetadata?: Record<string, unknown>;
+  workflowId?: string | null;
+  projectId?: string | null;
+}
+
+export async function createInitialTurn(
+  sql: Sql,
+  orgId: string,
+  input: CreateInitialTurnInput
+): Promise<InitialTurnResult> {
+  type InitialTurnRow = {
+    chat: ChatRow;
+    run: RunRow;
+    user_message: ChatMessageRow;
+    created: boolean;
+  };
+  const proposedRunId = crypto.randomUUID();
+  const initialChatMetadata = {
+    ...(input.chatMetadata ?? {}),
+    activeRunId: proposedRunId,
+    lastRunId: proposedRunId,
+  };
+
+  // This is deliberately one statement rather than a transaction callback.
+  // With a remote Postgres connection, every statement in a callback costs a
+  // network round trip. The data-modifying CTE keeps chat, run, sequence,
+  // message, and metadata creation atomic while returning the authoritative
+  // rows needed for the first SSE frames.
+  const [createdTurn] = await sql<InitialTurnRow[]>`
+    with inserted_chat as (
+      insert into chats (id, org_id, title, metadata, next_message_sequence)
+      values (
+        ${input.chatId}, ${orgId}, ${input.title},
+        ${toJsonb(sql, initialChatMetadata)}, 1
+      )
+      on conflict (id) do nothing
+      returning *
+    ), resolved_chat as (
+      select * from inserted_chat
+      union all
+      select c.* from chats c
+      where c.org_id = ${orgId} and c.id = ${input.chatId}
+        and not exists (select 1 from inserted_chat)
+      limit 1
+    ), inserted_run as (
+      insert into runs (
+        id, org_id, chat_id, workflow_id, project_id, turn_id,
+        execution_kind, type, prompt, status, inputs,
+        definition_snapshot, idempotency_key, requested_by, graph_version
+      )
+      select
+        ${proposedRunId}, ${orgId}, rc.id, ${input.workflowId ?? null}, ${input.projectId ?? null},
+        ${input.turnId}, ${input.executionKind ?? null}, ${input.type},
+        ${input.prompt}, 'running', ${toJsonb(sql, input.inputs)},
+        ${toJsonb(sql, input.definitionSnapshot)}, ${input.idempotencyKey ?? null},
+        ${input.requestedBy ?? null}, ${input.graphVersion ?? null}
+      from resolved_chat rc
+      on conflict (org_id, idempotency_key) where idempotency_key is not null
+      do nothing
+      returning *
+    ), resolved_run as (
+      select * from inserted_run
+      union all
+      select r.* from runs r
+      where r.org_id = ${orgId}
+        and ${input.idempotencyKey ?? null}::text is not null
+        and r.idempotency_key = ${input.idempotencyKey ?? null}
+        and not exists (select 1 from inserted_run)
+      limit 1
+    ), existing_message as (
+      select m.* from chat_messages m
+      join resolved_run r on r.chat_id = m.chat_id
+      where m.org_id = ${orgId}
+        and m.metadata->>'runId' = r.id::text
+        and m.metadata->>'kind' = 'user_request'
+      order by m.sequence_number asc
+      limit 1
+    ), updated_existing_chat as (
+      update chats c
+      set next_message_sequence = c.next_message_sequence + case
+            when not exists (select 1 from existing_message) then 1 else 0 end,
+          metadata = coalesce(c.metadata, '{}'::jsonb)
+            || ${toJsonb(sql, input.chatMetadata ?? {})}
+            || jsonb_build_object('activeRunId', r.id, 'lastRunId', r.id),
+          updated_at = now()
+      from resolved_run r
+      where c.org_id = ${orgId} and c.id = r.chat_id
+        and not exists (select 1 from inserted_chat)
+      returning c.*, c.next_message_sequence - case
+        when not exists (select 1 from existing_message) then 1 else 0 end as message_sequence
+    ), resolved_chat_result as (
+      select to_jsonb(c) as chat from inserted_chat c
+      union all
+      select to_jsonb(c) - 'message_sequence' as chat from updated_existing_chat c
+      limit 1
+    ), message_sequence as (
+      select c.id, 0::bigint as sequence
+      from inserted_chat c
+      join resolved_run r on r.chat_id = c.id
+      union all
+      select c.id, c.message_sequence as sequence
+      from updated_existing_chat c
+      where not exists (select 1 from existing_message)
+    ), inserted_message as (
+      insert into chat_messages (
+        org_id, chat_id, role, body, metadata, sequence_number
+      )
+      select
+        ${orgId}, r.chat_id, 'user', r.prompt,
+        jsonb_build_object(
+          'runId', r.id,
+          'turnId', coalesce(r.turn_id, ${input.turnId}),
+          'kind', 'user_request'
+        ),
+        reserved.sequence
+      from resolved_run r
+      join message_sequence reserved on reserved.id = r.chat_id
+      where not exists (select 1 from existing_message)
+      returning *
+    ), resolved_message as (
+      select * from existing_message
+      union all
+      select * from inserted_message
+      limit 1
+    )
+    select
+      c.chat as chat,
+      row_to_json(r)::jsonb as run,
+      row_to_json(m)::jsonb as user_message,
+      exists(select 1 from inserted_run) as created
+    from resolved_chat_result c
+    cross join resolved_run r
+    cross join resolved_message m
+    limit 1
+  `;
+
+  if (createdTurn) {
+    return {
+      chat: createdTurn.chat,
+      run: createdTurn.run,
+      userMessage: createdTurn.user_message,
+      turnId: createdTurn.run.turn_id ?? input.turnId,
+      checkpointVersion: Number(createdTurn.run.checkpoint_version ?? 0),
+      created: createdTurn.created,
+    };
+  }
+
+  // Under a truly concurrent idempotent insert, INSERT ... DO NOTHING can
+  // wait for the winner while the statement snapshot still predates it.
+  // The next statement sees the committed winner. This replay-only fallback
+  // keeps the hot path at one round trip without weakening concurrency.
+  if (input.idempotencyKey) {
+    const [existingRun] = await sql<RunRow[]>`
+      select * from runs
+      where org_id = ${orgId} and idempotency_key = ${input.idempotencyKey}
+      limit 1
+    `;
+    if (existingRun?.chat_id) {
+      const [chatRows, messageRows] = await Promise.all([
+        sql<ChatRow[]>`
+          select * from chats where org_id = ${orgId} and id = ${existingRun.chat_id} limit 1
+        `,
+        sql<ChatMessageRow[]>`
+          select * from chat_messages
+          where org_id = ${orgId} and chat_id = ${existingRun.chat_id}
+            and metadata->>'runId' = ${existingRun.id}
+            and metadata->>'kind' = 'user_request'
+          order by sequence_number asc
+          limit 1
+        `,
+      ]);
+      if (chatRows[0] && messageRows[0]) {
+        return {
+          chat: chatRows[0],
+          run: existingRun,
+          userMessage: messageRows[0],
+          turnId: existingRun.turn_id ?? input.turnId,
+          checkpointVersion: Number(existingRun.checkpoint_version ?? 0),
+          created: false,
+        };
+      }
+    }
+  }
+
+  throw new Error("Initial turn could not be created.");
+}
+
 export interface FinalizeTurnOptions {
   outputText: string;
-  events: import("@spielos/core").RunEvent[];
+  events: RunEventInput[];
   state: Record<string, unknown>;
   status: string;
   error: string | null;
   completedAt: string | null;
   isDirectorChat: boolean;
   longHorizon?: { pinnedState: unknown; milestones: unknown } | null;
+  chatMetadata?: Record<string, unknown>;
   resumedFrom?: string;
 }
 
@@ -2474,160 +2818,179 @@ export async function finalizeRunTurn(
   currentCheckpointVersion: number,
   opts: FinalizeTurnOptions
 ): Promise<FinalizeTurnResult> {
-  return sql.begin(async (tx) => {
-    const [run] = await tx<RunRow[]>`
+  type FinalizedTurnRow = {
+    run: RunRow;
+    chat: ChatRow;
+    messages: ChatMessageRow[];
+  };
+  const idempotencyKey = turnId
+    ? `run:${runId}:turn:${turnId}:final`
+    : opts.resumedFrom
+      ? `run:${runId}:resume:${opts.resumedFrom}`
+      : null;
+  const eventValues = opts.events.map((event) => ({
+    org_id: orgId,
+    run_id: runId,
+    event_type: event.event_type,
+    node_id: event.node_id ?? null,
+    node_title: event.node_title ?? null,
+    skill_id: event.skill_id ?? null,
+    skill_name: event.skill_name ?? null,
+    message: event.message,
+    payload: event.payload,
+    event_key: event.event_key ?? null,
+  }));
+  const assistantMetadata = {
+    ...(opts.isDirectorChat ? { executionMode: "director" } : {}),
+    ...(opts.resumedFrom ? { resumedFrom: opts.resumedFrom } : {}),
+  };
+  const longHorizonMetadata = opts.longHorizon ? {
+    pinnedState: opts.longHorizon.pinnedState,
+    milestones: opts.longHorizon.milestones,
+  } : {};
+  const chatMetadata = opts.chatMetadata ?? {};
+
+  // Finalization is the authoritative commit point, so keep the whole turn
+  // in one statement: control-state resolution, events, run checkpoint,
+  // assistant message, sequence allocation, and chat metadata. This removes
+  // seven remote round trips from every completed chat turn.
+  const [result] = await sql<FinalizedTurnRow[]>`
+    with locked_run as (
       select * from runs
       where org_id = ${orgId} and id = ${runId}
       for update
-    `;
-    if (!run) throw new Error(`Run ${runId} not found`);
-
-    let terminalStatus = opts.status;
-    let errorMessage = opts.error;
-    let finalCompletedAt = opts.completedAt;
-    if (run.cancel_requested_at || run.status === "cancelled") {
-      terminalStatus = "cancelled";
-      errorMessage = null;
-      finalCompletedAt = new Date().toISOString();
-    } else if (run.pause_requested_at || run.status === "waiting_human") {
-      terminalStatus = "waiting_human";
-      errorMessage = null;
-      finalCompletedAt = null;
-    }
-
-    const storedVersion = Number(run.checkpoint_version ?? 0);
-    if (currentCheckpointVersion > 0 && storedVersion !== currentCheckpointVersion) {
-      throw new Error(`Checkpoint version mismatch: stored=${storedVersion} expected=${currentCheckpointVersion}`);
-    }
-
-    const finalCheckpointVersion = storedVersion + 1;
-    const stateJson = JSON.stringify(opts.state);
-
-    // Insert events into run_events (not runs — no events column exists)
-    if (opts.events.length > 0) {
-      const [reserve] = await tx<{ base: number }[]>`
-        update runs
-        set next_event_sequence = next_event_sequence + ${opts.events.length}::bigint
-        where org_id = ${orgId} and id = ${runId}
-        returning (next_event_sequence - ${opts.events.length}::bigint) as base
-      `;
-      const base = Number(reserve?.base ?? 0);
-      const values = opts.events.map((event) => ({
-        org_id: orgId,
-        run_id: runId,
-        event_type: event.type,
-        node_id: event.nodeId ?? null,
-        node_title: event.nodeTitle ?? null,
-        skill_id: event.skillId ?? null,
-        skill_name: event.skillName ?? null,
-        message: event.message,
-        payload: event.payload,
-        event_key: null,
-        sequence: base
-      }));
-      await tx<RunEventRow[]>`
-        with batch as (
-          select row_number() over () as rn, record.*
-          from jsonb_to_recordset(${toJsonb(tx, values as unknown as never)}) as record(
-            org_id text, run_id text, event_type text,
-            node_id text, node_title text, skill_id text, skill_name text,
-            message text, payload jsonb, event_key text, sequence bigint
-          )
-        )
-        insert into run_events (org_id, run_id, event_type, sequence, node_id, node_title, skill_id, skill_name, message, payload, event_key)
-        select
-          batch.org_id::uuid,
-          batch.run_id::uuid,
-          batch.event_type::event_type,
-          batch.sequence + batch.rn - 1,
-          batch.node_id,
-          batch.node_title,
-          batch.skill_id,
-          batch.skill_name,
-          batch.message,
-          batch.payload,
-          batch.event_key
-        from batch
-      `;
-    }
-
-    await tx`
-      update runs set
-        state = ${stateJson}::jsonb,
-        outputs = ${tx.json({ text: opts.outputText })},
-        status = ${terminalStatus},
-        error = ${errorMessage},
-        checkpoint_version = ${finalCheckpointVersion},
-        completed_at = ${finalCompletedAt}
-      where org_id = ${orgId} and id = ${runId}
-    `;
-
-    const idempotencyKey = turnId
-      ? `run:${runId}:turn:${turnId}:final`
-      : opts.resumedFrom
-        ? `run:${runId}:resume:${opts.resumedFrom}`
-        : null;
-
-    let messages: ChatMessageRow[] = [];
-    if (opts.outputText && idempotencyKey) {
-      const existing = await tx<ChatMessageRow[]>`
-        select * from chat_messages
-        where org_id = ${orgId} and chat_id = ${chatId}
-          and metadata->>'idempotencyKey' = ${idempotencyKey}
-        limit 1
-      `;
-      if (existing.length === 0) {
-        const insertMeta: Record<string, unknown> = {
-          runId,
-          turnId: turnId ?? undefined,
-          kind: "assistant_reply",
-          idempotencyKey,
-          ...(opts.isDirectorChat ? { executionMode: "director" } : {}),
-          ...(opts.resumedFrom ? { resumedFrom: opts.resumedFrom } : {})
-        };
-        const [seqRes] = await tx<{ sequence: number }[]>`
-          update chats
-          set next_message_sequence = next_message_sequence + 1
-          where org_id = ${orgId} and id = ${chatId}
-          returning (next_message_sequence - 1) as sequence
-        `;
-        const seq = seqRes?.sequence ?? 0;
-        messages = await tx<ChatMessageRow[]>`
-          insert into chat_messages (org_id, chat_id, role, body, metadata, created_at, sequence_number)
-          values (
-            ${orgId}, ${chatId}, 'assistant', ${opts.outputText},
-            ${tx.json(insertMeta as any)}, ${new Date().toISOString()}, ${seq}
-          )
-          returning *
-        `;
-      } else {
-        messages = existing;
-      }
-    }
-
-    const chatMetaUpdate: Record<string, unknown> = {
-      activeRunId: terminalStatus === "waiting_human" ? runId : null,
-      lastRunId: runId
-    };
-    if (opts.longHorizon) {
-      chatMetaUpdate.pinnedState = opts.longHorizon.pinnedState;
-      chatMetaUpdate.milestones = opts.longHorizon.milestones;
-    }
-
-    const [chat] = await tx<ChatRow[]>`
-      update chats set
-        metadata = metadata || ${tx.json(chatMetaUpdate as any)},
-        updated_at = ${new Date().toISOString()}
-      where org_id = ${orgId} and id = ${chatId}
+    ), valid_run as (
+      select * from locked_run
+      where ${currentCheckpointVersion}::bigint <= 0
+         or checkpoint_version = ${currentCheckpointVersion}::bigint
+    ), decision as (
+      select
+        r.*,
+        case
+          when r.cancel_requested_at is not null or r.status = 'cancelled' then 'cancelled'
+          when r.pause_requested_at is not null or r.status = 'waiting_human' then 'waiting_human'
+          else ${opts.status}
+        end::run_status as final_status,
+        case
+          when r.cancel_requested_at is not null or r.status = 'cancelled' then null
+          when r.pause_requested_at is not null or r.status = 'waiting_human' then null
+          else ${opts.error}
+        end as final_error,
+        case
+          when r.cancel_requested_at is not null or r.status = 'cancelled' then now()
+          when r.pause_requested_at is not null or r.status = 'waiting_human' then null
+          else ${opts.completedAt}
+        end as final_completed_at
+      from valid_run r
+    ), updated_run as (
+      update runs r set
+        state = ${toJsonb(sql, opts.state)},
+        outputs = ${toJsonb(sql, { text: opts.outputText })},
+        status = d.final_status,
+        error = d.final_error,
+        checkpoint_version = r.checkpoint_version + 1,
+        completed_at = d.final_completed_at,
+        next_event_sequence = r.next_event_sequence + ${eventValues.length}::bigint
+      from decision d
+      where r.org_id = ${orgId} and r.id = d.id
+      returning r.*, r.next_event_sequence - ${eventValues.length}::bigint as event_base
+    ), event_batch as (
+      select row_number() over () as rn, record.*
+      from jsonb_to_recordset(${toJsonb(sql, eventValues as unknown as never)}) as record(
+        org_id text, run_id text, event_type text,
+        node_id text, node_title text, skill_id text, skill_name text,
+        message text, payload jsonb, event_key text
+      )
+    ), inserted_events as (
+      insert into run_events (
+        org_id, run_id, event_type, sequence, node_id, node_title,
+        skill_id, skill_name, message, payload, event_key
+      )
+      select
+        batch.org_id::uuid,
+        batch.run_id::uuid,
+        batch.event_type::event_type,
+        run.event_base + batch.rn - 1,
+        batch.node_id,
+        batch.node_title,
+        batch.skill_id,
+        batch.skill_name,
+        batch.message,
+        batch.payload,
+        batch.event_key
+      from event_batch batch
+      cross join updated_run run
+      returning id
+    ), existing_message as (
+      select m.* from chat_messages m
+      where m.org_id = ${orgId} and m.chat_id = ${chatId}
+        and ${idempotencyKey}::text is not null
+        and m.metadata->>'idempotencyKey' = ${idempotencyKey}
+      limit 1
+    ), updated_chat as (
+      update chats c set
+        next_message_sequence = c.next_message_sequence + case
+          when ${idempotencyKey}::text is not null
+            and (${opts.outputText}::text <> '' or d.final_status = 'completed')
+            and not exists (select 1 from existing_message)
+          then 1 else 0 end,
+        metadata = coalesce(c.metadata, '{}'::jsonb)
+          || ${toJsonb(sql, longHorizonMetadata)}
+          || ${toJsonb(sql, chatMetadata)}
+          || jsonb_build_object(
+            'activeRunId', case when d.final_status = 'waiting_human' then d.id else null end,
+            'lastRunId', d.id
+          ),
+        updated_at = now()
+      from decision d
+      where c.org_id = ${orgId} and c.id = ${chatId}
+      returning c.*, c.next_message_sequence - case
+        when ${idempotencyKey}::text is not null
+          and (${opts.outputText}::text <> '' or d.final_status = 'completed')
+          and not exists (select 1 from existing_message)
+        then 1 else 0 end as assistant_sequence
+    ), inserted_message as (
+      insert into chat_messages (
+        org_id, chat_id, role, body, metadata, created_at, sequence_number
+      )
+      select
+        ${orgId}, ${chatId}, 'assistant', ${opts.outputText},
+        ${toJsonb(sql, assistantMetadata)} || jsonb_build_object(
+          'runId', ${runId}::text,
+          'turnId', ${turnId}::text,
+          'kind', 'assistant_reply',
+          'idempotencyKey', ${idempotencyKey}::text
+        ),
+        now(), chat.assistant_sequence
+      from updated_chat chat
+      cross join decision d
+      where ${idempotencyKey}::text is not null
+        and (${opts.outputText}::text <> '' or d.final_status = 'completed')
+        and not exists (select 1 from existing_message)
       returning *
-    `;
+    ), resolved_messages as (
+      select * from existing_message
+      union all
+      select * from inserted_message
+    )
+    select
+      (to_jsonb(run) - 'event_base') as run,
+      (to_jsonb(chat) - 'assistant_sequence') as chat,
+      coalesce(
+        (select jsonb_agg(to_jsonb(message) order by message.sequence_number) from resolved_messages message),
+        '[]'::jsonb
+      ) as messages
+    from updated_run run
+    cross join updated_chat chat
+    limit 1
+  `;
 
-    const [finalRun] = await tx<RunRow[]>`
-      select * from runs where org_id = ${orgId} and id = ${runId}
-    `;
-
-    return { run: finalRun!, messages, chat: chat ?? null };
-  });
+  if (result) return result;
+  const durable = await getRun(sql, orgId, runId);
+  if (!durable) throw new Error(`Run ${runId} not found`);
+  throw new Error(
+    `Checkpoint version mismatch: stored=${Number(durable.checkpoint_version ?? 0)} expected=${currentCheckpointVersion}`,
+  );
 }
 
 // ── Relation queries ─────────────────────────────────────────────

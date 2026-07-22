@@ -9,7 +9,7 @@ import {
   type WorkflowFile
 } from "@spielos/core";
 import { compileDirector } from "@spielos/graph/director/compile";
-import { buildRoleSubagents } from "@spielos/graph/director/compile";
+import { buildRoleSubagents, directorRoleSubagentName } from "@spielos/graph/director/compile";
 import { noopToolContext } from "@spielos/graph/director/tools";
 
 process.env.SPIELOS_TEST_LLM_KEY = process.env.SPIELOS_TEST_LLM_KEY ?? "sk-test-fake-key-for-unit-tests";
@@ -76,7 +76,7 @@ test("buildRoleSubagents excludes the orchestrator and inactive roles", () => {
     orchestrator.id
   );
   const names = subagents.map((s) => s.name);
-  assert.deepEqual(names.sort(), ["role_role-researcher", "role_role-writer"]);
+  assert.deepEqual(names.sort(), [directorRoleSubagentName(researcher), directorRoleSubagentName(writer)].sort());
   const orch = subagents.find((s) => s.name.includes("orch"));
   assert.equal(orch, undefined);
 });
@@ -246,5 +246,5 @@ test("compileDirector builds a subagent for every active specialist role", () =>
     toolContext: noopToolContext()
   });
   const subNames = compiled.subagents.map((s) => s.name).sort();
-  assert.deepEqual(subNames, ["role_role-researcher", "role_role-writer"]);
+  assert.deepEqual(subNames, [directorRoleSubagentName(researcher), directorRoleSubagentName(writer)].sort());
 });

@@ -1,44 +1,11 @@
 "use client";
 
-import {
-  createContext,
-  createElement,
-  useCallback,
-  useContext,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode
-} from "react";
-import { DEFAULT_EXECUTION_MODE, type Artifact, type ExecutionMode, type HumanInputRequest, type RunBudget, type RunEvent, type RunGoal, type RunProgress, type RunStatus, type RunType, type RunVerification } from "@spielos/core";
+import { createContext, createElement, useContext, useMemo, type ReactNode } from "react";
+import { useRuntimeStore, type RunLifecycleStatus, type ContextItem, type DurableRunState, type LiveRunUsage } from "./runtime-store";
 import { orderRunEvents } from "./run-events";
+import { type Artifact, type HumanInputRequest, type RunEvent, type RunStatus, type RunType } from "@spielos/core";
 
-export type RunLifecycleStatus = "idle" | RunStatus;
-
-export type ContextItem = {
-  id: string;
-  kind: string;
-  title: string;
-  subtitle?: string;
-};
-
-export type DurableRunState = {
-  goal?: RunGoal;
-  budget?: RunBudget;
-  progress?: RunProgress;
-  verification?: RunVerification;
-};
-
-export type LiveRunUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  toolCalls: number;
-};
-
-export type PendingCommit = {
-  chatId: string;
-  runId: string;
-} | null;
+export type { RunLifecycleStatus, ContextItem, DurableRunState, LiveRunUsage };
 
 export type RunContextValue = {
   contextItems: ContextItem[];
@@ -50,8 +17,8 @@ export type RunContextValue = {
   setPendingModelId: (id: string | null) => void;
   pendingReasoningEffort: string;
   setPendingReasoningEffort: (effort: string) => void;
-  pendingExecutionMode: ExecutionMode;
-  setPendingExecutionMode: (mode: ExecutionMode) => void;
+  pendingExecutionMode: string;
+  setPendingExecutionMode: (mode: string) => void;
   pickerOpen: boolean;
   setPickerOpen: (open: boolean) => void;
   activeRunId: string | null;
@@ -70,334 +37,113 @@ export type RunContextValue = {
   clearArtifacts: () => void;
   humanInputRequest: HumanInputRequest | null;
   setHumanInputRequest: (req: HumanInputRequest | null) => void;
+  setRunStatus: (status: RunStatus) => void;
   status: RunLifecycleStatus;
   running: boolean;
-  startRun: (type: RunType, activity?: string | null) => void;
-  setRunStatus: (status: RunStatus) => void;
   runType: RunType | null;
   setRunType: (type: RunType | null) => void;
   activeActor: { roleId: string; roleName: string } | null;
   activeActors: Array<{ agentId: string; roleId: string; roleName: string; nodeTitle: string }>;
-  continuationText: string;
-  appendContinuationText: (text: string) => void;
-  clearContinuationText: () => void;
   reset: () => void;
-  // Phase 1 additions:
   currentGeneration: string | null;
   beginRunAttempt: () => string;
   isGenerationCurrent: (gid: string) => boolean;
   activateRunProjection: (runId: string) => void;
-  pendingCommit: PendingCommit;
-  commitPendingChat: (commit: PendingCommit) => void;
-  consumePendingCommit: () => PendingCommit;
   hasActiveStream: (runId: string) => boolean;
   attachStream: (runId: string) => void;
   detachStream: (runId: string) => void;
-  // Phase 2: checkpoint version for monotonic restoration
-  highestCheckpointVersion: number;
-  recordCheckpointVersion: (version: number) => void;
 };
 
 const RunContext = createContext<RunContextValue | null>(null);
 
-export function RunContextProvider({ children }: { children: ReactNode }) {
-  const [contextItems, setContextItems] = useState<ContextItem[]>([]);
-  const [pendingModelId, setPendingModelId] = useState<string | null>(null);
-  const [pendingReasoningEffort, setPendingReasoningEffort] = useState("auto");
-  const [pendingExecutionMode, setPendingExecutionMode] = useState(DEFAULT_EXECUTION_MODE);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  const [durableState, setDurableState] = useState<DurableRunState | null>(null);
-  const [liveUsage, setLiveUsage] = useState<LiveRunUsage | null>(null);
-  const [activity, setActivity] = useState<string | null>(null);
-  const [events, setEvents] = useState<RunEvent[]>([]);
-  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
-  const [humanInputRequest, setHumanInputRequest] = useState<HumanInputRequest | null>(null);
-  const [status, setStatus] = useState<RunLifecycleStatus>("idle");
-  const [runType, setRunType] = useState<RunType | null>(null);
-  const [continuationText, setContinuationText] = useState("");
-  const [currentGeneration, setCurrentGeneration] = useState<string | null>(null);
-  const generationRef = useRef<string | null>(null);
-  const [pendingCommit, setPendingCommit] = useState<PendingCommit>(null);
-  const [streamOwnership, setStreamOwnership] = useState<Record<string, string>>({});
-  const [highestCheckpointVersion, setHighestCheckpointVersion] = useState(0);
+function useProxyStore(): RunContextValue {
+  const store = useRuntimeStore();
 
-  const addContext = useCallback((item: ContextItem) => {
-    setContextItems((current) => {
-      if (current.some((entry) => entry.id === item.id)) return current;
-      return [...current, item];
-    });
-  }, []);
-
-  const removeContext = useCallback((id: string) => {
-    setContextItems((current) => current.filter((entry) => entry.id !== id));
-  }, []);
-
-  const clearContext = useCallback(() => setContextItems([]), []);
-
-  const setRunStatus = useCallback((next: RunStatus) => {
-    setStatus(next);
-    if (next !== "running") setActivity(null);
-    if (next === "completed" || next === "failed" || next === "cancelled") {
-      setHumanInputRequest(null);
-    }
-  }, []);
-
-  // Phase 1: split startRun into non-destructive attempt + deferred activation
-  const startRun = useCallback((type: RunType, initialActivity: string | null = null) => {
-    setEvents([]);
-    setArtifacts([]);
-    setActiveRunId(null);
-    setDurableState(null);
-    setLiveUsage(null);
-    setActivity(initialActivity);
-    setHumanInputRequest(null);
-    setRunType(type);
-    setContinuationText("");
-    setStatus("running");
-  }, []);
-
-  const beginRunAttempt = useCallback(() => {
-    const generation = crypto.randomUUID();
-    generationRef.current = generation;
-    setCurrentGeneration(generation);
-    // Status is set for immediate UI feedback but events/artifacts
-    // are NOT cleared — that happens in activateRunProjection.
-    setStatus("running");
-    setActivity("Thinking\u2026");
-    return generation;
-  }, []);
-
-  const activateRunProjection = useCallback((runId: string) => {
-    setEvents([]);
-    setArtifacts([]);
-    setActiveRunId(runId);
-    setDurableState(null);
-    setLiveUsage(null);
-  }, []);
-
-  const commitPendingChat = useCallback((commit: PendingCommit) => {
-    if (commit) setPendingCommit(commit);
-  }, []);
-
-  const consumePendingCommit = useCallback(() => {
-    let commit: PendingCommit = null;
-    setPendingCommit((current) => {
-      commit = current;
-      return null;
-    });
-    return commit;
-  }, []);
-
-  const attachStream = useCallback((runId: string) => {
-    const gen = crypto.randomUUID();
-    setStreamOwnership((prev) => ({ ...prev, [runId]: gen }));
-  }, []);
-
-  const detachStream = useCallback((runId: string) => {
-    setStreamOwnership((prev) => {
-      const next = { ...prev };
-      delete next[runId];
-      return next;
-    });
-  }, []);
-
-  const hasActiveStream = useCallback((runId: string): boolean => {
-    return runId in streamOwnership;
-  }, [streamOwnership]);
-
-  const recordCheckpointVersion = useCallback((version: number) => {
-    setHighestCheckpointVersion((prev) => Math.max(prev, version));
-  }, []);
-
-  const appendEvent = useCallback((event: RunEvent) => {
-    setEvents((current) =>
-      current.some((entry) => entry.id === event.id)
-        ? current
-        : orderRunEvents([...current, event])
+  const activeActor = useMemo(() => {
+    const ordered = orderRunEvents(store.events);
+    const latest = [...ordered].reverse().find(
+      (e) => (e.type === "node_started" || e.type === "skill_started" || e.type === "tool_call_started") && e.payload?.roleId,
     );
-    if (
-      event.type === "run_started" ||
-      event.type === "node_started" ||
-      event.type === "skill_started" ||
-      event.type === "tool_call_started" ||
-      event.type === "node_retrying" ||
-      event.type === "status"
-    ) {
-      setActivity(event.message);
+    if (latest?.payload?.roleId && latest?.payload?.roleName) {
+      return { roleId: latest.payload.roleId as string, roleName: latest.payload.roleName as string };
     }
-    if (event.type === "run_started") setStatus("running");
-    if (event.type === "human_input_requested") setRunStatus("waiting_human");
-    if (event.type === "run_completed") setRunStatus("completed");
-    if (event.type === "run_failed") setRunStatus("failed");
-    if (event.type === "run_cancelled") setRunStatus("cancelled");
-  }, [setRunStatus]);
+    return null;
+  }, [store.events]);
 
-  const clearEvents = useCallback(() => setEvents([]), []);
-
-  // Derive `activeActor` and `activeActors` from the events timeline. The
-  // timeline is the source of truth; mirroring derived state was creating
-  // double bookkeeping and racing with later events. Use a memo so each
-  // event append recomputes once per render.
-  const { activeActor: derivedActiveActor, activeActors: derivedActiveActors } = useMemo(() => {
-    let latest: { roleId: string; roleName: string } | null = null;
+  const activeActors = useMemo(() => {
     const map = new Map<string, { agentId: string; roleId: string; roleName: string; nodeTitle: string }>();
-    const ordered = orderRunEvents(events);
-    for (const event of ordered) {
-      const roleId = event.payload?.roleId;
-      const roleName = event.payload?.roleName;
-      if (
-        typeof roleId === "string" &&
-        typeof roleName === "string" &&
-        (event.type === "node_started" || event.type === "skill_started" || event.type === "tool_call_started")
-      ) {
-        latest = { roleId, roleName };
-        const agentId = typeof event.payload?.agentId === "string" ? event.payload.agentId : event.nodeId ?? roleId;
+    const ordered = orderRunEvents(store.events);
+    for (const e of ordered) {
+      const roleId = e.payload?.roleId;
+      const roleName = e.payload?.roleName;
+      if (typeof roleId === "string" && typeof roleName === "string" &&
+        (e.type === "node_started" || e.type === "skill_started" || e.type === "tool_call_started")) {
+        const agentId = typeof e.payload?.agentId === "string" ? e.payload.agentId : e.nodeId ?? roleId;
         if (!map.has(agentId)) {
-          map.set(agentId, { agentId, roleId, roleName, nodeTitle: event.nodeTitle ?? roleName });
+          map.set(agentId, { agentId, roleId, roleName, nodeTitle: e.nodeTitle ?? roleName });
         }
       }
-      if ((event.type === "node_completed" || event.type === "node_failed" || event.type === "node_skipped") && event.nodeId) {
-        map.delete(event.nodeId);
+      if ((e.type === "node_completed" || e.type === "node_failed" || e.type === "node_skipped") && e.nodeId) {
+        map.delete(e.nodeId);
       }
-      if (event.type === "tool_call_result" && typeof event.payload?.callId === "string") {
-        map.delete(event.payload.callId);
+      if (e.type === "tool_call_result" && typeof e.payload?.callId === "string") {
+        map.delete(e.payload.callId);
       }
     }
-    return { activeActor: latest, activeActors: Array.from(map.values()) };
-  }, [events]);
-  const appendContinuationText = useCallback((text: string) => {
-    setContinuationText((current) => current + text);
-  }, []);
-  const clearContinuationText = useCallback(() => setContinuationText(""), []);
+    return Array.from(map.values());
+  }, [store.events]);
 
-  const appendArtifact = useCallback((artifact: Artifact) => {
-    setArtifacts((current) =>
-      current.some((entry) => entry.id === artifact.id) ? current : [...current, artifact]
-    );
-  }, []);
+  const value: RunContextValue = {
+    contextItems: store.contextItems,
+    setContextItems: store.setContextItems,
+    addContext: store.addContext,
+    removeContext: store.removeContext,
+    clearContext: store.clearContext,
+    pendingModelId: store.pendingModelId,
+    setPendingModelId: store.setPendingModelId,
+    pendingReasoningEffort: store.pendingReasoningEffort,
+    setPendingReasoningEffort: store.setPendingReasoningEffort,
+    pendingExecutionMode: store.pendingExecutionMode,
+    setPendingExecutionMode: store.setPendingExecutionMode,
+    pickerOpen: store.pickerOpen,
+    setPickerOpen: store.setPickerOpen,
+    activeRunId: store.activeRunId,
+    setActiveRunId: (id) => id ? store.activateRunProjection(id) : store.resetRun(),
+    durableState: store.durableState,
+    setDurableState: store.setDurableState,
+    liveUsage: store.liveUsage,
+    setLiveUsage: store.setLiveUsage,
+    activity: store.activity,
+    setActivity: store.setActivity,
+    events: store.events,
+    appendEvent: store.appendEvent,
+    clearEvents: store.clearEvents,
+    artifacts: store.artifacts,
+    appendArtifact: store.appendArtifact,
+    clearArtifacts: store.clearArtifacts,
+    humanInputRequest: store.humanInputRequest,
+    setHumanInputRequest: store.setHumanInputRequest,
+    setRunStatus: store.setRunStatus,
+    status: store.runStatus,
+    running: store.runStatus === "running",
+    runType: store.runType,
+    setRunType: store.setRunType,
+    activeActor,
+    activeActors,
+    reset: store.resetRun ?? (() => {}),
+    currentGeneration: null,
+    beginRunAttempt: store.beginRunAttempt ?? (() => ""),
+    isGenerationCurrent: store.isGenerationCurrent ?? (() => false),
+    activateRunProjection: store.activateRunProjection ?? (() => {}),
+    hasActiveStream: store.hasActiveStream,
+    attachStream: store.attachStream,
+    detachStream: store.detachStream,
+  };
+  return value;
+}
 
-  const clearArtifacts = useCallback(() => setArtifacts([]), []);
-
-  const reset = useCallback(() => {
-    setEvents([]);
-    setArtifacts([]);
-    setActiveRunId(null);
-    setDurableState(null);
-    setLiveUsage(null);
-    setActivity(null);
-    setHumanInputRequest(null);
-    setStatus("idle");
-    setRunType(null);
-    setContinuationText("");
-  }, []);
-
-  const value = useMemo<RunContextValue>(
-    () => ({
-      contextItems,
-      setContextItems,
-      addContext,
-      removeContext,
-      clearContext,
-      pendingModelId,
-      setPendingModelId,
-      pendingReasoningEffort,
-      setPendingReasoningEffort,
-      pendingExecutionMode,
-      setPendingExecutionMode,
-      pickerOpen,
-      setPickerOpen,
-      activeRunId,
-      setActiveRunId,
-      durableState,
-      setDurableState,
-      liveUsage,
-      setLiveUsage,
-      activity,
-      setActivity,
-      events,
-      appendEvent,
-      clearEvents,
-      artifacts,
-      appendArtifact,
-      clearArtifacts,
-      humanInputRequest,
-      setHumanInputRequest,
-      status,
-      running: status === "running",
-      startRun,
-      setRunStatus,
-      runType,
-      setRunType,
-      activeActor: derivedActiveActor,
-      activeActors: derivedActiveActors,
-      continuationText,
-      appendContinuationText,
-      clearContinuationText,
-      reset,
-      currentGeneration,
-      isGenerationCurrent: (gid: string) => gid === generationRef.current,
-      beginRunAttempt,
-      activateRunProjection,
-      pendingCommit,
-      commitPendingChat,
-      consumePendingCommit,
-      hasActiveStream,
-      attachStream,
-      detachStream,
-      highestCheckpointVersion,
-      recordCheckpointVersion
-    }),
-    [
-      contextItems,
-      setContextItems,
-      addContext,
-      removeContext,
-      clearContext,
-      pendingModelId,
-      pendingReasoningEffort,
-      pendingExecutionMode,
-      setPendingExecutionMode,
-      pickerOpen,
-      setPickerOpen,
-      activeRunId,
-      setActiveRunId,
-      durableState,
-      liveUsage,
-      activity,
-      setActivity,
-      events,
-      appendEvent,
-      clearEvents,
-      artifacts,
-      appendArtifact,
-      clearArtifacts,
-      humanInputRequest,
-      setHumanInputRequest,
-      status,
-      startRun,
-      setRunStatus,
-      runType,
-      derivedActiveActor,
-      derivedActiveActors,
-      continuationText,
-      appendContinuationText,
-      clearContinuationText,
-      reset,
-      currentGeneration,
-      beginRunAttempt,
-      activateRunProjection,
-      pendingCommit,
-      commitPendingChat,
-      consumePendingCommit,
-      hasActiveStream,
-      attachStream,
-      detachStream,
-      highestCheckpointVersion,
-      recordCheckpointVersion
-    ]
-  );
-
+export function RunContextProvider({ children }: { children: ReactNode }) {
+  const value = useProxyStore();
   return createElement(RunContext.Provider, { value }, children);
 }
 

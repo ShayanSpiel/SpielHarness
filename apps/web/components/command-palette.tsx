@@ -4,8 +4,7 @@ import { Icon, ENTITY_ICONS } from "@spielos/design-system/components";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { ActionRow, Dialog, DialogContent, EmptyState, Input, Pill, Skeleton } from "@spielos/design-system";
-import { useWorkspaceStore } from "../lib/use-workspace-store";
-import { useRunContext } from "../lib/run-context";
+import { useRuntimeStore } from "../lib/runtime-store";
 
 type Group = "Actions" | "Navigate" | "Last Runs";
 
@@ -96,8 +95,6 @@ export function CommandPalette({
   open: boolean;
   setOpen: (open: boolean) => void;
 }) {
-  const store = useWorkspaceStore();
-  const run = useRunContext();
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -125,8 +122,7 @@ export function CommandPalette({
   }, [query]);
 
   function newRun() {
-    run.reset();
-    store.setActiveChat(null);
+    useRuntimeStore.getState().startNewChat();
     router.push("/");
     setOpen(false);
   }

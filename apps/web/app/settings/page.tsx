@@ -63,6 +63,7 @@ export default function SettingsPage() {
     baseUrl: string | null;
     logo: string | null;
     account: string | null;
+    credentialHealth: "ready" | "missing" | "corrupted" | null;
     enabled: boolean;
   }>>([]);
   const [integrationsLoading, setIntegrationsLoading] = useState(true);
@@ -114,6 +115,7 @@ export default function SettingsPage() {
           baseUrl: i.baseUrl as string | null ?? null,
           logo: ((i as Record<string, unknown>).config as Record<string, unknown> | null)?.logo as string | null ?? null,
           account: i.account as string | null ?? null,
+          credentialHealth: (i.credentialHealth === "ready" || i.credentialHealth === "missing" || i.credentialHealth === "corrupted" ? i.credentialHealth : null) as "ready" | "missing" | "corrupted" | null,
           enabled: Boolean(i.enabled),
         }));
         setIntegrations(enriched);
@@ -518,7 +520,7 @@ export default function SettingsPage() {
                       <span className="flex h-7 w-7 items-center justify-center rounded-md bg-panel text-muted-foreground"><Icon name="settings" size={13} /></span>
                       <span className="min-w-0 flex-1">
                         <span className="block text-xs font-medium text-foreground">Advanced runtime</span>
-                        <span className="block truncate text-3xs text-muted-foreground">{compactTokens(draft.capabilities.contextWindow)} context · {compactTokens(draft.capabilities.maxOutputTokens)} output · {Math.round(draft.capabilities.compactionThreshold * 100)}% compact</span>
+                        <span className="block truncate text-3xs text-muted-foreground">{compactTokens(draft.capabilities.contextWindow)} context · {compactTokens(draft.capabilities.maxOutputTokens)} output · cleanup at {Math.round(draft.capabilities.compactionThreshold * 100)}%</span>
                       </span>
                       <Icon className="text-muted-foreground" name={advancedOpen ? "chevron-up" : "chevron-down"} size={13} />
                     </button>
@@ -526,7 +528,7 @@ export default function SettingsPage() {
                       <section className="grid gap-3">
                         <div>
                           <h3 className="text-xs font-medium text-foreground">Capacity</h3>
-                          <p className="mt-0.5 text-2xs text-muted-foreground">The runtime uses these limits for context assembly, output, and automatic compaction.</p>
+                          <p className="mt-0.5 text-2xs text-muted-foreground">The runtime uses these limits for active context, responses, and automatic cleanup.</p>
                         </div>
                         <div className="grid items-start gap-3 [grid-template-columns:repeat(auto-fit,minmax(var(--editor-field-min),1fr))]">
                           <Field label="Context window">
@@ -540,8 +542,8 @@ export default function SettingsPage() {
                           <Field label="Maximum output per response">
                             <Input min={1} onChange={(event) => setDraft({ ...draft, capabilities: { ...draft.capabilities, maxOutputTokens: Math.max(1, Number(event.target.value) || 1) } })} type="number" value={draft.capabilities.maxOutputTokens} />
                           </Field>
-                          <Field label="Compaction threshold">
-                            <Input max={0.95} min={0.5} onChange={(event) => setDraft({ ...draft, capabilities: { ...draft.capabilities, compactionThreshold: Math.min(0.95, Math.max(0.5, Number(event.target.value) || 0.8)) } })} step={0.05} type="number" value={draft.capabilities.compactionThreshold} />
+                          <Field label="Cleanup threshold">
+                            <Input aria-label="Cleanup threshold" max={0.95} min={0.5} onChange={(event) => setDraft({ ...draft, capabilities: { ...draft.capabilities, compactionThreshold: Math.min(0.95, Math.max(0.5, Number(event.target.value) || 0.8)) } })} step={0.05} type="number" value={draft.capabilities.compactionThreshold} />
                           </Field>
                         </div>
                       </section>
@@ -598,9 +600,11 @@ export default function SettingsPage() {
                       ))
                     ) : (
                     presets.map((preset) => {
-                      const added = integrations.some((integration) => integration.name === preset.name || integration.name.startsWith(`${preset.name} —`));
+                      const matching = integrations.filter((integration) => integration.name === preset.name || integration.name.startsWith(`${preset.name} —`));
+                      const added = matching.length > 0;
+                      const connected = matching.some((integration) => integration.kind !== "oauth" || integration.credentialHealth === "ready");
                       const unavailable = preset.availability === "unavailable";
-                      const action = unavailable ? "Unavailable" : preset.kind === "builtin" ? "Available" : added ? "Connected" : preset.kind === "oauth" ? "Connect" : "Configure";
+                      const action = unavailable ? "Unavailable" : preset.kind === "builtin" ? "Available" : connected ? "Connected" : preset.kind === "oauth" && added ? "Reconnect" : preset.kind === "oauth" ? "Connect" : added ? "Connected" : "Configure";
                       return (<div className="flex min-h-36 flex-col rounded-lg bg-panel-raised p-3 transition-colors hover:bg-hover" key={preset.id}>
                         <div className="flex items-start gap-3">
                           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-panel shadow-panel">
@@ -610,7 +614,7 @@ export default function SettingsPage() {
                         </div>
                         <div className="mt-auto flex items-center gap-2 pt-3">
                           <Pill tone={unavailable ? "warning" : preset.kind === "oauth" ? "primary" : preset.kind === "builtin" ? "success" : "default"}>{unavailable ? "Unavailable" : preset.kind === "oauth" ? "OAuth" : preset.kind === "builtin" ? "SpielOS" : preset.kind.toUpperCase()}</Pill>
-                          <Button className="ms-auto" disabled={unavailable || preset.kind === "builtin" || added} onClick={() => openPreset(preset)} size="sm" variant={preset.kind === "oauth" ? "primary" : "outline"}>{action}</Button>
+                          <Button className="ms-auto" disabled={unavailable || preset.kind === "builtin" || connected} onClick={() => openPreset(preset)} size="sm" variant={preset.kind === "oauth" ? "primary" : "outline"}>{action}</Button>
                         </div>
                       </div>);
                     }))}
@@ -636,13 +640,16 @@ export default function SettingsPage() {
                       </div>
                     ))
                   ) : (
-                  integrations.map((integration) => (
+                  integrations.map((integration) => {
+                    const connected = integration.status === "configured" && (integration.kind !== "oauth" || integration.credentialHealth === "ready");
+                    const statusLabel = connected ? "Connected" : integration.kind === "oauth" ? "Needs reconnect" : "Needs config";
+                    return (
                     <div className="rounded-md bg-panel-raised p-3" key={integration.id}>
                       <div className="flex items-center gap-2">
                         {integration.logo ? <Image alt={`${integration.name} logo`} height={18} src={integration.logo} unoptimized width={18} /> : <Icon name={integration.kind === "mcp" ? "server" : integration.kind === "oauth" ? "lock" : "globe"} size={14} />}
                         <span className="text-sm font-medium text-foreground">{integration.name}</span>
-                        <Pill tone={integration.status === "configured" ? "success" : "warning"} className="ms-auto">
-                          {integration.status === "configured" ? "Connected" : integration.kind === "oauth" ? "Needs login" : "Needs config"}
+                        <Pill tone={connected ? "success" : "warning"} className="ms-auto">
+                          {statusLabel}
                         </Pill>
                         <Tooltip content="Disconnect" side="bottom">
                           <Button aria-label={`Disconnect ${integration.name}`} icon="trash" onClick={() => setDisconnecting(integration)} size="icon-xs" variant="ghost" />
@@ -650,12 +657,13 @@ export default function SettingsPage() {
                       </div>
                       <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
                         <div>Kind: {integration.kind}</div>
-                        <div>Secret: {integration.secretEnvKey ? `${integration.secretEnvKey} · ${integration.secretConfigured ? "ready" : "missing"}` : "not required"}</div>
+                        <div>{integration.kind === "oauth" ? `OAuth: ${integration.credentialHealth ?? "missing"}` : `Secret: ${integration.secretEnvKey ? `${integration.secretEnvKey} · ${integration.secretConfigured ? "ready" : "missing"}` : "not required"}`}</div>
                         {integration.baseUrl ? <div>Base URL: {integration.baseUrl}</div> : null}
                         <div>Operations: {(Array.isArray(integration.operations) ? integration.operations : []).map((operation) => operation.id).join(", ") || "none"}</div>
                       </div>
                     </div>
-                  ))
+                    );
+                  })
                   )}
                 </div>
               </div>

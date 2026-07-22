@@ -217,7 +217,11 @@ do $$ begin
 end $$;
 
 alter table chat_messages alter column sequence_number set not null;
-create index if not exists chat_messages_chat_seq_idx on chat_messages (chat_id, sequence_number);
+create unique index if not exists runs_org_idempotency_unique
+  on runs (org_id, idempotency_key)
+  where idempotency_key is not null;
+drop index if exists chat_messages_chat_seq_idx;
+create unique index chat_messages_chat_seq_idx on chat_messages (org_id, chat_id, sequence_number);
 alter table chats add column if not exists next_message_sequence bigint not null default 0;
 
 do $$ begin

@@ -36,6 +36,7 @@
       "prompt": "Synthesize every incoming evidence packet into the exact report requested by the user. Start with an H1 containing the requested report filename. Use these exact H2 headings: Executive Summary, Source Inventory, Findings, Supporting and Duplicate Evidence, Contradictions, Evidence, Tool Activity, Failures and Gaps, Verification Checklist, Next Actions. Cite only tool-returned evidence, and treat each Runtime Tool Evidence (authoritative) ledger as higher authority than model-authored prose in its packet. The runtime has already provided every bound tool: a zero-result search means no matches for that query, never that the connector or read tool is unavailable. External services must remain read-only. Do not evaluate, speculate about, or add a checklist item for local persistence: the application owns Outputs persistence after generation and verifies it in the artifact card. Never convert a reported gap into a pass, never claim a character count you did not measure, never claim a tool is missing when its result packet or authoritative ledger is present, and identify every evidence criterion that remains unverified.",
       "input": "parallel_evidence",
       "output": "verified_report",
+      "outputDisposition": "artifact",
       "x": 560,
       "y": 220
     }

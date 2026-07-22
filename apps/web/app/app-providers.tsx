@@ -4,9 +4,10 @@ import { Outfit, JetBrains_Mono } from "next/font/google";
 import { useEffect, useState } from "react";
 import { AppToaster, DEFAULT_THEME, ElectricBorderDefs, IconRegistryProvider, Spinner, THEME_REGISTRY, TooltipProvider } from "@spielos/design-system";
 import { useSession } from "../lib/auth-client";
-import { RunContextProvider } from "../lib/run-context";
 import { WorkspaceStoreProvider } from "../lib/use-workspace-store";
+import { RunContextProvider } from "../lib/run-context";
 import { ChatRuntimeProvider } from "../components/chat/chat-thread";
+import { RealtimeHub } from "../lib/realtime-hub";
 import "../components/chat/chat-markdown.css";
 
 const outfit = Outfit({
@@ -64,8 +65,9 @@ export default function AppProviders({ children }: { children: React.ReactNode }
             <Spinner size="lg" />
           </div>
         ) : (
-          <RunContextProvider>
-            <WorkspaceStoreProvider>
+          <WorkspaceStoreProvider>
+            <RealtimeHub />
+            <RunContextProvider>
               <ChatRuntimeProvider>
                 <IconRegistryProvider>
                   <ElectricBorderDefs />
@@ -75,8 +77,8 @@ export default function AppProviders({ children }: { children: React.ReactNode }
                 </IconRegistryProvider>
               </ChatRuntimeProvider>
               <AppToaster />
-            </WorkspaceStoreProvider>
-          </RunContextProvider>
+            </RunContextProvider>
+          </WorkspaceStoreProvider>
         )}
       </body>
     </html>

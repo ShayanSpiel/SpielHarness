@@ -217,6 +217,7 @@ export const workflowNodeSchema = z.object({
   requiredToolCalls: z.array(z.string()).optional(),
   inputContract: z.string().default("any"),
   outputContract: z.string().default("any"),
+  outputDisposition: z.enum(["assistant_text", "artifact"]).optional(),
   position: z.object({ x: z.number().default(0), y: z.number().default(0) }).default({ x: 0, y: 0 }),
   loopConfig: loopConfigSchema.optional(),
   evalInput: evalInputSourceSchema.optional()
@@ -1102,7 +1103,6 @@ export function normalizeBudget(raw: unknown): NormalizedBudget {
  * owns this typed contract and enforcement.
  */
 export const directorRuntimePolicySchema = z.object({
-  maxInputTokens: z.number().int().positive(),
   maxOutputTokens: z.number().int().positive(),
   maxDurationMs: z.number().int().positive(),
   maxToolCalls: z.number().int().positive(),
@@ -1120,6 +1120,27 @@ export const directorRuntimePolicySchema = z.object({
   }
 });
 export type DirectorRuntimePolicy = z.infer<typeof directorRuntimePolicySchema>;
+
+/**
+ * Resolve the per-run Director budget. Input usage is intentionally uncapped
+ * by the autonomous runtime policy: tool loops and context cleanup reread the
+ * active context, so a cumulative input ceiling can fail healthy long-horizon
+ * work even while the provider-facing context remains safely bounded. A lower
+ * input ceiling is retained only when the caller explicitly requests one.
+ */
+export function resolveDirectorRunBudget(
+  requested: Partial<Pick<RunBudget, "maxInputTokens" | "maxOutputTokens" | "maxDurationMs" | "maxToolCalls">> | undefined,
+  policy: DirectorRuntimePolicy
+): Partial<Pick<RunBudget, "maxInputTokens" | "maxOutputTokens" | "maxDurationMs" | "maxToolCalls">> {
+  const capped = (value: number | null | undefined, maximum: number) =>
+    typeof value === "number" ? Math.min(value, maximum) : maximum;
+  return {
+    maxInputTokens: requested?.maxInputTokens ?? null,
+    maxOutputTokens: capped(requested?.maxOutputTokens, policy.maxOutputTokens),
+    maxDurationMs: capped(requested?.maxDurationMs, policy.maxDurationMs),
+    maxToolCalls: capped(requested?.maxToolCalls, policy.maxToolCalls)
+  };
+}
 
 export const runProgressSchema = z.object({
   milestone: z.string().nullable().default(null),
@@ -1170,6 +1191,10 @@ export type CompletionEvidence = {
 export const runStateFrameSchema = z.object({
   goal: runGoalSchema.optional(),
   budget: runBudgetSchema.optional(),
+  context: z.object({
+    maxInputTokens: z.number().int().positive().nullable().default(null),
+    maxOutputTokens: z.number().int().positive().nullable().default(null),
+  }).optional(),
   progress: runProgressSchema.optional(),
   verification: runVerificationSchema.optional()
 });
@@ -1178,7 +1203,12 @@ export type RunStateFrame = z.infer<typeof runStateFrameSchema>;
 export const usageFrameSchema = z.object({
   inputTokens: z.number(),
   outputTokens: z.number(),
-  toolCalls: z.number()
+  toolCalls: z.number(),
+  contextInputTokens: z.number().optional(),
+  contextOutputTokens: z.number().optional(),
+  totalInputTokens: z.number().optional(),
+  totalOutputTokens: z.number().optional(),
+  contextModelId: z.string().nullable().optional()
 });
 export type UsageFrame = z.infer<typeof usageFrameSchema>;
 
@@ -1187,7 +1217,14 @@ export type UsageFrame = z.infer<typeof usageFrameSchema>;
 const _cpvField = { checkpointVersion: z.number().optional() };
 
 export const sseFrameSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("run"), runId: z.string(), type: z.string(), ..._cpvField }),
+  z.object({
+    kind: z.literal("run"),
+    runId: z.string(),
+    type: z.string(),
+    chatId: z.string().nullable().optional(),
+    turnId: z.string().nullable().optional(),
+    ..._cpvField
+  }),
   z.object({ kind: z.literal("chat_created"), chatId: z.string(), chat: chatSchema, ..._cpvField }),
   z.object({ kind: z.literal("message_persisted"), chatId: z.string(), message: chatMessageSchema, runId: z.string(), ..._cpvField }),
   z.object({ kind: z.literal("event"), event: runEventSchema, ..._cpvField }),
@@ -1203,9 +1240,12 @@ export const sseFrameSchema = z.discriminatedUnion("kind", [
 export type SseFrame = z.infer<typeof sseFrameSchema>;
 
 // Envelope wraps every SSE data line. Clients validate the protocol
-// version and use checkpointVersion for monotonic restoration.
+// version, use checkpointVersion for monotonic restoration, and
+// streamId + streamSequence for ordered, idempotent delivery.
 export const sseEnvelopeSchema = z.object({
   protocol: z.string().default("spielos-sse-v1"),
+  streamId: z.string().optional(),
+  streamSequence: z.number().optional(),
   checkpointVersion: z.number().optional(),
   body: sseFrameSchema
 });
@@ -1217,11 +1257,14 @@ const _sseEncoder = new TextEncoder();
 
 export function encodeSseFrame(
   frame: SseFrame,
-  checkpointVersion?: number
+  checkpointVersion?: number,
+  transport?: { streamId: string; streamSequence: number }
 ): Uint8Array {
   const parsed = sseEnvelopeSchema.safeParse({
     protocol: "spielos-sse-v1",
     checkpointVersion,
+    streamId: transport?.streamId,
+    streamSequence: transport?.streamSequence,
     body: frame,
   });
   if (!parsed.success) {
@@ -1290,6 +1333,21 @@ export const workspaceSettingsSchema = z.object({
   }).default({}),
 });
 export type WorkspaceSettings = z.infer<typeof workspaceSettingsSchema>;
+
+// ── Runtime reducer (pure, no client dependencies) ────────────
+export {
+  runtimeReducer,
+  createRunEntry,
+  orderRunEvents,
+} from "./runtime-reducer.ts";
+export type {
+  TransportStatus,
+  RunLifecycleStatus,
+  LiveRunUsage,
+  DurableRunState,
+  RunEntry,
+  RuntimeAction,
+} from "./runtime-reducer.ts";
 
 // ── Validation exports ─────────────────────────────────────────
 export {
@@ -1409,6 +1467,7 @@ export function parseWorkflowFile(row: FileRecord): WorkflowFile {
       requiredToolCalls: n.requiredToolCalls as WorkflowNode["requiredToolCalls"],
       inputContract: String(n.inputContract ?? n.input ?? "any"),
       outputContract: String(n.outputContract ?? n.output ?? "any"),
+      outputDisposition: n.outputDisposition === "artifact" ? "artifact" : "assistant_text",
       position: (n.position as { x: number; y: number }) ?? {
         x: typeof n.x === "number" ? n.x : 120 + i * 260,
         y: typeof n.y === "number" ? n.y : 160
